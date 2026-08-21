@@ -14,6 +14,10 @@ adapter validates message-shaped payloads, ignores non-message activities, and
 renders safe text replies without a network call. The local command confirms
 that no external adapter is configured.
 
+A FastAPI application factory exposes the adapter at `POST /api/messages` for
+in-process integration tests. It is not configured as a public bot endpoint and
+does not authenticate Teams requests yet.
+
 The real Microsoft Entra token flow, MCP endpoint, and LLM provider remain
 intentionally unconfigured until the cross-repository integration contract is
 agreed.
@@ -49,10 +53,12 @@ src/attendance_teams_bot/
 ├── agent/      # LLM boundary and response contracts
 ├── auth/       # authenticated Teams-user identity boundary
 ├── mcp/        # authenticated Attendance CRMT MCP client boundary
-├── teams/      # Microsoft Teams transport boundary
+├── teams/      # Microsoft Teams activity and FastAPI transport boundaries
 ├── cli.py      # local executable entry point
 ├── main.py     # dependency-injected application composition
 └── settings.py # typed environment configuration
 
-tests/unit/     # local composition, settings, CLI, and Teams-adapter behavior
+tests/
+├── unit/       # local composition, settings, CLI, and Teams-adapter behavior
+└── integration/ # FastAPI endpoint behavior through ASGI
 ```
