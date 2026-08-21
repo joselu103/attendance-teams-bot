@@ -9,8 +9,10 @@ access the attendance database or implement attendance authorization rules.
 ## Current local slice
 
 The service has a dependency-injected application composition boundary and
-protocols for Teams, identity, MCP, and LLM adapters. The local command confirms
-that no external adapter is configured; it makes no network calls.
+protocols for Teams, identity, MCP, and LLM adapters. Its local Teams activity
+adapter validates message-shaped payloads, ignores non-message activities, and
+renders safe text replies without a network call. The local command confirms
+that no external adapter is configured.
 
 The real Microsoft Entra token flow, MCP endpoint, and LLM provider remain
 intentionally unconfigured until the cross-repository integration contract is
@@ -52,5 +54,5 @@ src/attendance_teams_bot/
 ├── main.py     # dependency-injected application composition
 └── settings.py # typed environment configuration
 
-tests/unit/     # local composition, settings, and CLI behavior
+tests/unit/     # local composition, settings, CLI, and Teams-adapter behavior
 ```
