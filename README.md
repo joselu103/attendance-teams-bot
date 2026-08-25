@@ -6,21 +6,24 @@ LLM-powered, authenticated MCP client for Attendance CRMT.
 The bot is intentionally separate from the Attendance CRMT service. It must not
 access the attendance database or implement attendance authorization rules.
 
-## Current local slice
+## Current runtime slices
 
-The service has a dependency-injected application boundary and protocols for
-Teams, identity, MCP, and LLM adapters. The local runtime composes a safe,
-connectivity-only handler through the Teams activity adapter and FastAPI route
-factory. It validates message-shaped payloads, ignores non-message activities,
-and returns an explicit response that external adapters are not configured.
+The service has two deliberately separate runtime modes, both listening only on
+`127.0.0.1:3978` and exposing `POST /api/messages`:
 
-The local runtime listens only on `127.0.0.1:3978` and exposes
-`POST /api/messages`. It does not authenticate Teams requests and it never
-creates tokens, calls MCP, invokes an LLM, or returns attendance data.
+| Mode | Purpose | Request authentication |
+| --- | --- | --- |
+| `local` (default) | Offline connectivity and activity-adapter development | None — never configure this route as a real Bot Service callback. |
+| `teams` | Bot Service callback foundation | Microsoft Agents SDK validates the Bot Service bearer credential before application handling. |
 
-The real Microsoft Entra token flow, MCP endpoint, and LLM provider remain
+The authenticated `teams` mode currently returns only a fixed connectivity
+reply. It does not perform Teams user SSO, OBO, MCP calls, LLM invocation, or
+attendance-data access. A valid Bot Service request proves the channel path; it
+does **not** yet prove the sender is an authorized Attendance CRMT employee.
+
+The Teams/Entra user-token flow, MCP endpoint, and LLM provider remain
 intentionally unconfigured until the cross-repository integration contract is
-agreed.
+implemented.
 
 ## Quick start
 
@@ -61,11 +64,11 @@ terminal and keep it open:
 devtunnel host attendance-teams-bot-dev.eun1
 ```
 
-Stopping the command with `Ctrl+C` stops public forwarding. The current route
-is connectivity-only and must not be configured for real attendance access until
-Bot Service request authentication exists. The tunnel port uses the local `http`
-protocol because Uvicorn serves HTTP on `127.0.0.1:3978`; Dev Tunnel terminates
-TLS and exposes the public `https` URL.
+Stopping the command with `Ctrl+C` stops public forwarding. The tunnel port uses
+the local `http` protocol because Uvicorn serves HTTP on `127.0.0.1:3978`; Dev
+Tunnel terminates TLS and exposes the public `https` URL. Do not host the
+`teams` mode publicly until its real single-tenant Bot Service settings have
+been configured and the local fail-closed check has passed.
 
 ## Verification
 
@@ -78,9 +81,26 @@ env -u PYTHONPATH uv run mypy
 
 ## Configuration
 
-Copy `.env.example` to an untracked `.env` only when a real MCP endpoint is
-available. Deployed configuration must come from the platform secret manager.
-Never put credentials or tokens in `.env.example`, source control, logs, or chat.
+`BOT_RUNTIME_MODE` defaults to `local`. Set it to `teams` only for the
+single-tenant Bot Service callback runtime.
+
+Teams mode requires these environment-variable names:
+
+```bash
+BOT_RUNTIME_MODE=teams
+CONNECTIONS__SERVICE_CONNECTION__SETTINGS__CLIENTID=<bot-client-id>
+CONNECTIONS__SERVICE_CONNECTION__SETTINGS__TENANTID=<tenant-id>
+CONNECTIONS__SERVICE_CONNECTION__SETTINGS__CLIENTSECRET=<development-secret>
+```
+
+Use an untracked local `.env` file for development and a platform secret manager
+for deployment. Never put real values, bearer tokens, or client secrets in
+`.env.example`, source control, logs, test fixtures, or chat.
+
+`CLIENTID` and `TENANTID` identify the Bot Service application and tenant;
+`CLIENTSECRET` is sensitive. The authenticated runtime currently verifies the
+Bot Service request only. It does not obtain a Teams user token or contact
+Attendance CRMT.
 
 ## Layout
 

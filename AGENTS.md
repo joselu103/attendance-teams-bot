@@ -93,6 +93,21 @@ Do not add client secrets to source control, test fixtures, logs, prompts, or
 error messages. Use environment variables or the deployment platform's secret
 manager.
 
+### Implemented Bot Service Boundary
+
+The `teams` runtime uses the Microsoft Agents SDK to validate the incoming Bot
+Service bearer credential before it dispatches a message. This proves only that
+the activity reached the bot through the configured Microsoft channel.
+
+- Do not treat `activity.from.id` as verified Entra identity, email, employee ID,
+  or authorization evidence.
+- Do not claim Teams user SSO, OBO, MCP access, LLM behavior, or attendance
+  access exists until each is separately implemented and tested.
+- Keep all Microsoft Agents SDK imports in `teams/microsoft_agents.py`; stable
+  application and authorization logic must not depend on SDK types.
+- Keep `local` mode explicitly unauthenticated. It must never become a real Bot
+  Service messaging endpoint.
+
 ## LLM and Tool-Use Rules
 
 The LLM is an assistant and tool selector. It is not an authority on attendance.
@@ -156,11 +171,13 @@ authentication, authorization, and audit trail are verified end to end.
 - `teams/`: Teams webhook/activity adapter and response rendering.
 - `contracts/`: immutable internal request/response models.
 - `application.py`: transport-independent bot application behavior.
-- `local.py`: explicit connectivity-only handler before external adapters exist.
-- `composition.py`: local dependency wiring.
-- `asgi.py`: exported FastAPI application.
+- `local.py`: explicit connectivity-only handler for local mode.
+- `composition.py`: selects local or authenticated Teams dependency wiring.
+- `teams/authenticated.py`: SDK-independent safe handler for authenticated channel messages.
+- `teams/microsoft_agents.py`: Microsoft Agents SDK adapter and JWT-protected callback factory.
+- `asgi.py`: exported FastAPI application selected from runtime configuration.
 - `server.py`: Uvicorn process entry point.
-- `settings.py`: validated runtime configuration.
+- `settings.py`: validated runtime and Bot Service configuration.
 
 ## Required Cross-Repository Contract Before Real Integration
 
