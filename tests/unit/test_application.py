@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date
 
-from attendance_teams_bot.main import create_application
+from attendance_teams_bot.application import create_application
 
 
 class FakeIdentityProvider:
