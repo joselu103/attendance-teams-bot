@@ -8,8 +8,9 @@ access the attendance database or implement attendance authorization rules.
 
 ## Current runtime slices
 
-The service has two deliberately separate runtime modes, both listening only on
-`127.0.0.1:3978` and exposing `POST /api/messages`:
+The service has two deliberately separate runtime modes. The local developer
+entry point listens on `127.0.0.1:3978`; the container entry point listens on
+`0.0.0.0:8080` within its container network:
 
 | Mode | Purpose | Request authentication |
 | --- | --- | --- |
@@ -84,6 +85,11 @@ env -u PYTHONPATH uv run mypy
 `BOT_RUNTIME_MODE` defaults to `local`. Set it to `teams` only for the
 single-tenant Bot Service callback runtime.
 
+`Settings` is the single configuration boundary: it reads the environment and
+optional local `.env` file once, validates every supported value, and passes a
+typed Teams connection to the Microsoft SDK adapter. Unknown dotenv variables
+are rejected rather than silently ignored.
+
 Teams mode requires these environment-variable names:
 
 ```bash
@@ -101,6 +107,28 @@ for deployment. Never put real values, bearer tokens, or client secrets in
 `CLIENTSECRET` is sensitive. The authenticated runtime currently verifies the
 Bot Service request only. It does not obtain a Teams user token or contact
 Attendance CRMT.
+
+## Container
+
+Build the production image locally:
+
+```bash
+docker build --tag attendance-teams-bot:dev .
+```
+
+For a local authenticated probe, load values from the ignored `.env` file and
+expose the container only on the local loopback interface:
+
+```bash
+docker run --rm \
+  --env-file .env \
+  --publish 127.0.0.1:8080:8080 \
+  attendance-teams-bot:dev
+```
+
+The Docker build context excludes `.env` and `.env.*`. In AWS App Runner, set
+the runtime mode and non-secret identifiers as environment variables and inject
+only `CLIENTSECRET` from AWS Secrets Manager; never bake it into the image.
 
 ## Layout
 
