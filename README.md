@@ -58,12 +58,14 @@ start the bot. Only after the local probe succeeds, run this in a separate
 terminal and keep it open:
 
 ```bash
-devtunnel host attendance-teams-bot-dev -p 3978
+devtunnel host attendance-teams-bot-dev.eun1
 ```
 
 Stopping the command with `Ctrl+C` stops public forwarding. The current route
 is connectivity-only and must not be configured for real attendance access until
-Bot Service request authentication exists.
+Bot Service request authentication exists. The tunnel port uses the local `http`
+protocol because Uvicorn serves HTTP on `127.0.0.1:3978`; Dev Tunnel terminates
+TLS and exposes the public `https` URL.
 
 ## Verification
 
