@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Protocol, cast
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,3 +22,9 @@ def run_server(runner: ServerRunner) -> None:
         host=configuration.host,
         port=configuration.port,
     )
+
+
+def main() -> None:
+    import uvicorn
+
+    run_server(cast(ServerRunner, uvicorn.run))

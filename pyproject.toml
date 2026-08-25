@@ -11,10 +11,12 @@ dependencies = [
     "fastapi>=0.141.1",
     "pydantic>=2.13.4",
     "pydantic-settings>=2.15.0",
+    "uvicorn>=0.40.0",
 ]
 
 [project.scripts]
 attendance-teams-bot = "attendance_teams_bot.cli:main"
+attendance-teams-bot-http = "attendance_teams_bot.server:main"
 
 [build-system]
 requires = ["uv_build>=0.12.5,<0.13.0"]
