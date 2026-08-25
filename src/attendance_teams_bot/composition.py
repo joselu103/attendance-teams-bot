@@ -3,14 +3,18 @@ from fastapi import FastAPI
 from attendance_teams_bot.local import LocalUnconfiguredHandler
 from attendance_teams_bot.settings import RuntimeMode, RuntimeSettings
 from attendance_teams_bot.teams.adapter import TeamsActivityAdapter
+from attendance_teams_bot.teams.authenticated import BotServiceConnectivityHandler
 from attendance_teams_bot.teams.http import create_teams_http_app
+from attendance_teams_bot.teams.microsoft_agents import create_authenticated_teams_http_app
 
 
 def create_http_app(settings: RuntimeSettings) -> FastAPI:
     if settings.mode is RuntimeMode.LOCAL:
         return create_local_http_app()
+    if settings.mode is RuntimeMode.TEAMS:
+        return create_authenticated_teams_http_app(handler=BotServiceConnectivityHandler())
 
-    raise ValueError("Authenticated Teams runtime composition is not configured")
+    raise ValueError(f"Unsupported runtime mode: {settings.mode}")
 
 
 def create_local_http_app() -> FastAPI:
