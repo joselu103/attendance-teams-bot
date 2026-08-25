@@ -4,6 +4,7 @@ from uuid import uuid4
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+from attendance_teams_bot.settings import Settings
 from attendance_teams_bot.teams.authenticated import BotServiceConnectivityHandler
 from attendance_teams_bot.teams.microsoft_agents import create_authenticated_teams_http_app
 
@@ -20,7 +21,12 @@ async def test_authenticated_endpoint_rejects_requests_without_bot_service_crede
     monkeypatch.setenv("CONNECTIONS__SERVICE_CONNECTION__SETTINGS__CLIENTID", str(uuid4()))
     monkeypatch.setenv("CONNECTIONS__SERVICE_CONNECTION__SETTINGS__TENANTID", str(uuid4()))
     monkeypatch.setenv("CONNECTIONS__SERVICE_CONNECTION__SETTINGS__CLIENTSECRET", token_urlsafe())
-    app = create_authenticated_teams_http_app(handler=BotServiceConnectivityHandler())
+    connection = Settings().teams_connection
+    assert connection is not None
+    app = create_authenticated_teams_http_app(
+        connection=connection,
+        handler=BotServiceConnectivityHandler(),
+    )
 
     async with AsyncClient(
         transport=ASGITransport(app=app),

@@ -1,18 +1,24 @@
 from fastapi import FastAPI
 
 from attendance_teams_bot.local import LocalUnconfiguredHandler
-from attendance_teams_bot.settings import RuntimeMode, RuntimeSettings
+from attendance_teams_bot.settings import RuntimeMode, Settings
 from attendance_teams_bot.teams.adapter import TeamsActivityAdapter
 from attendance_teams_bot.teams.authenticated import BotServiceConnectivityHandler
 from attendance_teams_bot.teams.http import create_teams_http_app
 from attendance_teams_bot.teams.microsoft_agents import create_authenticated_teams_http_app
 
 
-def create_http_app(settings: RuntimeSettings) -> FastAPI:
+def create_http_app(settings: Settings) -> FastAPI:
     if settings.mode is RuntimeMode.LOCAL:
         return create_local_http_app()
     if settings.mode is RuntimeMode.TEAMS:
-        return create_authenticated_teams_http_app(handler=BotServiceConnectivityHandler())
+        connection = settings.teams_connection
+        if connection is None:
+            raise ValueError("teams mode requires Bot Service configuration")
+        return create_authenticated_teams_http_app(
+            connection=connection,
+            handler=BotServiceConnectivityHandler(),
+        )
 
     raise ValueError(f"Unsupported runtime mode: {settings.mode}")
 

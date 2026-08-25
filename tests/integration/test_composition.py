@@ -5,7 +5,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from attendance_teams_bot.composition import create_http_app, create_local_http_app
-from attendance_teams_bot.settings import RuntimeSettings
+from attendance_teams_bot.settings import Settings
 
 
 @pytest.fixture
@@ -15,7 +15,7 @@ def anyio_backend() -> str:
 
 @pytest.mark.anyio
 async def test_default_runtime_composes_the_safe_local_http_app() -> None:
-    app = create_http_app(RuntimeSettings())
+    app = create_http_app(Settings())
 
     async with AsyncClient(
         transport=ASGITransport(app=app),
@@ -44,7 +44,7 @@ async def test_teams_runtime_composes_the_authenticated_http_app(monkeypatch) ->
     monkeypatch.setenv("CONNECTIONS__SERVICE_CONNECTION__SETTINGS__CLIENTID", str(uuid4()))
     monkeypatch.setenv("CONNECTIONS__SERVICE_CONNECTION__SETTINGS__TENANTID", str(uuid4()))
     monkeypatch.setenv("CONNECTIONS__SERVICE_CONNECTION__SETTINGS__CLIENTSECRET", token_urlsafe())
-    app = create_http_app(RuntimeSettings())
+    app = create_http_app(Settings())
 
     async with AsyncClient(
         transport=ASGITransport(app=app),

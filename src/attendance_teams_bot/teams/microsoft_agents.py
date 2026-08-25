@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from os import environ
 from typing import Protocol, cast
 
 from fastapi import FastAPI, Request
@@ -55,10 +54,18 @@ async def route_authenticated_turn(
 
 def create_authenticated_teams_http_app(
     *,
+    connection: TeamsConnectionSettings,
     handler: ChannelAuthenticatedMessageHandler,
 ) -> FastAPI:
-    TeamsConnectionSettings()  # type: ignore[call-arg]
-    sdk_configuration = load_configuration_from_env(dict(environ))
+    sdk_configuration = load_configuration_from_env(
+        {
+            "CONNECTIONS__SERVICE_CONNECTION__SETTINGS__CLIENTID": str(connection.client_id),
+            "CONNECTIONS__SERVICE_CONNECTION__SETTINGS__TENANTID": str(connection.tenant_id),
+            "CONNECTIONS__SERVICE_CONNECTION__SETTINGS__CLIENTSECRET": (
+                connection.client_secret.get_secret_value()
+            ),
+        }
+    )
     storage = MemoryStorage()
     connection_manager = MsalConnectionManager(**sdk_configuration)
     adapter = CloudAdapter(connection_manager=connection_manager)
