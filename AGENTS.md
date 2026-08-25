@@ -148,18 +148,19 @@ authentication, authorization, and audit trail are verified end to end.
   claiming a change is complete.
 - Do not commit, push, or change deployment resources unless explicitly asked.
 
-## Suggested Module Layout
+## Module Layout
 
-```text
-src/attendance_teams_bot/
-├── agent/          # LLM orchestration and tool-selection policy
-├── auth/           # Entra/Teams identity and token handling
-├── mcp/            # authenticated remote MCP client
-├── teams/          # Teams webhook/activity adapter and response rendering
-├── contracts/      # immutable internal request/response models
-├── settings.py     # validated runtime configuration
-└── main.py         # application composition and HTTP entry point
-```
+- `agent/`: LLM orchestration and tool-selection policy.
+- `auth/`: Entra/Teams identity and token handling.
+- `mcp/`: authenticated remote MCP client.
+- `teams/`: Teams webhook/activity adapter and response rendering.
+- `contracts/`: immutable internal request/response models.
+- `application.py`: transport-independent bot application behavior.
+- `local.py`: explicit connectivity-only handler before external adapters exist.
+- `composition.py`: local dependency wiring.
+- `asgi.py`: exported FastAPI application.
+- `server.py`: Uvicorn process entry point.
+- `settings.py`: validated runtime configuration.
 
 ## Required Cross-Repository Contract Before Real Integration
 

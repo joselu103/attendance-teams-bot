@@ -8,15 +8,15 @@ access the attendance database or implement attendance authorization rules.
 
 ## Current local slice
 
-The service has a dependency-injected application composition boundary and
-protocols for Teams, identity, MCP, and LLM adapters. Its local Teams activity
-adapter validates message-shaped payloads, ignores non-message activities, and
-renders safe text replies without a network call. The local command confirms
-that no external adapter is configured.
+The service has a dependency-injected application boundary and protocols for
+Teams, identity, MCP, and LLM adapters. The local runtime composes a safe,
+connectivity-only handler through the Teams activity adapter and FastAPI route
+factory. It validates message-shaped payloads, ignores non-message activities,
+and returns an explicit response that external adapters are not configured.
 
-A FastAPI application factory exposes the adapter at `POST /api/messages` for
-in-process integration tests. It is not configured as a public bot endpoint and
-does not authenticate Teams requests yet.
+The local runtime listens only on `127.0.0.1:3978` and exposes
+`POST /api/messages`. It does not authenticate Teams requests and it never
+creates tokens, calls MCP, invokes an LLM, or returns attendance data.
 
 The real Microsoft Entra token flow, MCP endpoint, and LLM provider remain
 intentionally unconfigured until the cross-repository integration contract is
@@ -30,6 +30,40 @@ Requires [uv](https://docs.astral.sh/uv/).
 uv sync
 env -u PYTHONPATH uv run attendance-teams-bot
 ```
+
+## Run the local HTTP service
+
+Start the local service in one terminal:
+
+```bash
+env -u PYTHONPATH uv run attendance-teams-bot-http
+```
+
+In a second terminal, send a harmless local activity:
+
+```bash
+curl --fail --silent --show-error \
+  -X POST http://127.0.0.1:3978/api/messages \
+  -H 'Content-Type: application/json' \
+  -d '{"type":"message","id":"local-1","from":{"id":"local-user"},"text":"Hello"}'
+```
+
+The response must say that authentication, MCP, and LLM adapters are not
+configured. Stop the local service with `Ctrl+C`.
+
+### Dev Tunnel, after local verification
+
+Dev Tunnel forwards traffic to the already-running local service; it does not
+start the bot. Only after the local probe succeeds, run this in a separate
+terminal and keep it open:
+
+```bash
+devtunnel host attendance-teams-bot-dev -p 3978
+```
+
+Stopping the command with `Ctrl+C` stops public forwarding. The current route
+is connectivity-only and must not be configured for real attendance access until
+Bot Service request authentication exists.
 
 ## Verification
 
@@ -48,17 +82,11 @@ Never put credentials or tokens in `.env.example`, source control, logs, or chat
 
 ## Layout
 
-```text
-src/attendance_teams_bot/
-├── agent/      # LLM boundary and response contracts
-├── auth/       # authenticated Teams-user identity boundary
-├── mcp/        # authenticated Attendance CRMT MCP client boundary
-├── teams/      # Microsoft Teams activity and FastAPI transport boundaries
-├── cli.py      # local executable entry point
-├── main.py     # dependency-injected application composition
-└── settings.py # typed environment configuration
-
-tests/
-├── unit/       # local composition, settings, CLI, and Teams-adapter behavior
-└── integration/ # FastAPI endpoint behavior through ASGI
-```
+- `src/attendance_teams_bot/application.py`: transport-independent bot behavior.
+- `src/attendance_teams_bot/local.py`: safe handler used before external adapters exist.
+- `src/attendance_teams_bot/composition.py`: local runtime dependency wiring.
+- `src/attendance_teams_bot/asgi.py`: exported FastAPI application.
+- `src/attendance_teams_bot/server.py`: Uvicorn process entry point.
+- `src/attendance_teams_bot/teams/`: Teams activity parsing and HTTP transport.
+- `tests/unit/`: application, handler, ASGI, and server behavior.
+- `tests/integration/`: complete ASGI request-path behavior.
