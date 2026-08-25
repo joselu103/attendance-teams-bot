@@ -36,6 +36,17 @@ def anyio_backend() -> str:
 
 
 @pytest.mark.anyio
+async def test_blank_authenticated_message_does_not_invoke_handler() -> None:
+    handler = RecordingAsyncHandler()
+    context = FakeTurnContext(activity=FakeActivity(type="message", text="  "))
+
+    await route_authenticated_turn(context=context, handler=handler)
+
+    assert handler.messages == []
+    assert context.sent_texts == ["Please send a message so I can help."]
+
+
+@pytest.mark.anyio
 async def test_authenticated_message_routes_trimmed_text_and_sends_the_reply() -> None:
     handler = RecordingAsyncHandler()
     context = FakeTurnContext(activity=FakeActivity(type="message", text="  Hello  "))

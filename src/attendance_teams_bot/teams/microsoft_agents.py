@@ -44,7 +44,12 @@ async def route_authenticated_turn(
     if context.activity.type != "message" or context.activity.text is None:
         return
 
-    response = await handler.handle(message=context.activity.text.strip())
+    message = context.activity.text.strip()
+    if not message:
+        await context.send_activity("Please send a message so I can help.")
+        return
+
+    response = await handler.handle(message=message)
     await context.send_activity(response.text)
 
 
