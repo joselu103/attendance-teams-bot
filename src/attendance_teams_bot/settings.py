@@ -2,7 +2,7 @@ from enum import StrEnum
 from typing import Self
 from uuid import UUID
 
-from pydantic import BaseModel, Field, HttpUrl, SecretStr, model_validator
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -12,9 +12,20 @@ class RuntimeMode(StrEnum):
 
 
 class TeamsConnectionSettings(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
     client_id: UUID
     tenant_id: UUID
     client_secret: SecretStr
+
+
+class AttendanceIntegrationSettings(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    endpoint: HttpUrl
+    delegated_scope: str
+    teams_sso_oauth_connection_name: str
+    timeout_seconds: float
 
 
 class Settings(BaseSettings):
@@ -24,7 +35,22 @@ class Settings(BaseSettings):
         default=RuntimeMode.LOCAL,
         validation_alias="BOT_RUNTIME_MODE",
     )
+    attendance_integration_enabled: bool = Field(
+        default=False,
+        validation_alias="ATTENDANCE_INTEGRATION_ENABLED",
+    )
     mcp_endpoint: HttpUrl | None = Field(default=None, validation_alias="MCP_ENDPOINT")
+    mcp_scope: str | None = Field(default=None, validation_alias="MCP_SCOPE")
+    teams_sso_oauth_connection_name: str | None = Field(
+        default=None,
+        validation_alias="TEAMS_SSO_OAUTH_CONNECTION_NAME",
+    )
+    mcp_timeout_seconds: float = Field(
+        default=10.0,
+        gt=0,
+        le=30,
+        validation_alias="MCP_TIMEOUT_SECONDS",
+    )
     teams_client_id: UUID | None = Field(
         default=None,
         validation_alias="CONNECTIONS__SERVICE_CONNECTION__SETTINGS__CLIENTID",
@@ -42,6 +68,10 @@ class Settings(BaseSettings):
     def validate_teams_mode(self) -> Self:
         if self.mode is RuntimeMode.TEAMS and self.teams_connection is None:
             raise ValueError("teams mode requires Bot Service configuration")
+        if self.attendance_integration_enabled and self.attendance_integration is None:
+            raise ValueError(
+                "enabled attendance integration requires MCP and Teams SSO configuration"
+            )
         return self
 
     @property
@@ -57,4 +87,33 @@ class Settings(BaseSettings):
             client_id=self.teams_client_id,
             tenant_id=self.teams_tenant_id,
             client_secret=self.teams_client_secret,
+        )
+
+    @property
+    def attendance_integration(self) -> AttendanceIntegrationSettings | None:
+        if (
+            self.mcp_endpoint is None
+            or self.mcp_scope is None
+            or self.teams_sso_oauth_connection_name is None
+        ):
+            return None
+
+        delegated_scope = self.mcp_scope.strip()
+        oauth_connection_name = self.teams_sso_oauth_connection_name.strip()
+        endpoint = self.mcp_endpoint
+        host = endpoint.host or ""
+        is_loopback = host in {"localhost", "127.0.0.1", "::1"}
+
+        if not delegated_scope or not oauth_connection_name:
+            return None
+        if endpoint.path != "/mcp" or endpoint.query is not None or endpoint.fragment is not None:
+            return None
+        if endpoint.scheme != "https" and not is_loopback:
+            return None
+
+        return AttendanceIntegrationSettings(
+            endpoint=endpoint,
+            delegated_scope=delegated_scope,
+            teams_sso_oauth_connection_name=oauth_connection_name,
+            timeout_seconds=self.mcp_timeout_seconds,
         )

@@ -59,3 +59,21 @@ def test_settings_reads_the_mcp_endpoint_from_the_environment(monkeypatch) -> No
     settings = Settings()
 
     assert str(settings.mcp_endpoint) == "https://attendance-crmt.example.test/mcp"
+
+
+def test_settings_build_complete_attendance_integration(monkeypatch) -> None:
+    monkeypatch.setenv("ATTENDANCE_INTEGRATION_ENABLED", "true")
+    monkeypatch.setenv("MCP_ENDPOINT", "https://attendance-crmt.example.test/mcp")
+    monkeypatch.setenv("MCP_SCOPE", "api://11111111-1111-1111-1111-111111111111/attendance.access")
+    monkeypatch.setenv("TEAMS_SSO_OAUTH_CONNECTION_NAME", "AttendanceTeamsSso")
+
+    settings = Settings()
+
+    assert settings.attendance_integration is not None
+    assert (
+        str(settings.attendance_integration.endpoint) == "https://attendance-crmt.example.test/mcp"
+    )
+    assert (
+        settings.attendance_integration.delegated_scope
+        == "api://11111111-1111-1111-1111-111111111111/attendance.access"
+    )
