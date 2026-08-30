@@ -7,8 +7,10 @@ from microsoft_agents.activity import load_configuration_from_env
 from microsoft_agents.authentication.msal import MsalConnectionManager
 from microsoft_agents.hosting.core import (
     AgentApplication,
+    AuthHandler,
     Authorization,
     MemoryStorage,
+    Storage,
     TurnContext,
     TurnState,
 )
@@ -21,8 +23,12 @@ from pydantic import SecretStr
 from starlette.responses import Response
 
 from attendance_teams_bot.agent.contracts import BotResponse
+from attendance_teams_bot.auth.obo import MsalOboTokenExchange
 from attendance_teams_bot.settings import TeamsConnectionSettings
-from attendance_teams_bot.teams.authenticated import ChannelAuthenticatedMessageHandler
+from attendance_teams_bot.teams.authenticated import (
+    AttendanceMessageHandler,
+    ChannelAuthenticatedMessageHandler,
+)
 
 
 class _Activity(Protocol):
@@ -38,7 +44,11 @@ class _TurnContext(Protocol):
 
 
 class _Authorization(Protocol):
-    async def get_token(self, context: _TurnContext, auth_handler_id: str) -> object: ...
+    async def get_token(
+        self,
+        context: TurnContext,
+        auth_handler_id: str | None = None,
+    ) -> object: ...
 
 
 class TeamsAuthorizationSsoTokenProvider:
@@ -47,7 +57,9 @@ class TeamsAuthorizationSsoTokenProvider:
         self._auth_handler_id = auth_handler_id
 
     async def get_token(self, context: _TurnContext) -> SecretStr:
-        response = await self._authorization.get_token(context, self._auth_handler_id)
+        response = await self._authorization.get_token(
+            cast(TurnContext, context), self._auth_handler_id
+        )
         token = getattr(response, "token", None)
         if not isinstance(token, str) or not token:
             raise RuntimeError("Teams SSO token is unavailable")
@@ -142,3 +154,68 @@ def create_authenticated_teams_http_app(
         return await start_agent_process(request, agent_application, adapter)
 
     return app
+
+
+def create_attendance_teams_http_app(
+    *,
+    connection: TeamsConnectionSettings,
+    attendance_handler: AttendanceMessageHandler,
+    oauth_connection_name: str,
+    delegated_scope: str,
+    storage: Storage | None = None,
+) -> FastAPI:
+    if not oauth_connection_name.strip():
+        raise ValueError("Teams SSO OAuth connection name is required")
+
+    sdk_configuration = load_configuration_from_env(
+        {
+            "CONNECTIONS__SERVICE_CONNECTION__SETTINGS__CLIENTID": str(connection.client_id),
+            "CONNECTIONS__SERVICE_CONNECTION__SETTINGS__TENANTID": str(connection.tenant_id),
+            "CONNECTIONS__SERVICE_CONNECTION__SETTINGS__CLIENTSECRET": (
+                connection.client_secret.get_secret_value()
+            ),
+        }
+    )
+    route_storage = storage or MemoryStorage()
+    connection_manager = MsalConnectionManager(**sdk_configuration)
+    default_connection = connection_manager.get_default_connection()
+    if default_connection is None:
+        raise RuntimeError("Microsoft Agents SDK default connection is unavailable")
+    adapter = CloudAdapter(connection_manager=connection_manager)
+    auth_handler_id = "attendance-teams-sso"
+    auth_handler = AuthHandler(
+        name=auth_handler_id,
+        auth_type="UserAuthorization",
+        abs_oauth_connection_name=oauth_connection_name,
+    )
+    authorization = Authorization(
+        storage=route_storage,
+        connection_manager=connection_manager,
+        auth_handlers={auth_handler_id: auth_handler},
+        **sdk_configuration,
+    )
+    agent_application: AgentApplication[TurnState] = AgentApplication(
+        storage=route_storage,
+        adapter=adapter,
+        authorization=authorization,
+        **sdk_configuration,
+    )
+    sso_token_provider = TeamsAuthorizationSsoTokenProvider(
+        authorization=authorization,
+        auth_handler_id=auth_handler_id,
+    )
+    obo_token_exchange = MsalOboTokenExchange(
+        provider=default_connection,
+        delegated_scope=delegated_scope,
+    )
+
+    @agent_application.activity("message", auth_handlers=[auth_handler_id])
+    async def on_message(context: TurnContext, _state: TurnState) -> None:
+        await route_attendance_turn(
+            context=cast(_TurnContext, context),
+            handler=attendance_handler,
+            sso_token_provider=sso_token_provider,
+            obo_token_exchange=obo_token_exchange,
+        )
+
+    return cast(FastAPI, agent_application.build())  # type: ignore[attr-defined]

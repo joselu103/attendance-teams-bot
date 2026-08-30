@@ -1,11 +1,14 @@
 from dataclasses import dataclass, field
+from uuid import uuid4
 
 import pytest
 from pydantic import SecretStr
 
 from attendance_teams_bot.agent.contracts import BotResponse
+from attendance_teams_bot.settings import TeamsConnectionSettings
 from attendance_teams_bot.teams.microsoft_agents import (
     TeamsAuthorizationSsoTokenProvider,
+    create_attendance_teams_http_app,
     route_attendance_turn,
     route_authenticated_turn,
 )
@@ -82,6 +85,93 @@ class FakeOboTokenExchange:
     async def exchange(self, user_assertion: SecretStr) -> SecretStr:
         assert user_assertion.get_secret_value() == "teams-token"
         return SecretStr("mcp-token")
+
+
+def _teams_connection() -> TeamsConnectionSettings:
+    return TeamsConnectionSettings(
+        client_id=uuid4(),
+        tenant_id=uuid4(),
+        client_secret=SecretStr("test-client-secret"),
+    )
+
+
+@dataclass
+class FakeAttendanceHandler:
+    async def handle(self, *, message: str, mcp_access_token: SecretStr) -> BotResponse:
+        del message, mcp_access_token
+        return BotResponse(text="safe reply")
+
+
+def test_attendance_factory_configures_required_teams_sso_handler(monkeypatch) -> None:
+    from attendance_teams_bot.teams import microsoft_agents
+
+    recorded: dict[str, object] = {}
+
+    class FakeAuthHandler:
+        def __init__(
+            self,
+            *,
+            name: str,
+            auth_type: str,
+            abs_oauth_connection_name: str,
+        ) -> None:
+            recorded["auth_handler_name"] = name
+            recorded["auth_type"] = auth_type
+            recorded["oauth_connection_name"] = abs_oauth_connection_name
+
+    class FakeAuthorization:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            del args
+            recorded["authorization_auth_handlers"] = kwargs["auth_handlers"]
+
+    class FakeAgentApplication:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            del args, kwargs
+
+        def activity(self, _activity_type: str, *, auth_handlers: list[str]):
+            recorded["route_auth_handlers"] = auth_handlers
+
+            def decorate(function):
+                return function
+
+            return decorate
+
+        def build(self):
+            from fastapi import FastAPI
+
+            return FastAPI()
+
+    class FakeConnectionManager:
+        def __init__(self, **kwargs: object) -> None:
+            del kwargs
+
+        def get_default_connection(self) -> FakeOboTokenExchange:
+            return FakeOboTokenExchange()
+
+        def get_default_connection_configuration(self) -> dict[str, object]:
+            return {}
+
+    class FakeAdapter:
+        def __init__(self, **kwargs: object) -> None:
+            del kwargs
+
+    monkeypatch.setattr(microsoft_agents, "AuthHandler", FakeAuthHandler)
+    monkeypatch.setattr(microsoft_agents, "Authorization", FakeAuthorization)
+    monkeypatch.setattr(microsoft_agents, "AgentApplication", FakeAgentApplication)
+    monkeypatch.setattr(microsoft_agents, "MsalConnectionManager", FakeConnectionManager)
+    monkeypatch.setattr(microsoft_agents, "CloudAdapter", FakeAdapter)
+
+    create_attendance_teams_http_app(
+        connection=_teams_connection(),
+        attendance_handler=FakeAttendanceHandler(),
+        oauth_connection_name="attendance-teams-sso",
+        delegated_scope="api://attendance-api/attendance.access",
+    )
+
+    assert recorded["auth_handler_name"] == "attendance-teams-sso"
+    assert recorded["auth_type"] == "UserAuthorization"
+    assert recorded["oauth_connection_name"] == "attendance-teams-sso"
+    assert recorded["route_auth_handlers"] == ["attendance-teams-sso"]
 
 
 @pytest.mark.anyio
