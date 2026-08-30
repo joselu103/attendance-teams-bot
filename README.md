@@ -17,14 +17,22 @@ entry point listens on `127.0.0.1:3978`; the container entry point listens on
 | `local` (default) | Offline connectivity and activity-adapter development | None — never configure this route as a real Bot Service callback. |
 | `teams` | Bot Service callback foundation | Microsoft Agents SDK validates the Bot Service bearer credential before application handling. |
 
-The authenticated `teams` mode currently returns only a fixed connectivity
-reply. It does not perform Teams user SSO, OBO, MCP calls, LLM invocation, or
-attendance-data access. A valid Bot Service request proves the channel path; it
-does **not** yet prove the sender is an authorized Attendance CRMT employee.
+Teams mode has two explicit, fail-closed paths:
 
-The Teams/Entra user-token flow, MCP endpoint, and LLM provider remain
-intentionally unconfigured until the cross-repository integration contract is
-implemented.
+```text
+Integration disabled:
+Teams → authenticated Bot Service callback → connectivity reply
+
+Integration enabled:
+Teams → Azure Bot OAuth connection → token A → OBO → token B
+→ Attendance CRMT /mcp → requester-scoped response
+```
+
+The default is integration disabled. A valid Bot Service request proves the
+channel path; it does **not** prove the sender is an authorized Attendance CRMT
+employee. The enabled path must not be activated until the separately deployed
+Attendance CRMT service exposes its Entra API, delegated scope, and HTTPS MCP
+contract.
 
 ## Quick start
 
@@ -105,8 +113,27 @@ for deployment. Never put real values, bearer tokens, or client secrets in
 
 `CLIENTID` and `TENANTID` identify the Bot Service application and tenant;
 `CLIENTSECRET` is sensitive. The authenticated runtime currently verifies the
-Bot Service request only. It does not obtain a Teams user token or contact
-Attendance CRMT.
+Bot Service request only unless attendance integration is explicitly enabled.
+
+The enabled integration requires all of these environment-variable names in
+addition to the Teams connection settings:
+
+```bash
+ATTENDANCE_INTEGRATION_ENABLED=true
+MCP_ENDPOINT=https://<attendance-crmt-host>/mcp
+MCP_SCOPE=api://<attendance-crmt-api-app-id>/attendance.access
+MCP_TIMEOUT_SECONDS=10
+TEAMS_SSO_OAUTH_CONNECTION_NAME=<azure-bot-oauth-connection-name>
+```
+
+`TEAMS_SSO_OAUTH_CONNECTION_NAME` obtains the Teams token (token A). The bot
+exchanges it only through the configured Microsoft Agents SDK service connection
+to obtain the downstream Attendance CRMT token (token B); only token B reaches
+the MCP client. Do not configure a downstream Attendance CRMT scope on the Azure
+Bot OAuth connection.
+
+The first enabled slice supports personal chat and the strict ISO-date command,
+for example: `Show my attendance from 2026-08-10 to 2026-08-12`.
 
 ## Container
 

@@ -101,8 +101,10 @@ the activity reached the bot through the configured Microsoft channel.
 
 - Do not treat `activity.from.id` as verified Entra identity, email, employee ID,
   or authorization evidence.
-- Do not claim Teams user SSO, OBO, MCP access, LLM behavior, or attendance
-  access exists until each is separately implemented and tested.
+- The enabled attendance route uses the SDK authorization handler, Teams SSO,
+  OBO, and requester-scoped MCP boundaries. It remains disabled by default until
+  the separate Attendance CRMT Entra API and HTTPS MCP deployment are real and
+  verified.
 - Keep all Microsoft Agents SDK imports in `teams/microsoft_agents.py`; stable
   application and authorization logic must not depend on SDK types.
 - Keep `local` mode explicitly unauthenticated. It must never become a real Bot
