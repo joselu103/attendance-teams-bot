@@ -37,6 +37,23 @@ class _TurnContext(Protocol):
     async def send_activity(self, text: str) -> object: ...
 
 
+class _Authorization(Protocol):
+    async def get_token(self, context: _TurnContext, auth_handler_id: str) -> object: ...
+
+
+class TeamsAuthorizationSsoTokenProvider:
+    def __init__(self, *, authorization: _Authorization, auth_handler_id: str) -> None:
+        self._authorization = authorization
+        self._auth_handler_id = auth_handler_id
+
+    async def get_token(self, context: _TurnContext) -> SecretStr:
+        response = await self._authorization.get_token(context, self._auth_handler_id)
+        token = getattr(response, "token", None)
+        if not isinstance(token, str) or not token:
+            raise RuntimeError("Teams SSO token is unavailable")
+        return SecretStr(token)
+
+
 class _AttendanceHandler(Protocol):
     async def handle(self, *, message: str, mcp_access_token: SecretStr) -> BotResponse: ...
 

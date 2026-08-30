@@ -5,6 +5,7 @@ from pydantic import SecretStr
 
 from attendance_teams_bot.agent.contracts import BotResponse
 from attendance_teams_bot.teams.microsoft_agents import (
+    TeamsAuthorizationSsoTokenProvider,
     route_attendance_turn,
     route_authenticated_turn,
 )
@@ -97,3 +98,28 @@ async def test_attendance_turn_passes_only_the_obo_token_to_the_handler() -> Non
 
     assert handler.received_token == SecretStr("mcp-token")
     assert context.sent_texts == ["safe reply"]
+
+
+class FakeTokenResponse:
+    token = "teams-token"
+
+
+class FakeAuthorization:
+    async def get_token(self, context: FakeTurnContext, auth_handler_id: str) -> FakeTokenResponse:
+        assert context.activity.text == "Show my attendance"
+        assert auth_handler_id == "teams-sso"
+        return FakeTokenResponse()
+
+
+@pytest.mark.anyio
+async def test_sso_provider_reads_a_token_from_the_sdk_authorization_boundary() -> None:
+    token_provider = TeamsAuthorizationSsoTokenProvider(
+        authorization=FakeAuthorization(),
+        auth_handler_id="teams-sso",
+    )
+
+    token = await token_provider.get_token(
+        FakeTurnContext(activity=FakeActivity(type="message", text="Show my attendance"))
+    )
+
+    assert token == SecretStr("teams-token")
