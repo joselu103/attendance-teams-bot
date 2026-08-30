@@ -1,12 +1,138 @@
+from __future__ import annotations
+
+import json
+import re
+from collections.abc import Callable, Sequence
+from contextlib import AsyncExitStack
 from datetime import date
 from typing import Protocol
+from uuid import UUID
+
+import httpx
+from mcp import ClientSession
+from mcp.client.streamable_http import streamable_http_client
+from pydantic import SecretStr, ValidationError
+
+from attendance_teams_bot.mcp.contracts import (
+    ATTENDANCE_MCP_CONTRACT_HEADER,
+    ATTENDANCE_MCP_CONTRACT_MAJOR,
+    CORRELATION_ID_HEADER,
+    SELF_ATTENDANCE_TOOL,
+    AttendanceEventPage,
+    McpToolFailure,
+)
+
+_VERSION = re.compile(r"^(?P<major>[0-9]+)\.[0-9]+\.[0-9]+$")
+
+
+class McpContractIncompatible(Exception):
+    """The remote server does not implement the supported MCP contract major."""
+
+
+class AttendanceToolFailure(Exception):
+    def __init__(self, failure: McpToolFailure) -> None:
+        self.failure = failure
+        super().__init__(failure.code)
+
+
+class AttendanceMcpUnavailable(Exception):
+    """The remote MCP server could not provide a valid attendance response."""
 
 
 class AttendanceMcpClient(Protocol):
-    def list_my_attendance_events(
+    async def list_my_attendance_events(
         self,
         *,
-        access_token: str,
+        access_token: SecretStr,
+        correlation_id: UUID,
         start_date: date,
         end_date: date,
-    ) -> tuple[str, ...]: ...
+    ) -> AttendanceEventPage: ...
+
+
+HttpClientFactory = Callable[[dict[str, str]], httpx.AsyncClient]
+
+
+class StreamableHttpAttendanceMcpClient:
+    def __init__(
+        self,
+        *,
+        endpoint: str,
+        timeout_seconds: float,
+        http_client_factory: HttpClientFactory | None = None,
+    ) -> None:
+        self._endpoint = endpoint
+        self._timeout_seconds = timeout_seconds
+        self._http_client_factory = http_client_factory
+
+    async def list_my_attendance_events(
+        self,
+        *,
+        access_token: SecretStr,
+        correlation_id: UUID,
+        start_date: date,
+        end_date: date,
+    ) -> AttendanceEventPage:
+        headers = {
+            "Authorization": f"Bearer {access_token.get_secret_value()}",
+            CORRELATION_ID_HEADER: str(correlation_id),
+            ATTENDANCE_MCP_CONTRACT_HEADER: ATTENDANCE_MCP_CONTRACT_MAJOR,
+        }
+        async with AsyncExitStack() as stack:
+            http_client = self._create_http_client(headers)
+            stack.push_async_callback(http_client.aclose)
+            try:
+                read_stream, write_stream, _ = await stack.enter_async_context(
+                    streamable_http_client(self._endpoint, http_client=http_client)
+                )
+                session = await stack.enter_async_context(ClientSession(read_stream, write_stream))
+                await session.initialize()
+                result = await session.call_tool(
+                    SELF_ATTENDANCE_TOOL,
+                    {
+                        "start_date": start_date.isoformat(),
+                        "end_date": end_date.isoformat(),
+                        "limit": 50,
+                        "offset": 0,
+                    },
+                )
+            except McpContractIncompatible:
+                raise
+            except (httpx.HTTPError, TimeoutError, ValueError) as error:
+                raise AttendanceMcpUnavailable from error
+
+        text = self._tool_result_text(result.content)
+        if result.isError:
+            try:
+                raise AttendanceToolFailure(McpToolFailure.model_validate_json(text))
+            except ValidationError as error:
+                raise AttendanceMcpUnavailable from error
+        try:
+            return AttendanceEventPage.model_validate(json.loads(text))
+        except (ValidationError, json.JSONDecodeError) as error:
+            raise AttendanceMcpUnavailable from error
+
+    def _create_http_client(self, headers: dict[str, str]) -> httpx.AsyncClient:
+        if self._http_client_factory is not None:
+            client = self._http_client_factory(headers)
+            client.event_hooks.setdefault("response", []).append(self._validate_contract_version)
+            return client
+        return httpx.AsyncClient(
+            headers=headers,
+            timeout=httpx.Timeout(self._timeout_seconds),
+            event_hooks={"response": [self._validate_contract_version]},
+        )
+
+    async def _validate_contract_version(self, response: httpx.Response) -> None:
+        version = response.headers.get(ATTENDANCE_MCP_CONTRACT_HEADER)
+        match = _VERSION.fullmatch(version or "")
+        if match is None or match.group("major") != ATTENDANCE_MCP_CONTRACT_MAJOR:
+            raise McpContractIncompatible
+
+    @staticmethod
+    def _tool_result_text(content: Sequence[object]) -> str:
+        for item in content:
+            text = getattr(item, "text", None)
+            if isinstance(text, str):
+                return text
+        raise AttendanceMcpUnavailable
