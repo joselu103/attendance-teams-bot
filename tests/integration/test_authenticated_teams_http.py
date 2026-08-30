@@ -35,3 +35,24 @@ async def test_authenticated_endpoint_rejects_requests_without_bot_service_crede
         response = await client.post("/api/messages", json={"type": "message"})
 
     assert response.status_code == 401
+
+
+@pytest.mark.anyio
+async def test_authenticated_endpoint_exposes_a_health_probe(monkeypatch) -> None:
+    monkeypatch.setenv("CONNECTIONS__SERVICE_CONNECTION__SETTINGS__CLIENTID", str(uuid4()))
+    monkeypatch.setenv("CONNECTIONS__SERVICE_CONNECTION__SETTINGS__TENANTID", str(uuid4()))
+    monkeypatch.setenv("CONNECTIONS__SERVICE_CONNECTION__SETTINGS__CLIENTSECRET", token_urlsafe())
+    connection = Settings().teams_connection
+    assert connection is not None
+    app = create_authenticated_teams_http_app(
+        connection=connection,
+        handler=BotServiceConnectivityHandler(),
+    )
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="https://test",
+    ) as client:
+        response = await client.get("/health")
+
+    assert response.status_code == 200
