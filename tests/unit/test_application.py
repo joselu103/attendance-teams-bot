@@ -1,43 +1,71 @@
-from __future__ import annotations
-
 from datetime import date
+from uuid import UUID
 
+import pytest
+from pydantic import SecretStr
+
+from attendance_teams_bot.agent.contracts import ListMyAttendanceIntent
 from attendance_teams_bot.application import create_application
+from attendance_teams_bot.mcp.contracts import AttendanceEvent, AttendanceEventPage
 
 
-class FakeIdentityProvider:
-    def authenticate(self, user_id: str) -> str:
-        assert user_id == "teams-user-123"
-        return "verified-user-token"
+class FakeIntentSelector:
+    def select_intent(self, message: str) -> ListMyAttendanceIntent:
+        assert message == "Show my attendance from 2026-08-10 to 2026-08-10"
+        return ListMyAttendanceIntent(date(2026, 8, 10), date(2026, 8, 10))
 
 
 class FakeMcpClient:
-    def list_my_attendance_events(
+    async def list_my_attendance_events(
         self,
         *,
-        access_token: str,
+        access_token: SecretStr,
+        correlation_id: UUID,
         start_date: date,
         end_date: date,
-    ) -> tuple[str, ...]:
-        raise AssertionError("The MCP client must not be called for a greeting")
+    ) -> AttendanceEventPage:
+        assert access_token == SecretStr("mcp-token")
+        assert correlation_id == UUID("11111111-1111-1111-1111-111111111111")
+        assert start_date == end_date == date(2026, 8, 10)
+        return AttendanceEventPage(
+            items=(
+                AttendanceEvent(
+                    attendance_event_id=100,
+                    employee_id=42,
+                    punch_type="Remote work",
+                    location="Home",
+                    checked_in_at=None,
+                    checked_out_at=None,
+                    note=None,
+                ),
+            ),
+            limit=50,
+            offset=0,
+            next_offset=None,
+        )
 
 
-class FakeLanguageModel:
-    def select_intent(self, message: str) -> str:
-        raise AssertionError("The LLM must not be called for a greeting")
+@pytest.fixture
+def anyio_backend() -> str:
+    return "asyncio"
 
 
-def test_application_returns_a_safe_greeting_without_calling_external_adapters() -> None:
+@pytest.mark.anyio
+async def test_application_calls_the_requester_scoped_client_without_rendering_internal_ids() -> (
+    None
+):
     application = create_application(
-        identity_provider=FakeIdentityProvider(),
+        intent_selector=FakeIntentSelector(),
         mcp_client=FakeMcpClient(),
-        language_model=FakeLanguageModel(),
+        correlation_id_factory=lambda: UUID("11111111-1111-1111-1111-111111111111"),
     )
 
-    response = application.handle(
-        user_id="teams-user-123",
-        message="Hello",
+    response = await application.handle(
+        message="Show my attendance from 2026-08-10 to 2026-08-10",
+        mcp_access_token=SecretStr("mcp-token"),
     )
 
-    assert response.text == "Hello. Ask me about your attendance for a specific date range."
-    assert response.request is None
+    assert "Remote work" in response.text
+    assert "Home" in response.text
+    assert "42" not in response.text
+    assert "100" not in response.text
