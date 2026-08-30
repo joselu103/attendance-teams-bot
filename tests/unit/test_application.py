@@ -6,6 +6,7 @@ from pydantic import SecretStr
 
 from attendance_teams_bot.agent.contracts import ListMyAttendanceIntent
 from attendance_teams_bot.application import create_application
+from attendance_teams_bot.mcp.client import AttendanceMcpUnavailable
 from attendance_teams_bot.mcp.contracts import AttendanceEvent, AttendanceEventPage
 
 
@@ -69,3 +70,32 @@ async def test_application_calls_the_requester_scoped_client_without_rendering_i
     assert "Home" in response.text
     assert "42" not in response.text
     assert "100" not in response.text
+
+
+class UnavailableMcpClient:
+    async def list_my_attendance_events(
+        self,
+        *,
+        access_token: SecretStr,
+        correlation_id: UUID,
+        start_date: date,
+        end_date: date,
+    ) -> AttendanceEventPage:
+        del access_token, correlation_id, start_date, end_date
+        raise AttendanceMcpUnavailable("endpoint details")
+
+
+@pytest.mark.anyio
+async def test_application_hides_mcp_failure_details() -> None:
+    application = create_application(
+        intent_selector=FakeIntentSelector(),
+        mcp_client=UnavailableMcpClient(),
+    )
+
+    response = await application.handle(
+        message="Show my attendance from 2026-08-10 to 2026-08-10",
+        mcp_access_token=SecretStr("mcp-token"),
+    )
+
+    assert response.text == "Attendance data is temporarily unavailable. Please try again later."
+    assert "endpoint" not in response.text

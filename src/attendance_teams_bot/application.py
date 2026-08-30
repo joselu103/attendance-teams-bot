@@ -8,7 +8,12 @@ from uuid import UUID, uuid4
 from pydantic import SecretStr
 
 from attendance_teams_bot.agent.contracts import BotResponse, Clarification, ListMyAttendanceIntent
-from attendance_teams_bot.mcp.client import AttendanceMcpClient
+from attendance_teams_bot.mcp.client import (
+    AttendanceMcpClient,
+    AttendanceMcpUnavailable,
+    AttendanceToolFailure,
+    McpContractIncompatible,
+)
 from attendance_teams_bot.mcp.contracts import AttendanceEvent, AttendanceEventPage
 
 
@@ -26,12 +31,17 @@ class Application:
         intent = self.intent_selector.select_intent(message)
         if isinstance(intent, Clarification):
             return BotResponse(text=intent.message)
-        page = await self.mcp_client.list_my_attendance_events(
-            access_token=mcp_access_token,
-            correlation_id=self.correlation_id_factory(),
-            start_date=intent.start_date,
-            end_date=intent.end_date,
-        )
+        try:
+            page = await self.mcp_client.list_my_attendance_events(
+                access_token=mcp_access_token,
+                correlation_id=self.correlation_id_factory(),
+                start_date=intent.start_date,
+                end_date=intent.end_date,
+            )
+        except AttendanceMcpUnavailable, AttendanceToolFailure, McpContractIncompatible:
+            return BotResponse(
+                text="Attendance data is temporarily unavailable. Please try again later."
+            )
         return BotResponse(text=_render_attendance_page(page))
 
 
