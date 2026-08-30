@@ -23,7 +23,7 @@ from pydantic import SecretStr
 from starlette.responses import Response
 
 from attendance_teams_bot.agent.contracts import BotResponse
-from attendance_teams_bot.auth.obo import MsalOboTokenExchange
+from attendance_teams_bot.auth.obo import DelegatedAuthenticationUnavailable, MsalOboTokenExchange
 from attendance_teams_bot.settings import TeamsConnectionSettings
 from attendance_teams_bot.teams.authenticated import (
     AttendanceMessageHandler,
@@ -91,7 +91,14 @@ async def route_attendance_turn(
     if not message:
         await context.send_activity("Please send a message so I can help.")
         return
-    token = await obo_token_exchange.exchange(await sso_token_provider.get_token(context))
+    try:
+        token = await obo_token_exchange.exchange(await sso_token_provider.get_token(context))
+    except (DelegatedAuthenticationUnavailable, RuntimeError) as error:
+        del error
+        await context.send_activity(
+            "Authentication is temporarily unavailable. Please try again later."
+        )
+        return
     response = await handler.handle(message=message, mcp_access_token=token)
     await context.send_activity(response.text)
 
