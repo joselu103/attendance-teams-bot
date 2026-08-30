@@ -17,8 +17,10 @@ from microsoft_agents.hosting.fastapi import (
     jwt_authorization_decorator,
     start_agent_process,
 )
+from pydantic import SecretStr
 from starlette.responses import Response
 
+from attendance_teams_bot.agent.contracts import BotResponse
 from attendance_teams_bot.settings import TeamsConnectionSettings
 from attendance_teams_bot.teams.authenticated import ChannelAuthenticatedMessageHandler
 
@@ -33,6 +35,36 @@ class _TurnContext(Protocol):
     def activity(self) -> _Activity: ...
 
     async def send_activity(self, text: str) -> object: ...
+
+
+class _AttendanceHandler(Protocol):
+    async def handle(self, *, message: str, mcp_access_token: SecretStr) -> BotResponse: ...
+
+
+class _SsoTokenProvider(Protocol):
+    async def get_token(self, context: _TurnContext) -> SecretStr: ...
+
+
+class _OboTokenExchange(Protocol):
+    async def exchange(self, user_assertion: SecretStr) -> SecretStr: ...
+
+
+async def route_attendance_turn(
+    *,
+    context: _TurnContext,
+    handler: _AttendanceHandler,
+    sso_token_provider: _SsoTokenProvider,
+    obo_token_exchange: _OboTokenExchange,
+) -> None:
+    if context.activity.type != "message" or context.activity.text is None:
+        return
+    message = context.activity.text.strip()
+    if not message:
+        await context.send_activity("Please send a message so I can help.")
+        return
+    token = await obo_token_exchange.exchange(await sso_token_provider.get_token(context))
+    response = await handler.handle(message=message, mcp_access_token=token)
+    await context.send_activity(response.text)
 
 
 async def route_authenticated_turn(

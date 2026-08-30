@@ -1,9 +1,13 @@
 from dataclasses import dataclass, field
 
 import pytest
+from pydantic import SecretStr
 
 from attendance_teams_bot.agent.contracts import BotResponse
-from attendance_teams_bot.teams.microsoft_agents import route_authenticated_turn
+from attendance_teams_bot.teams.microsoft_agents import (
+    route_attendance_turn,
+    route_authenticated_turn,
+)
 
 
 @dataclass
@@ -54,4 +58,42 @@ async def test_authenticated_message_routes_trimmed_text_and_sends_the_reply() -
     await route_authenticated_turn(context=context, handler=handler)
 
     assert handler.messages == ["Hello"]
+    assert context.sent_texts == ["safe reply"]
+
+
+@dataclass
+class RecordingAttendanceHandler:
+    received_token: SecretStr | None = None
+
+    async def handle(self, *, message: str, mcp_access_token: SecretStr) -> BotResponse:
+        assert message == "Show my attendance"
+        self.received_token = mcp_access_token
+        return BotResponse(text="safe reply")
+
+
+class FakeSsoTokenProvider:
+    async def get_token(self, context: FakeTurnContext) -> SecretStr:
+        assert context.activity.text == "Show my attendance"
+        return SecretStr("teams-token")
+
+
+class FakeOboTokenExchange:
+    async def exchange(self, user_assertion: SecretStr) -> SecretStr:
+        assert user_assertion.get_secret_value() == "teams-token"
+        return SecretStr("mcp-token")
+
+
+@pytest.mark.anyio
+async def test_attendance_turn_passes_only_the_obo_token_to_the_handler() -> None:
+    context = FakeTurnContext(activity=FakeActivity(type="message", text="Show my attendance"))
+    handler = RecordingAttendanceHandler()
+
+    await route_attendance_turn(
+        context=context,
+        handler=handler,
+        sso_token_provider=FakeSsoTokenProvider(),
+        obo_token_exchange=FakeOboTokenExchange(),
+    )
+
+    assert handler.received_token == SecretStr("mcp-token")
     assert context.sent_texts == ["safe reply"]
