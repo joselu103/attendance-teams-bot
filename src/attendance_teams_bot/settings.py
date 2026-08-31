@@ -68,6 +68,8 @@ class Settings(BaseSettings):
     def validate_teams_mode(self) -> Self:
         if self.mode is RuntimeMode.TEAMS and self.teams_connection is None:
             raise ValueError("teams mode requires Bot Service configuration")
+        if self.attendance_integration_enabled and self.mode is not RuntimeMode.TEAMS:
+            raise ValueError("enabled attendance integration requires teams runtime mode")
         if self.attendance_integration_enabled and self.attendance_integration is None:
             raise ValueError(
                 "enabled attendance integration requires MCP and Teams SSO configuration"
@@ -91,6 +93,8 @@ class Settings(BaseSettings):
 
     @property
     def attendance_integration(self) -> AttendanceIntegrationSettings | None:
+        if not self.attendance_integration_enabled:
+            return None
         if (
             self.mcp_endpoint is None
             or self.mcp_scope is None

@@ -136,11 +136,6 @@ def test_attendance_factory_configures_required_teams_sso_handler(monkeypatch) -
 
             return decorate
 
-        def build(self):
-            from fastapi import FastAPI
-
-            return FastAPI()
-
     class FakeConnectionManager:
         def __init__(self, **kwargs: object) -> None:
             del kwargs

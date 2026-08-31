@@ -61,8 +61,36 @@ def test_settings_reads_the_mcp_endpoint_from_the_environment(monkeypatch) -> No
     assert str(settings.mcp_endpoint) == "https://attendance-crmt.example.test/mcp"
 
 
+def test_disabled_flag_suppresses_complete_attendance_configuration(monkeypatch) -> None:
+    monkeypatch.setenv("BOT_RUNTIME_MODE", "teams")
+    monkeypatch.setenv("ATTENDANCE_INTEGRATION_ENABLED", "false")
+    monkeypatch.setenv("MCP_ENDPOINT", "https://attendance-crmt.example.test/mcp")
+    monkeypatch.setenv("MCP_SCOPE", "api://11111111-1111-1111-1111-111111111111/attendance.access")
+    monkeypatch.setenv("TEAMS_SSO_OAUTH_CONNECTION_NAME", "AttendanceTeamsSso")
+    monkeypatch.setenv("CONNECTIONS__SERVICE_CONNECTION__SETTINGS__CLIENTID", str(uuid4()))
+    monkeypatch.setenv("CONNECTIONS__SERVICE_CONNECTION__SETTINGS__TENANTID", str(uuid4()))
+    monkeypatch.setenv("CONNECTIONS__SERVICE_CONNECTION__SETTINGS__CLIENTSECRET", "test-only-value")
+
+    assert Settings().attendance_integration is None
+
+
+def test_enabled_attendance_integration_requires_teams_runtime(monkeypatch) -> None:
+    monkeypatch.setenv("BOT_RUNTIME_MODE", "local")
+    monkeypatch.setenv("ATTENDANCE_INTEGRATION_ENABLED", "true")
+    monkeypatch.setenv("MCP_ENDPOINT", "https://attendance-crmt.example.test/mcp")
+    monkeypatch.setenv("MCP_SCOPE", "api://11111111-1111-1111-1111-111111111111/attendance.access")
+    monkeypatch.setenv("TEAMS_SSO_OAUTH_CONNECTION_NAME", "AttendanceTeamsSso")
+
+    with pytest.raises(ValidationError, match="requires teams runtime mode"):
+        Settings()
+
+
 def test_settings_build_complete_attendance_integration(monkeypatch) -> None:
     monkeypatch.setenv("ATTENDANCE_INTEGRATION_ENABLED", "true")
+    monkeypatch.setenv("BOT_RUNTIME_MODE", "teams")
+    monkeypatch.setenv("CONNECTIONS__SERVICE_CONNECTION__SETTINGS__CLIENTID", str(uuid4()))
+    monkeypatch.setenv("CONNECTIONS__SERVICE_CONNECTION__SETTINGS__TENANTID", str(uuid4()))
+    monkeypatch.setenv("CONNECTIONS__SERVICE_CONNECTION__SETTINGS__CLIENTSECRET", "test-only-value")
     monkeypatch.setenv("MCP_ENDPOINT", "https://attendance-crmt.example.test/mcp")
     monkeypatch.setenv("MCP_SCOPE", "api://11111111-1111-1111-1111-111111111111/attendance.access")
     monkeypatch.setenv("TEAMS_SSO_OAUTH_CONNECTION_NAME", "AttendanceTeamsSso")

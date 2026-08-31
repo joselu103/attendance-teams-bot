@@ -229,10 +229,16 @@ def create_attendance_teams_http_app(
             obo_token_exchange=obo_token_exchange,
         )
 
-    app = cast(FastAPI, agent_application.build())  # type: ignore[attr-defined]
+    app = FastAPI()
+    app.state.agent_configuration = connection_manager.get_default_connection_configuration()
 
     @app.get("/health")
     async def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.post("/api/messages", response_model=None)
+    @jwt_authorization_decorator  # type: ignore[untyped-decorator]
+    async def messages_handler(request: Request) -> Response | None:
+        return await start_agent_process(request, agent_application, adapter)
 
     return app
