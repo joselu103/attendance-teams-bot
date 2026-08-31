@@ -132,8 +132,9 @@ to obtain the downstream Attendance CRMT token (token B); only token B reaches
 the MCP client. Do not configure a downstream Attendance CRMT scope on the Azure
 Bot OAuth connection.
 
-The first enabled slice supports personal chat and the strict ISO-date command,
-for example: `Show my attendance from 2026-08-10 to 2026-08-12`.
+The first enabled slice supports only personal one-to-one chats and the strict ISO-date command, for example: `Show my attendance from 2026-08-10 to 2026-08-12`. Group and channel messages never acquire a Teams SSO token or call MCP. The bot rejects requests that name an employee, email address, or role target; it can return only the authenticated requester's data.
+
+The bot calls the canonical Attendance CRMT MCP contract [`1.2.0`](../attendance-crmt/docs/integrations/teams-bot-mcp-auth-contract.md) through `list_my_attendance_events`, requires offset-aware RFC 3339 timestamps, and renders only the first 50 events. When more data exists, its reply says so rather than retrieving another page. Tool errors map to fixed safe replies; backend messages, internal identifiers, tokens, and endpoints are not shown to Teams users or written to application logs. `ATTENDANCE_INTEGRATION_ENABLED=false` is authoritative even when all MCP settings are present.
 
 ## Container
 

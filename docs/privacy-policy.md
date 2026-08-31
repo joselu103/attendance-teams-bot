@@ -18,10 +18,7 @@ metadata.
 
 ## Current functionality
 
-At the effective date, the bot only returns a fixed connectivity response after
-Microsoft Bot Service authentication. It does not implement Microsoft Entra
-single sign-on, on-behalf-of token exchange, MCP integration, LLM processing, or
-access to Attendance CRMT or attendance data.
+At the effective date, the default runtime only returns a fixed connectivity response after Microsoft Bot Service authentication. When an organization explicitly enables the separately configured attendance route, the bot uses Teams SSO and an on-behalf-of exchange to call the Attendance CRMT MCP service for requester-scoped, read-only attendance data. The Attendance CRMT service remains the authority for identity mapping, authorization, audit, and data access.
 
 The application does not intentionally persist message content, employee data, or
 attendance data. Microsoft, Azure, and any organization operating Microsoft Teams
