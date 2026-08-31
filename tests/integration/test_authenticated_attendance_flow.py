@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from uuid import UUID, uuid4
 
 import pytest
@@ -14,9 +14,15 @@ from attendance_teams_bot.teams.microsoft_agents import route_attendance_turn
 
 
 @dataclass
+class FakeConversation:
+    conversation_type: str = "personal"
+
+
+@dataclass
 class FakeActivity:
     type: str
     text: str | None
+    conversation: FakeConversation = field(default_factory=FakeConversation)
 
 
 @dataclass
@@ -70,8 +76,8 @@ class RecordingMcpClient:
                     employee_id=7,
                     punch_type="Office",
                     location="Company",
-                    checked_in_at=datetime(2026, 8, 10, 8),
-                    checked_out_at=datetime(2026, 8, 10, 16),
+                    checked_in_at=datetime(2026, 8, 10, 8, tzinfo=UTC),
+                    checked_out_at=datetime(2026, 8, 10, 16, tzinfo=UTC),
                     note=None,
                 ),
             ),

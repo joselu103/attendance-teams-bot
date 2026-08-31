@@ -1,0 +1,20 @@
+{
+  "repo_name": "attendance-teams-bot",
+  "status": "ready",
+  "provided_exports": {
+    "interfaces_or_endpoints": [
+      "Authenticated Teams personal-chat requester-scoped read-only attendance flow using Attendance CRMT MCP contract 1.2.0 and list_my_attendance_events"
+    ],
+    "events": []
+  },
+  "dependencies_needed": {
+    "attendance-crmt": [
+      "Deployed non-production HTTPS /mcp endpoint implementing contract 1.2.0",
+      "Microsoft Entra API registration exposing attendance.access",
+      "Approved delegated OBO consent and production certificate configuration"
+    ]
+  },
+  "open_issues_or_blockers": [
+    "Real Teams attendance traffic remains disabled until the Entra, OBO, and deployed HTTPS MCP prerequisites are configured and verified end to end."
+  ]
+}
