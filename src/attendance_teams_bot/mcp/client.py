@@ -11,7 +11,7 @@ from uuid import UUID
 import httpx
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
-from pydantic import SecretStr, ValidationError
+from pydantic import SecretStr
 
 from attendance_teams_bot.mcp.contracts import (
     ATTENDANCE_MCP_CONTRACT_HEADER,
@@ -78,10 +78,10 @@ class StreamableHttpAttendanceMcpClient:
             CORRELATION_ID_HEADER: str(correlation_id),
             ATTENDANCE_MCP_CONTRACT_HEADER: ATTENDANCE_MCP_CONTRACT_MAJOR,
         }
-        async with AsyncExitStack() as stack:
-            http_client = self._create_http_client(headers)
-            stack.push_async_callback(http_client.aclose)
-            try:
+        try:
+            async with AsyncExitStack() as stack:
+                http_client = self._create_http_client(headers)
+                stack.push_async_callback(http_client.aclose)
                 read_stream, write_stream, _ = await stack.enter_async_context(
                     streamable_http_client(self._endpoint, http_client=http_client)
                 )
@@ -96,21 +96,14 @@ class StreamableHttpAttendanceMcpClient:
                         "offset": 0,
                     },
                 )
-            except McpContractIncompatible:
-                raise
-            except (httpx.HTTPError, TimeoutError, ValueError) as error:
-                raise AttendanceMcpUnavailable from error
-
-        text = self._tool_result_text(result.content)
-        if result.isError:
-            try:
+            text = self._tool_result_text(result.content)
+            if result.isError:
                 raise AttendanceToolFailure(McpToolFailure.model_validate_json(text))
-            except ValidationError as error:
-                raise AttendanceMcpUnavailable from error
-        try:
             return AttendanceEventPage.model_validate(json.loads(text))
-        except (ValidationError, json.JSONDecodeError) as error:
-            raise AttendanceMcpUnavailable from error
+        except AttendanceToolFailure, McpContractIncompatible:
+            raise
+        except Exception:
+            raise AttendanceMcpUnavailable from None
 
     def _create_http_client(self, headers: dict[str, str]) -> httpx.AsyncClient:
         if self._http_client_factory is not None:

@@ -6,6 +6,38 @@ from pydantic import ValidationError
 from attendance_teams_bot.mcp.contracts import AttendanceEventPage, McpToolFailure
 
 
+def test_tool_failure_rejects_noncanonical_diagnostics() -> None:
+    with pytest.raises(ValidationError, match="safe message"):
+        McpToolFailure.model_validate(
+            {
+                "code": "FORBIDDEN",
+                "message": "Denied for alice@example.test by policy row 42",
+            }
+        )
+
+
+def test_attendance_event_rejects_naive_timestamps() -> None:
+    with pytest.raises(ValidationError, match="UTC offset"):
+        AttendanceEventPage.model_validate(
+            {
+                "items": [
+                    {
+                        "attendance_event_id": 100,
+                        "employee_id": 42,
+                        "punch_type": "Remote work",
+                        "location": "Home",
+                        "checked_in_at": "2026-08-10T08:00:00",
+                        "checked_out_at": None,
+                        "note": None,
+                    }
+                ],
+                "limit": 50,
+                "offset": 0,
+                "next_offset": None,
+            }
+        )
+
+
 def test_attendance_event_page_parses_the_requester_scoped_wire_payload() -> None:
     page = AttendanceEventPage.model_validate(
         {
