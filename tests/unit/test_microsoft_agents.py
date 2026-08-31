@@ -15,9 +15,15 @@ from attendance_teams_bot.teams.microsoft_agents import (
 
 
 @dataclass
+class FakeConversation:
+    conversation_type: str | None
+
+
+@dataclass
 class FakeActivity:
     type: str
     text: str | None
+    conversation: FakeConversation | None = None
 
 
 @dataclass
@@ -171,7 +177,13 @@ def test_attendance_factory_configures_required_teams_sso_handler(monkeypatch) -
 
 @pytest.mark.anyio
 async def test_attendance_turn_passes_only_the_obo_token_to_the_handler() -> None:
-    context = FakeTurnContext(activity=FakeActivity(type="message", text="Show my attendance"))
+    context = FakeTurnContext(
+        activity=FakeActivity(
+            type="message",
+            text="Show my attendance",
+            conversation=FakeConversation("personal"),
+        )
+    )
     handler = RecordingAttendanceHandler()
 
     await route_attendance_turn(
@@ -183,6 +195,34 @@ async def test_attendance_turn_passes_only_the_obo_token_to_the_handler() -> Non
 
     assert handler.received_token == SecretStr("mcp-token")
     assert context.sent_texts == ["safe reply"]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("conversation_type", ["groupChat", "channel", None, "unknown"])
+async def test_attendance_turn_refuses_nonpersonal_conversations_before_sso(
+    conversation_type: str | None,
+) -> None:
+    class UnexpectedSso:
+        async def get_token(self, context: FakeTurnContext) -> SecretStr:
+            del context
+            raise AssertionError("nonpersonal conversation must not request SSO")
+
+    context = FakeTurnContext(
+        activity=FakeActivity(
+            type="message",
+            text="Show my attendance",
+            conversation=FakeConversation(conversation_type),
+        )
+    )
+
+    await route_attendance_turn(
+        context=context,
+        handler=RecordingAttendanceHandler(),
+        sso_token_provider=UnexpectedSso(),
+        obo_token_exchange=FakeOboTokenExchange(),
+    )
+
+    assert context.sent_texts == ["Attendance is available only in a personal chat."]
 
 
 class FakeTokenResponse:

@@ -31,9 +31,14 @@ from attendance_teams_bot.teams.authenticated import (
 )
 
 
+class _Conversation(Protocol):
+    conversation_type: str | None
+
+
 class _Activity(Protocol):
     type: str
     text: str | None
+    conversation: _Conversation | None
 
 
 class _TurnContext(Protocol):
@@ -86,6 +91,10 @@ async def route_attendance_turn(
     obo_token_exchange: _OboTokenExchange,
 ) -> None:
     if context.activity.type != "message" or context.activity.text is None:
+        return
+    conversation = context.activity.conversation
+    if conversation is None or conversation.conversation_type != "personal":
+        await context.send_activity("Attendance is available only in a personal chat.")
         return
     message = context.activity.text.strip()
     if not message:
