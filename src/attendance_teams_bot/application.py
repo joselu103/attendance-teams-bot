@@ -19,6 +19,8 @@ from attendance_teams_bot.mcp.client import (
 )
 from attendance_teams_bot.mcp.contracts import AttendanceEvent, AttendanceEventPage
 
+logging.basicConfig(level=logging.INFO, format="%(message)s")
+
 _LOGGER = logging.getLogger(__name__)
 _UNAVAILABLE_REPLY = "Attendance data is temporarily unavailable. Please try again later."
 _TOOL_FAILURE_REPLIES = {
