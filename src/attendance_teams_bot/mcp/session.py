@@ -99,7 +99,7 @@ class StreamableHttpAttendanceSessionFactory:
                 session = await stack.enter_async_context(ClientSession(read_stream, write_stream))
                 await session.initialize()
                 yield StreamableHttpAttendanceSession(session)
-        except (AttendanceToolFailure, McpContractIncompatible):
+        except AttendanceToolFailure, McpContractIncompatible:
             raise
         except Exception:
             raise AttendanceMcpUnavailable from None

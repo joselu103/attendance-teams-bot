@@ -81,7 +81,11 @@ def _parse_completion(completion: object) -> ModelTurn:
     tool_calls = getattr(message, "tool_calls", None)
     if tool_calls is None:
         return NoTool()
-    if not isinstance(tool_calls, Sequence) or isinstance(tool_calls, (str, bytes)) or len(tool_calls) != 1:
+    if (
+        not isinstance(tool_calls, Sequence)
+        or isinstance(tool_calls, (str, bytes))
+        or len(tool_calls) != 1
+    ):
         raise LanguageModelUnavailable
     return _parse_tool_call(tool_calls[0])
 

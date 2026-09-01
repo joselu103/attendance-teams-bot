@@ -108,14 +108,21 @@ async def test_openai_adapter_translates_one_tool_call_with_date_context() -> No
         arguments={"start_date": "2026-08-10", "end_date": "2026-08-12"},
     )
     assert complete.requests[0]["parallel_tool_calls"] is False
-    assert "Europe/Ljubljana" in cast(list[dict[str, str]], complete.requests[0]["messages"])[0]["content"]
-    assert "2026-08-15" in cast(list[dict[str, str]], complete.requests[0]["messages"])[0]["content"]
+    assert (
+        "Europe/Ljubljana"
+        in cast(list[dict[str, str]], complete.requests[0]["messages"])[0]["content"]
+    )
+    assert (
+        "2026-08-15" in cast(list[dict[str, str]], complete.requests[0]["messages"])[0]["content"]
+    )
 
 
 @pytest.mark.anyio
 async def test_openai_adapter_converts_plain_content_to_no_tool() -> None:
     model = OpenAiLanguageModel(
-        completion=FakeCompletionCallable(FakeCompletion(choices=(FakeChoice(FakeMessage(content="Worked.")),))),
+        completion=FakeCompletionCallable(
+            FakeCompletion(choices=(FakeChoice(FakeMessage(content="Worked.")),))
+        ),
         model="test-model",
     )
 
