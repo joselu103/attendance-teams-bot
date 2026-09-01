@@ -3,7 +3,9 @@
   "status": "ready",
   "provided_exports": {
     "interfaces_or_endpoints": [
-      "Authenticated Teams personal-chat requester-scoped read-only attendance flow using Attendance CRMT MCP contract 1.2.0 and list_my_attendance_events"
+      "Provider-neutral async LanguageModel interface with the OpenAI OPENAI_API_KEY and OPENAI_MODEL adapter contract",
+      "One-shot authenticated MCP 1.2.0 discovery and bot-approved list_my_attendance_events orchestration",
+      "Authenticated Teams personal-chat requester flow with deterministic local attendance rendering and no model result re-entry"
     ],
     "events": []
   },
@@ -15,6 +17,8 @@
     ]
   },
   "open_issues_or_blockers": [
-    "Real Teams attendance traffic remains disabled until the Entra, OBO, and deployed HTTPS MCP prerequisites are configured and verified end to end."
+    "Real Teams attendance traffic remains disabled until the Entra API registration, delegated OBO consent, certificate, and deployed HTTPS MCP prerequisites are configured and verified end to end.",
+    "OpenAI operational and privacy approval for processing Teams message text remains an external activation prerequisite.",
+    "Production identity mapping and attendance-data behavior require end-to-end verification against the deployed Attendance CRMT boundary."
   ]
 }
