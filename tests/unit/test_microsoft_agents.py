@@ -3,12 +3,14 @@ from uuid import uuid4
 
 import pytest
 from pydantic import SecretStr
+from starlette.responses import Response
 
 from attendance_teams_bot.agent.contracts import BotResponse
 from attendance_teams_bot.settings import TeamsConnectionSettings
 from attendance_teams_bot.teams.microsoft_agents import (
     TeamsAuthorizationSsoTokenProvider,
     create_attendance_teams_http_app,
+    normalize_oauth_invoke_response,
     route_attendance_turn,
     route_authenticated_turn,
 )
@@ -248,3 +250,21 @@ async def test_sso_provider_reads_a_token_from_the_sdk_authorization_boundary() 
     )
 
     assert token == SecretStr("teams-token")
+
+
+def test_failed_teams_sso_token_exchange_requests_interactive_sign_in() -> None:
+    response = normalize_oauth_invoke_response(
+        activity={
+            "type": "invoke",
+            "name": "signin/tokenExchange",
+            "value": {"id": "exchange-123"},
+        },
+        response=Response(status_code=501),
+        oauth_connection_name="attendance-teams-sso",
+    )
+
+    assert response.status_code == 412
+    assert response.body == (
+        b'{"id":"exchange-123","connectionName":"attendance-teams-sso",'
+        b'"failureDetail":"Token exchange failed; continue with interactive sign-in."}'
+    )

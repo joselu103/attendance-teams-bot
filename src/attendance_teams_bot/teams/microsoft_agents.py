@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Protocol, cast
 
 from fastapi import FastAPI, Request
@@ -20,7 +21,7 @@ from microsoft_agents.hosting.fastapi import (
     start_agent_process,
 )
 from pydantic import SecretStr
-from starlette.responses import Response
+from starlette.responses import JSONResponse, Response
 
 from attendance_teams_bot.agent.contracts import BotResponse
 from attendance_teams_bot.auth.obo import DelegatedAuthenticationUnavailable, MsalOboTokenExchange
@@ -81,6 +82,33 @@ class _SsoTokenProvider(Protocol):
 
 class _OboTokenExchange(Protocol):
     async def exchange(self, user_assertion: SecretStr) -> SecretStr: ...
+
+
+def normalize_oauth_invoke_response(
+    *,
+    activity: object,
+    response: Response | None,
+    oauth_connection_name: str,
+) -> Response | None:
+    """Fall back to interactive sign-in when Teams SSO token exchange is empty."""
+    if response is None or response.status_code != 501 or not isinstance(activity, Mapping):
+        return response
+    value = activity.get("value")
+    if (
+        activity.get("type") != "invoke"
+        or activity.get("name") != "signin/tokenExchange"
+        or not isinstance(value, Mapping)
+        or not isinstance(value.get("id"), str)
+    ):
+        return response
+    return JSONResponse(
+        status_code=412,
+        content={
+            "id": value["id"],
+            "connectionName": oauth_connection_name,
+            "failureDetail": "Token exchange failed; continue with interactive sign-in.",
+        },
+    )
 
 
 async def route_attendance_turn(
@@ -248,6 +276,12 @@ def create_attendance_teams_http_app(
     @app.post("/api/messages", response_model=None)
     @jwt_authorization_decorator  # type: ignore[untyped-decorator]
     async def messages_handler(request: Request) -> Response | None:
-        return await start_agent_process(request, agent_application, adapter)
+        activity = await request.json()
+        response = await start_agent_process(request, agent_application, adapter)
+        return normalize_oauth_invoke_response(
+            activity=activity,
+            response=response,
+            oauth_connection_name=oauth_connection_name,
+        )
 
     return app
