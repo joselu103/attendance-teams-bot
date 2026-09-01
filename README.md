@@ -124,6 +124,8 @@ MCP_ENDPOINT=https://<attendance-crmt-host>/mcp
 MCP_SCOPE=api://<attendance-crmt-api-app-id>/attendance.access
 MCP_TIMEOUT_SECONDS=10
 TEAMS_SSO_OAUTH_CONNECTION_NAME=<azure-bot-oauth-connection-name>
+OPENAI_API_KEY=<secret-openai-api-key>
+OPENAI_MODEL=<explicit-approved-model-name>
 ```
 
 `TEAMS_SSO_OAUTH_CONNECTION_NAME` obtains the Teams token (token A). The bot
@@ -132,9 +134,46 @@ to obtain the downstream Attendance CRMT token (token B); only token B reaches
 the MCP client. Do not configure a downstream Attendance CRMT scope on the Azure
 Bot OAuth connection.
 
-The first enabled slice supports only personal one-to-one chats and the strict ISO-date command, for example: `Show my attendance from 2026-08-10 to 2026-08-12`. Group and channel messages never acquire a Teams SSO token or call MCP. The bot rejects requests that name an employee, email address, or role target; it can return only the authenticated requester's data.
+`OPENAI_API_KEY` is a secret and `OPENAI_MODEL` is mandatory explicit runtime
+configuration; no production model is selected by default. Use an untracked
+local `.env` only for development and a deployment secret manager for the key.
+`ATTENDANCE_INTEGRATION_ENABLED=false` remains authoritative even if every
+Teams, MCP, and OpenAI value is present. When enabled, incomplete Teams, MCP, or
+OpenAI configuration fails startup rather than falling back to an attendance route.
 
-The bot calls the canonical Attendance CRMT MCP contract [`1.2.0`](../attendance-crmt/docs/integrations/teams-bot-mcp-auth-contract.md) through `list_my_attendance_events`, requires offset-aware RFC 3339 timestamps, and renders only the first 50 events. When more data exists, its reply says so rather than retrieving another page. Tool errors map to fixed safe replies; backend messages, internal identifiers, tokens, and endpoints are not shown to Teams users or written to application logs. `ATTENDANCE_INTEGRATION_ENABLED=false` is authoritative even when all MCP settings are present.
+### Constrained language-model and MCP policy
+
+The provider-neutral asynchronous `LanguageModel` boundary selects an action;
+OpenAI is the first adapter. Replacing OpenAI means implementing `LanguageModel`
+and changing provider composition only—not Teams handling, OBO, MCP transport,
+or the attendance application policy.
+
+For each accepted personal-chat turn, the bot opens one requester-authenticated
+MCP session with token B, discovers the catalog once, makes one model completion
+with a bot-owned tool definition, and permits at most one
+`list_my_attendance_events` call. The MCP advertisement must agree with the
+bot-owned requester-only schema; remote descriptions are never supplied as model
+instructions. The model may supply only `start_date` and `end_date`; the bot
+enforces inclusive Europe/Ljubljana calendar dates, a maximum 31-day range, and
+fixed `limit=50` / `offset=0` pagination. Identity, employee targets, roles,
+and pagination are never model-controlled.
+
+The first enabled slice supports only personal one-to-one chats. Group, meeting,
+channel, missing, and unknown conversation scope stop before SSO, OBO, OpenAI,
+or MCP. The bot calls Attendance CRMT MCP contract
+[`1.2.0`](../attendance-crmt/docs/integrations/teams-bot-mcp-auth-contract.md)
+and renders validated attendance locally and deterministically. Attendance
+records are deliberately **not** sent to OpenAI, avoiding a second model/tool
+loop and reducing employee-data exposure. Tokens, employee authority, arbitrary
+tools, provider or MCP diagnostics, internal identifiers, and notes do not enter
+model prompts or Teams replies. Stable tool failures map to fixed safe replies.
+
+This verified client-side behavior does not establish a real integration. Real
+attendance traffic remains disabled by default pending the Attendance CRMT
+non-production HTTPS `/mcp` deployment, Entra `attendance.access` API
+registration, delegated OBO consent, certificate configuration, end-to-end
+identity/data verification, and the required organizational privacy/provider and
+development-notice approvals.
 
 ## Container
 
@@ -160,7 +199,8 @@ only `CLIENTSECRET` from AWS Secrets Manager; never bake it into the image.
 
 ## Layout
 
-- `src/attendance_teams_bot/application.py`: transport-independent bot behavior.
+- `src/attendance_teams_bot/agent/`: provider-neutral model contract, OpenAI adapter, and one-shot policy.
+- `src/attendance_teams_bot/mcp/`: authenticated Streamable HTTP MCP session and contracts.
 - `src/attendance_teams_bot/local.py`: safe handler used before external adapters exist.
 - `src/attendance_teams_bot/composition.py`: local runtime dependency wiring.
 - `src/attendance_teams_bot/asgi.py`: exported FastAPI application.
