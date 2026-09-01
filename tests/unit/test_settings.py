@@ -85,6 +85,22 @@ def test_enabled_attendance_integration_requires_teams_runtime(monkeypatch) -> N
         Settings()
 
 
+def test_enabled_attendance_integration_requires_openai_configuration(monkeypatch) -> None:
+    monkeypatch.setenv("ATTENDANCE_INTEGRATION_ENABLED", "true")
+    monkeypatch.setenv("BOT_RUNTIME_MODE", "teams")
+    monkeypatch.setenv("CONNECTIONS__SERVICE_CONNECTION__SETTINGS__CLIENTID", str(uuid4()))
+    monkeypatch.setenv("CONNECTIONS__SERVICE_CONNECTION__SETTINGS__TENANTID", str(uuid4()))
+    monkeypatch.setenv("CONNECTIONS__SERVICE_CONNECTION__SETTINGS__CLIENTSECRET", "test-only-value")
+    monkeypatch.setenv("MCP_ENDPOINT", "https://attendance-crmt.example.test/mcp")
+    monkeypatch.setenv("MCP_SCOPE", "api://11111111-1111-1111-1111-111111111111/attendance.access")
+    monkeypatch.setenv("TEAMS_SSO_OAUTH_CONNECTION_NAME", "AttendanceTeamsSso")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_MODEL", raising=False)
+
+    with pytest.raises(ValidationError, match="OpenAI"):
+        Settings()
+
+
 def test_settings_build_complete_attendance_integration(monkeypatch) -> None:
     monkeypatch.setenv("ATTENDANCE_INTEGRATION_ENABLED", "true")
     monkeypatch.setenv("BOT_RUNTIME_MODE", "teams")
@@ -94,6 +110,8 @@ def test_settings_build_complete_attendance_integration(monkeypatch) -> None:
     monkeypatch.setenv("MCP_ENDPOINT", "https://attendance-crmt.example.test/mcp")
     monkeypatch.setenv("MCP_SCOPE", "api://11111111-1111-1111-1111-111111111111/attendance.access")
     monkeypatch.setenv("TEAMS_SSO_OAUTH_CONNECTION_NAME", "AttendanceTeamsSso")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-only-openai-key")
+    monkeypatch.setenv("OPENAI_MODEL", "gpt-5-mini")
 
     settings = Settings()
 
@@ -105,3 +123,4 @@ def test_settings_build_complete_attendance_integration(monkeypatch) -> None:
         settings.attendance_integration.delegated_scope
         == "api://11111111-1111-1111-1111-111111111111/attendance.access"
     )
+    assert settings.attendance_integration.openai.model == "gpt-5-mini"

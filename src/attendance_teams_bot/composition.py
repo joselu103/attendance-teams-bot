@@ -1,9 +1,9 @@
 from fastapi import FastAPI
 
-from attendance_teams_bot.agent.rule_based import RuleBasedIntentSelector
-from attendance_teams_bot.application import create_application
+from attendance_teams_bot.agent.openai import create_openai_language_model
+from attendance_teams_bot.agent.orchestrator import AttendanceAgent
 from attendance_teams_bot.local import LocalUnconfiguredHandler
-from attendance_teams_bot.mcp.client import StreamableHttpAttendanceMcpClient
+from attendance_teams_bot.mcp.session import StreamableHttpAttendanceSessionFactory
 from attendance_teams_bot.settings import RuntimeMode, Settings
 from attendance_teams_bot.teams.adapter import TeamsActivityAdapter
 from attendance_teams_bot.teams.authenticated import (
@@ -26,13 +26,16 @@ def create_http_app(settings: Settings) -> FastAPI:
             raise ValueError("teams mode requires Bot Service configuration")
         integration = settings.attendance_integration
         if integration is not None:
-            mcp_client = StreamableHttpAttendanceMcpClient(
+            mcp_session_factory = StreamableHttpAttendanceSessionFactory(
                 endpoint=str(integration.endpoint),
                 timeout_seconds=integration.timeout_seconds,
             )
-            application = create_application(
-                intent_selector=RuleBasedIntentSelector(),
-                mcp_client=mcp_client,
+            application = AttendanceAgent(
+                language_model=create_openai_language_model(
+                    api_key=integration.openai.api_key,
+                    model=integration.openai.model,
+                ),
+                mcp_session_factory=mcp_session_factory,
             )
             return create_attendance_teams_http_app(
                 connection=connection,

@@ -57,9 +57,8 @@ async def test_teams_runtime_composes_the_authenticated_http_app(monkeypatch) ->
 
 def test_teams_mode_composes_enabled_attendance_integration(monkeypatch) -> None:
     from attendance_teams_bot import composition
-    from attendance_teams_bot.agent.rule_based import RuleBasedIntentSelector
-    from attendance_teams_bot.application import Application
-    from attendance_teams_bot.mcp.client import StreamableHttpAttendanceMcpClient
+    from attendance_teams_bot.agent.orchestrator import AttendanceAgent
+    from attendance_teams_bot.mcp.session import StreamableHttpAttendanceSessionFactory
     from attendance_teams_bot.teams.authenticated import AttendanceApplicationHandler
 
     monkeypatch.setenv("BOT_RUNTIME_MODE", "teams")
@@ -70,8 +69,11 @@ def test_teams_mode_composes_enabled_attendance_integration(monkeypatch) -> None
     monkeypatch.setenv("MCP_ENDPOINT", "https://attendance.example.test/mcp")
     monkeypatch.setenv("MCP_SCOPE", "api://attendance-api/attendance.access")
     monkeypatch.setenv("TEAMS_SSO_OAUTH_CONNECTION_NAME", "attendance-teams-sso")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-only-openai-key")
+    monkeypatch.setenv("OPENAI_MODEL", "gpt-5-mini")
     recorded: dict[str, object] = {}
     expected_app = object()
+    expected_model = object()
 
     def fake_attendance_factory(**kwargs: object):
         recorded.update(kwargs)
@@ -82,6 +84,13 @@ def test_teams_mode_composes_enabled_attendance_integration(monkeypatch) -> None
         "create_attendance_teams_http_app",
         fake_attendance_factory,
     )
+    monkeypatch.setattr(
+        composition,
+        "create_openai_language_model",
+        lambda *, api_key, model: (
+            recorded.update(openai_api_key=api_key, openai_model=model) or expected_model
+        ),
+    )
 
     app = create_http_app(Settings())
 
@@ -91,9 +100,12 @@ def test_teams_mode_composes_enabled_attendance_integration(monkeypatch) -> None
     assert isinstance(recorded["attendance_handler"], AttendanceApplicationHandler)
     handler = recorded["attendance_handler"]
     assert isinstance(handler, AttendanceApplicationHandler)
-    assert isinstance(handler.application, Application)
-    assert isinstance(handler.application.intent_selector, RuleBasedIntentSelector)
-    assert isinstance(handler.application.mcp_client, StreamableHttpAttendanceMcpClient)
+    assert isinstance(handler.application, AttendanceAgent)
+    assert handler.application.language_model is expected_model
+    assert isinstance(
+        handler.application.mcp_session_factory, StreamableHttpAttendanceSessionFactory
+    )
+    assert recorded["openai_model"] == "gpt-5-mini"
 
 
 @pytest.mark.anyio

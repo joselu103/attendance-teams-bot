@@ -19,6 +19,13 @@ class TeamsConnectionSettings(BaseModel):
     client_secret: SecretStr
 
 
+class OpenAiSettings(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    api_key: SecretStr
+    model: str = Field(min_length=1)
+
+
 class AttendanceIntegrationSettings(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -26,6 +33,7 @@ class AttendanceIntegrationSettings(BaseModel):
     delegated_scope: str
     teams_sso_oauth_connection_name: str
     timeout_seconds: float
+    openai: OpenAiSettings
 
 
 class Settings(BaseSettings):
@@ -45,6 +53,8 @@ class Settings(BaseSettings):
         default=None,
         validation_alias="TEAMS_SSO_OAUTH_CONNECTION_NAME",
     )
+    openai_api_key: SecretStr | None = Field(default=None, validation_alias="OPENAI_API_KEY")
+    openai_model: str | None = Field(default=None, validation_alias="OPENAI_MODEL")
     mcp_timeout_seconds: float = Field(
         default=10.0,
         gt=0,
@@ -72,7 +82,7 @@ class Settings(BaseSettings):
             raise ValueError("enabled attendance integration requires teams runtime mode")
         if self.attendance_integration_enabled and self.attendance_integration is None:
             raise ValueError(
-                "enabled attendance integration requires MCP and Teams SSO configuration"
+                "enabled attendance integration requires Teams, MCP, and OpenAI configuration"
             )
         return self
 
@@ -99,16 +109,19 @@ class Settings(BaseSettings):
             self.mcp_endpoint is None
             or self.mcp_scope is None
             or self.teams_sso_oauth_connection_name is None
+            or self.openai_api_key is None
+            or self.openai_model is None
         ):
             return None
 
         delegated_scope = self.mcp_scope.strip()
         oauth_connection_name = self.teams_sso_oauth_connection_name.strip()
+        openai_model = self.openai_model.strip()
         endpoint = self.mcp_endpoint
         host = endpoint.host or ""
         is_loopback = host in {"localhost", "127.0.0.1", "::1"}
 
-        if not delegated_scope or not oauth_connection_name:
+        if not delegated_scope or not oauth_connection_name or not openai_model:
             return None
         if endpoint.path != "/mcp" or endpoint.query is not None or endpoint.fragment is not None:
             return None
@@ -120,4 +133,5 @@ class Settings(BaseSettings):
             delegated_scope=delegated_scope,
             teams_sso_oauth_connection_name=oauth_connection_name,
             timeout_seconds=self.mcp_timeout_seconds,
+            openai=OpenAiSettings(api_key=self.openai_api_key, model=openai_model),
         )
