@@ -1,4 +1,3 @@
-from datetime import date
 from uuid import UUID
 
 import httpx
@@ -7,12 +6,12 @@ from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import SecretStr
 
-from attendance_teams_bot.mcp.client import StreamableHttpAttendanceMcpClient
 from attendance_teams_bot.mcp.contracts import (
     ATTENDANCE_MCP_CONTRACT_HEADER,
     ATTENDANCE_MCP_CONTRACT_MAJOR,
     CORRELATION_ID_HEADER,
 )
+from attendance_teams_bot.mcp.session import StreamableHttpAttendanceSessionFactory
 
 
 class ContractHeaderApp:
@@ -54,10 +53,7 @@ def mcp_app() -> ContractHeaderApp:
 
     @server.tool()
     def list_my_attendance_events(
-        start_date: str,
-        end_date: str,
-        limit: int = 50,
-        offset: int = 0,
+        start_date: str, end_date: str, limit: int = 50, offset: int = 0
     ) -> dict[str, object]:
         assert start_date == "2026-08-10"
         assert end_date == "2026-08-10"
@@ -89,41 +85,39 @@ def anyio_backend() -> str:
 
 
 @pytest.mark.anyio
-async def test_official_client_calls_requester_scoped_tool(mcp_app: ContractHeaderApp) -> None:
+async def test_authenticated_session_discovers_and_calls_with_contract_headers(
+    mcp_app: ContractHeaderApp,
+) -> None:
     def http_client_factory(headers: dict[str, str]) -> httpx.AsyncClient:
         return httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=mcp_app),
-            base_url="http://localhost",
-            headers=headers,
+            transport=httpx.ASGITransport(app=mcp_app), base_url="http://localhost", headers=headers
         )
 
-    client = StreamableHttpAttendanceMcpClient(
-        endpoint="http://localhost/mcp",
-        timeout_seconds=10,
-        http_client_factory=http_client_factory,
+    factory = StreamableHttpAttendanceSessionFactory(
+        endpoint="http://localhost/mcp", timeout_seconds=10, http_client_factory=http_client_factory
     )
-
+    correlation_id = UUID("11111111-1111-1111-1111-111111111111")
     async with mcp_app._app.router.lifespan_context(mcp_app._app):
-        page = await client.list_my_attendance_events(
-            access_token=SecretStr("downstream-token"),
-            correlation_id=UUID("11111111-1111-1111-1111-111111111111"),
-            start_date=date(2026, 8, 10),
-            end_date=date(2026, 8, 10),
-        )
+        async with factory.open(
+            access_token=SecretStr("downstream-token"), correlation_id=correlation_id
+        ) as session:
+            tools = await session.list_tools()
+            page = await session.call_tool(
+                name="list_my_attendance_events",
+                arguments={
+                    "start_date": "2026-08-10",
+                    "end_date": "2026-08-10",
+                    "limit": 50,
+                    "offset": 0,
+                },
+            )
 
+    assert [tool.name for tool in tools] == ["list_my_attendance_events"]
     assert page.items[0].punch_type == "Remote work"
-    mcp_requests = [request for request in mcp_app.requests if request[":method"] != "OPTIONS"]
-    assert mcp_requests
-    missing_authorization = [
-        request[":method"] for request in mcp_requests if "authorization" not in request
-    ]
-    assert not missing_authorization
-    assert all(request["authorization"] == "Bearer downstream-token" for request in mcp_requests)
-    assert all(
-        request[CORRELATION_ID_HEADER.lower()] == "11111111-1111-1111-1111-111111111111"
-        for request in mcp_requests
-    )
-    assert all(
-        request[ATTENDANCE_MCP_CONTRACT_HEADER.lower()] == ATTENDANCE_MCP_CONTRACT_MAJOR
-        for request in mcp_requests
-    )
+    requests = [request for request in mcp_app.requests if request[":method"] != "OPTIONS"]
+    assert requests
+    assert {request["authorization"] for request in requests} == {"Bearer downstream-token"}
+    assert {request[CORRELATION_ID_HEADER.lower()] for request in requests} == {str(correlation_id)}
+    assert {request[ATTENDANCE_MCP_CONTRACT_HEADER.lower()] for request in requests} == {
+        ATTENDANCE_MCP_CONTRACT_MAJOR
+    }

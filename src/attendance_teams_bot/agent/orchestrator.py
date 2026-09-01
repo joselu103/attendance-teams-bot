@@ -19,7 +19,11 @@ from attendance_teams_bot.agent.language_model import (
     NoTool,
     ToolDefinition,
 )
-from attendance_teams_bot.application import _render_attendance_page
+from attendance_teams_bot.agent.rendering import (
+    TOOL_FAILURE_REPLIES,
+    UNAVAILABLE_REPLY,
+    render_attendance_page,
+)
 from attendance_teams_bot.mcp.client import (
     AttendanceMcpUnavailable,
     AttendanceToolFailure,
@@ -31,7 +35,6 @@ from attendance_teams_bot.mcp.contracts import (
     ListMyAttendanceArguments,
 )
 
-UNAVAILABLE_REPLY = "Attendance data is temporarily unavailable. Please try again later."
 INVALID_REQUEST_REPLY = "Please provide a date range of no more than 31 days."
 CLARIFICATION_REPLY = "Please ask for your attendance and include a date range."
 
@@ -113,13 +116,13 @@ class AttendanceAgent:
                 )
         except asyncio.CancelledError:
             raise
-        except AttendanceToolFailure:
-            return BotResponse(text=UNAVAILABLE_REPLY)
-        except (AttendanceMcpUnavailable, McpContractIncompatible, LanguageModelUnavailable):
+        except AttendanceToolFailure as error:
+            return BotResponse(text=TOOL_FAILURE_REPLIES.get(error.failure.code, UNAVAILABLE_REPLY))
+        except AttendanceMcpUnavailable, McpContractIncompatible, LanguageModelUnavailable:
             return BotResponse(text=UNAVAILABLE_REPLY)
         except Exception:
             return BotResponse(text=UNAVAILABLE_REPLY)
-        return BotResponse(text=_render_attendance_page(page))
+        return BotResponse(text=render_attendance_page(page))
 
 
 def _catalog_supports_self_attendance(tools: tuple[ToolDefinition, ...]) -> bool:

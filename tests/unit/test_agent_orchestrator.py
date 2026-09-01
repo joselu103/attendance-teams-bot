@@ -14,10 +14,12 @@ from attendance_teams_bot.agent.orchestrator import (
     AttendanceAgent,
     canonical_self_attendance_tool,
 )
+from attendance_teams_bot.mcp.client import AttendanceToolFailure
 from attendance_teams_bot.mcp.contracts import (
     SELF_ATTENDANCE_TOOL,
     AttendanceEvent,
     AttendanceEventPage,
+    McpToolFailure,
 )
 
 
@@ -34,6 +36,7 @@ class FakeLanguageModel:
 @dataclass
 class FakeMcpSession:
     tools: tuple[ToolDefinition, ...]
+    failure: AttendanceToolFailure | None = None
     calls: list[tuple[str, dict[str, object]]] = field(default_factory=list)
 
     async def list_tools(self) -> tuple[ToolDefinition, ...]:
@@ -41,6 +44,8 @@ class FakeMcpSession:
 
     async def call_tool(self, *, name: str, arguments: dict[str, object]) -> AttendanceEventPage:
         self.calls.append((name, arguments))
+        if self.failure is not None:
+            raise self.failure
         return page()
 
 
@@ -195,6 +200,27 @@ async def test_agent_accepts_exactly_31_inclusive_dates() -> None:
     await agent.handle(message="Show attendance", mcp_access_token=SecretStr("token-b"))
 
     assert len(session.calls) == 1
+
+
+@pytest.mark.anyio
+async def test_agent_preserves_stable_mcp_tool_failure_reply() -> None:
+    agent, _, session = build_agent(
+        ToolCall(
+            "call",
+            SELF_ATTENDANCE_TOOL,
+            {"start_date": "2026-08-10", "end_date": "2026-08-12"},
+        )
+    )
+    session.failure = AttendanceToolFailure(
+        McpToolFailure(
+            code="FORBIDDEN",
+            message="You do not have permission to do that.",
+        )
+    )
+
+    response = await agent.handle(message="Show attendance", mcp_access_token=SecretStr("token-b"))
+
+    assert response.text == "You do not have permission to view that attendance."
 
 
 @pytest.mark.anyio
