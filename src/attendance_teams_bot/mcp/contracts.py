@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
@@ -9,6 +9,23 @@ ATTENDANCE_MCP_CONTRACT_MAJOR = "1"
 ATTENDANCE_MCP_CONTRACT_HEADER = "X-Attendance-MCP-Contract-Version"
 CORRELATION_ID_HEADER = "X-Correlation-ID"
 SELF_ATTENDANCE_TOOL = "list_my_attendance_events"
+
+
+class ListMyAttendanceArguments(BaseModel):
+    """The only model-controlled values in the requester attendance contract."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    start_date: date
+    end_date: date
+
+    @model_validator(mode="after")
+    def validate_range(self) -> Self:
+        if self.start_date > self.end_date:
+            raise ValueError("end date precedes start date")
+        if (self.end_date - self.start_date).days > 30:
+            raise ValueError("date range exceeds 31 inclusive days")
+        return self
 
 
 class AttendanceEvent(BaseModel):
