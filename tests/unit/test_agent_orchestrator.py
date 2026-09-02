@@ -6,6 +6,7 @@ from uuid import UUID
 import pytest
 from pydantic import SecretStr
 
+from attendance_teams_bot.agent import orchestrator
 from attendance_teams_bot.agent.language_model import ModelRequest, NoTool, ToolCall, ToolDefinition
 from attendance_teams_bot.agent.orchestrator import (
     CLARIFICATION_REPLY,
@@ -236,3 +237,40 @@ async def test_agent_returns_fixed_clarification_for_no_tool_and_unknown_tool() 
     assert unknown_response.text == UNAVAILABLE_REPLY
     assert session.calls == []
     assert unknown_session.calls == []
+
+
+@pytest.mark.anyio
+async def test_agent_records_a_correlated_terminal_outcome_without_sensitive_data(
+    monkeypatch,
+) -> None:
+    agent, _, _ = build_agent(
+        ToolCall(
+            "call-1",
+            SELF_ATTENDANCE_TOOL,
+            {"start_date": "2026-08-10", "end_date": "2026-08-12"},
+        )
+    )
+    events: list[tuple[str, dict[str, object]]] = []
+
+    def record_event(_logger, _level: int, event: str, **fields: object) -> None:
+        events.append((event, fields))
+
+    monkeypatch.setattr(orchestrator, "log_event", record_event)
+
+    response = await agent.handle(
+        message="private attendance request",
+        mcp_access_token=SecretStr("token-b"),
+    )
+
+    assert response.text
+    assert len(events) == 1
+    event, fields = events[0]
+    assert event == "attendance_turn_completed"
+    assert fields["correlation_id"] == "11111111-1111-1111-1111-111111111111"
+    assert fields["stage"] == "rendering"
+    assert fields["outcome"] == "success"
+    assert fields["error_code"] is None
+    assert fields["error_type"] is None
+    assert isinstance(fields["duration_ms"], int)
+    assert "private attendance request" not in repr(events)
+    assert "token-b" not in repr(events)

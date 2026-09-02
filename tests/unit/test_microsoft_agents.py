@@ -7,6 +7,7 @@ from starlette.responses import Response
 
 from attendance_teams_bot.agent.contracts import BotResponse
 from attendance_teams_bot.settings import TeamsConnectionSettings
+from attendance_teams_bot.teams import microsoft_agents
 from attendance_teams_bot.teams.microsoft_agents import (
     TeamsAuthorizationSsoTokenProvider,
     create_attendance_teams_http_app,
@@ -268,3 +269,59 @@ def test_failed_teams_sso_token_exchange_requests_interactive_sign_in() -> None:
         b'{"id":"exchange-123","connectionName":"attendance-teams-sso",'
         b'"failureDetail":"Token exchange failed; continue with interactive sign-in."}'
     )
+
+
+def test_failed_teams_sso_token_exchange_records_a_safe_fallback_event(monkeypatch) -> None:
+    events: list[tuple[str, dict[str, object]]] = []
+
+    def record_event(_logger, _level: int, event: str, **fields: object) -> None:
+        events.append((event, fields))
+
+    monkeypatch.setattr(microsoft_agents, "log_event", record_event)
+
+    response = normalize_oauth_invoke_response(
+        activity={
+            "type": "invoke",
+            "name": "signin/tokenExchange",
+            "value": {"id": "secret-exchange-id"},
+        },
+        response=Response(status_code=501),
+        oauth_connection_name="attendance-teams-sso",
+    )
+
+    assert response.status_code == 412
+    assert events == [
+        (
+            "teams_sso_token_exchange_fallback",
+            {
+                "activity_type": "invoke",
+                "activity_name": "signin/tokenExchange",
+                "has_exchange_id": True,
+                "upstream_status_code": 501,
+                "outcome": "interactive_sign_in_requested",
+                "reason": "matching_token_exchange",
+            },
+        )
+    ]
+    assert "secret-exchange-id" not in repr(events)
+
+
+def test_unmatched_teams_sso_token_exchange_501_is_preserved_and_logged(monkeypatch) -> None:
+    events: list[tuple[str, dict[str, object]]] = []
+
+    def record_event(_logger, _level: int, event: str, **fields: object) -> None:
+        events.append((event, fields))
+
+    monkeypatch.setattr(microsoft_agents, "log_event", record_event)
+    response = Response(status_code=501)
+
+    normalized = normalize_oauth_invoke_response(
+        activity={"type": "invoke", "name": "signin/tokenExchange", "value": {}},
+        response=response,
+        oauth_connection_name="attendance-teams-sso",
+    )
+
+    assert normalized is response
+    assert events[0][0] == "teams_sso_token_exchange_fallback"
+    assert events[0][1]["outcome"] == "response_preserved"
+    assert events[0][1]["reason"] == "missing_exchange_id"

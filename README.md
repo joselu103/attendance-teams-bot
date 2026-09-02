@@ -177,11 +177,20 @@ development-notice approvals.
 
 ## Container
 
-Build the production image locally:
+Build the production image with immutable source provenance locally:
 
 ```bash
-docker build --tag attendance-teams-bot:dev .
+SHA="$(git rev-parse HEAD)"
+SHORT_SHA="$(git rev-parse --short=12 HEAD)"
+docker build --build-arg VCS_REF="$SHA" \
+  --tag "attendance-teams-bot:$SHORT_SHA" .
 ```
+
+The image publishes the full revision through the OCI
+`org.opencontainers.image.revision` label and `APP_VERSION` startup-log field.
+Deploy a commit-derived image tag or registry digest, never a floating development
+tag. See [Teams bot diagnostics](docs/operations/teams-bot-diagnostics.md) for
+secret-safe Container Apps and Teams troubleshooting.
 
 For a local authenticated probe, load values from the ignored `.env` file and
 expose the container only on the local loopback interface:

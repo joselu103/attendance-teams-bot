@@ -1,12 +1,17 @@
 # Keep the image runtime aligned with the project's required Python version.
+ARG VCS_REF=dev
 FROM python:3.14-slim
+
+ARG VCS_REF
+LABEL org.opencontainers.image.revision=${VCS_REF}
 
 # Copy a pinned uv executable rather than installing it through pip at build time.
 COPY --from=ghcr.io/astral-sh/uv:0.12.5 /uv /uvx /bin/
 
 WORKDIR /app
 
-ENV PYTHONDONTWRITEBYTECODE=1 \
+ENV APP_VERSION=${VCS_REF} \
+    PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \

@@ -1,8 +1,16 @@
 from enum import StrEnum
-from typing import Self
+from typing import Literal, Self
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl, SecretStr, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    HttpUrl,
+    SecretStr,
+    field_validator,
+    model_validator,
+)
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -39,6 +47,11 @@ class AttendanceIntegrationSettings(BaseModel):
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
+    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = Field(
+        default="INFO",
+        validation_alias="LOG_LEVEL",
+    )
+    app_version: str = Field(default="dev", validation_alias="APP_VERSION")
     mode: RuntimeMode = Field(
         default=RuntimeMode.LOCAL,
         validation_alias="BOT_RUNTIME_MODE",
@@ -73,6 +86,14 @@ class Settings(BaseSettings):
         default=None,
         validation_alias="CONNECTIONS__SERVICE_CONNECTION__SETTINGS__CLIENTSECRET",
     )
+
+    @field_validator("app_version")
+    @classmethod
+    def validate_app_version(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("APP_VERSION must not be blank")
+        return normalized
 
     @model_validator(mode="after")
     def validate_teams_mode(self) -> Self:

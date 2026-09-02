@@ -6,6 +6,31 @@ from pydantic import ValidationError
 from attendance_teams_bot.settings import RuntimeMode, Settings
 
 
+def test_logging_defaults_are_safe_and_operational(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("LOG_LEVEL", raising=False)
+    monkeypatch.delenv("APP_VERSION", raising=False)
+
+    settings = Settings()
+
+    assert settings.log_level == "INFO"
+    assert settings.app_version == "dev"
+
+
+def test_settings_reject_invalid_log_level(monkeypatch) -> None:
+    monkeypatch.setenv("LOG_LEVEL", "VERBOSE")
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+
+
+def test_settings_reject_blank_app_version(monkeypatch) -> None:
+    monkeypatch.setenv("APP_VERSION", "   ")
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+
+
 def test_settings_default_to_local_mode_without_a_dotenv_file(tmp_path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("BOT_RUNTIME_MODE")
@@ -56,7 +81,7 @@ def test_settings_loads_complete_teams_configuration_from_one_dotenv(tmp_path, m
 def test_settings_reads_the_mcp_endpoint_from_the_environment(monkeypatch) -> None:
     monkeypatch.setenv("MCP_ENDPOINT", "https://attendance-crmt.example.test/mcp")
 
-    settings = Settings()
+    settings = Settings(_env_file=None)
 
     assert str(settings.mcp_endpoint) == "https://attendance-crmt.example.test/mcp"
 
@@ -71,7 +96,7 @@ def test_disabled_flag_suppresses_complete_attendance_configuration(monkeypatch)
     monkeypatch.setenv("CONNECTIONS__SERVICE_CONNECTION__SETTINGS__TENANTID", str(uuid4()))
     monkeypatch.setenv("CONNECTIONS__SERVICE_CONNECTION__SETTINGS__CLIENTSECRET", "test-only-value")
 
-    assert Settings().attendance_integration is None
+    assert Settings(_env_file=None).attendance_integration is None
 
 
 def test_enabled_attendance_integration_requires_teams_runtime(monkeypatch) -> None:
@@ -82,7 +107,7 @@ def test_enabled_attendance_integration_requires_teams_runtime(monkeypatch) -> N
     monkeypatch.setenv("TEAMS_SSO_OAUTH_CONNECTION_NAME", "AttendanceTeamsSso")
 
     with pytest.raises(ValidationError, match="requires teams runtime mode"):
-        Settings()
+        Settings(_env_file=None)
 
 
 def test_enabled_attendance_integration_requires_openai_configuration(monkeypatch) -> None:
@@ -98,7 +123,7 @@ def test_enabled_attendance_integration_requires_openai_configuration(monkeypatc
     monkeypatch.delenv("OPENAI_MODEL", raising=False)
 
     with pytest.raises(ValidationError, match="OpenAI"):
-        Settings()
+        Settings(_env_file=None)
 
 
 def test_settings_build_complete_attendance_integration(monkeypatch) -> None:
@@ -113,7 +138,7 @@ def test_settings_build_complete_attendance_integration(monkeypatch) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "test-only-openai-key")
     monkeypatch.setenv("OPENAI_MODEL", "gpt-5-mini")
 
-    settings = Settings()
+    settings = Settings(_env_file=None)
 
     assert settings.attendance_integration is not None
     assert (
