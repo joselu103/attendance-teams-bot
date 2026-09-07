@@ -1,5 +1,9 @@
 # Directive: TEAMS-LLM-MCP-001
 
+> **Status:** Completed historical directive. Do not re-execute it. Read
+> `AGENT_STATE.json` and wait for a newly assigned directive before changing
+> this repository.
+
 ## Main Objective
 Replace the requester attendance flow's regex-only intent selection with a provider-neutral LLM orchestration boundary, using OpenAI API as the first adapter, while allowing the model to invoke only explicitly approved tools that are advertised by the authenticated Attendance CRMT MCP session.
 
