@@ -7,6 +7,8 @@ Before editing, read `AGENT_STATE.json`, the active `AGENT_INBOX.md`, and the
 applicable root guidance. Do not directly access attendance SQL Server, recreate
 attendance rules, or use a user- or model-supplied identity as authority.
 
+**Output Rule:** Wait for operations to finish. On success, output ONLY 3-5 bullet points summarizing results. No diffs, code dumps, or long explanations. (Details: `docs/agents/response-guide.md`)
+
 Load task-specific guidance:
 
 - [Boundary and authentication](docs/agent-guidance/boundary-and-authentication.md)
