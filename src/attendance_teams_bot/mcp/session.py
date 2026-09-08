@@ -41,14 +41,21 @@ class StreamableHttpAttendanceSession:
             name = getattr(tool, "name", None)
             description = getattr(tool, "description", None)
             input_schema = getattr(tool, "inputSchema", None)
+            annotations = getattr(tool, "annotations", None)
             if (
                 not isinstance(name, str)
                 or not isinstance(description, str)
                 or not isinstance(input_schema, Mapping)
+                or (annotations is not None and not isinstance(annotations, Mapping))
             ):
                 raise AttendanceMcpUnavailable
             tools.append(
-                ToolDefinition(name=name, description=description, input_schema=dict(input_schema))
+                ToolDefinition(
+                    name=name,
+                    description=description,
+                    input_schema=dict(input_schema),
+                    annotations={} if annotations is None else dict(annotations),
+                )
             )
         return tuple(tools)
 

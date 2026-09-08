@@ -100,6 +100,7 @@ def compatible_tool(description: str = "Remote description") -> ToolDefinition:
             "required": ["start_date", "end_date"],
             "additionalProperties": False,
         },
+        annotations={"readOnlyHint": True},
     )
 
 
@@ -154,6 +155,7 @@ async def test_agent_uses_bot_owned_schema_and_one_fixed_page_call() -> None:
         (),
         (ToolDefinition("admin_tool", "x", {"type": "object"}),),
         (compatible_tool(), compatible_tool()),
+        (compatible_tool(), ToolDefinition("unexpected_tool", "x", {"type": "object"})),
     ],
 )
 async def test_agent_fails_closed_before_model_for_incompatible_catalog(
@@ -187,6 +189,35 @@ async def test_agent_rejects_arguments_outside_requester_contract(
     response = await agent.handle(message="Show attendance", mcp_access_token=SecretStr("token-b"))
 
     assert response.text == INVALID_REQUEST_REPLY
+    assert session.calls == []
+
+
+@pytest.mark.anyio
+async def test_agent_rejects_an_oversized_model_argument_before_the_mcp_call() -> None:
+    agent, _, session = build_agent(
+        ToolCall(
+            "call",
+            SELF_ATTENDANCE_TOOL,
+            {"start_date": "2026-08-10", "end_date": "x" * 33},
+        )
+    )
+
+    response = await agent.handle(message="Show attendance", mcp_access_token=SecretStr("token-b"))
+
+    assert response.text == INVALID_REQUEST_REPLY
+    assert session.calls == []
+
+
+@pytest.mark.anyio
+async def test_agent_requires_the_remote_catalog_read_only_marker() -> None:
+    remote = compatible_tool()
+    remote = ToolDefinition(remote.name, remote.description, remote.input_schema)
+    agent, model, session = build_agent(ToolCall("call", SELF_ATTENDANCE_TOOL, {}), (remote,))
+
+    response = await agent.handle(message="Show attendance", mcp_access_token=SecretStr("token-b"))
+
+    assert response.text == UNAVAILABLE_REPLY
+    assert model.requests == []
     assert session.calls == []
 
 

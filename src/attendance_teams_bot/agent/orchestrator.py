@@ -56,8 +56,46 @@ class McpSessionFactory(Protocol):
     ) -> AbstractAsyncContextManager[AuthenticatedMcpSession]: ...
 
 
+@dataclass(frozen=True, slots=True)
+class FrozenReadOnlyTool:
+    """A bot-owned catalog entry, including its prompt, validation, and safe renderer."""
+
+    definition: ToolDefinition
+
+    def supports_remote(self, remote: ToolDefinition) -> bool:
+        return remote.annotations.get(
+            "readOnlyHint"
+        ) is True and _is_compatible_self_attendance_schema(remote.input_schema)
+
+    def validate_arguments(
+        self, arguments: Mapping[str, object]
+    ) -> ListMyAttendanceArguments | None:
+        if not _has_bounded_arguments(arguments):
+            return None
+        try:
+            return ListMyAttendanceArguments.model_validate(dict(arguments))
+        except ValidationError:
+            return None
+
+    async def call(
+        self, session: AuthenticatedMcpSession, arguments: ListMyAttendanceArguments
+    ) -> AttendanceEventPage:
+        return await session.call_tool(
+            name=self.definition.name,
+            arguments={
+                "start_date": arguments.start_date.isoformat(),
+                "end_date": arguments.end_date.isoformat(),
+                "limit": 50,
+                "offset": 0,
+            },
+        )
+
+    def render(self, page: AttendanceEventPage) -> str:
+        return render_attendance_page(page)
+
+
 def canonical_self_attendance_tool() -> ToolDefinition:
-    """Return a fresh bot-owned schema; remote MCP metadata is never prompted."""
+    """Return the bot-owned prompt schema; remote metadata is never prompted."""
     return ToolDefinition(
         name=SELF_ATTENDANCE_TOOL,
         description=(
@@ -72,7 +110,13 @@ def canonical_self_attendance_tool() -> ToolDefinition:
             "required": ["start_date", "end_date"],
             "additionalProperties": False,
         },
+        annotations={"readOnlyHint": True},
     )
+
+
+def frozen_read_only_catalog() -> tuple[FrozenReadOnlyTool, ...]:
+    """The first-party catalog is intentionally code-owned and exact-match only."""
+    return (FrozenReadOnlyTool(definition=canonical_self_attendance_tool()),)
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,7 +141,10 @@ class AttendanceAgent:
                 access_token=mcp_access_token, correlation_id=correlation_id
             ) as session:
                 stage = "mcp_catalog"
-                if not _catalog_supports_self_attendance(await session.list_tools()):
+                catalog = _catalog_intersection(
+                    await session.list_tools(), frozen_read_only_catalog()
+                )
+                if catalog is None:
                     outcome = "catalog_incompatible"
                     return BotResponse(text=UNAVAILABLE_REPLY)
                 stage = "model_completion"
@@ -106,32 +153,23 @@ class AttendanceAgent:
                         user_message=message,
                         reference_date=self.reference_date_factory(),
                         timezone="Europe/Ljubljana",
-                        tools=(canonical_self_attendance_tool(),),
+                        tools=tuple(policy.definition for policy in catalog.values()),
                     )
                 )
                 if isinstance(turn, NoTool):
                     outcome = "clarification"
                     return BotResponse(text=CLARIFICATION_REPLY)
-                if turn.name != SELF_ATTENDANCE_TOOL:
+                policy = catalog.get(turn.name)
+                if policy is None:
                     outcome = "tool_rejected"
                     return BotResponse(text=UNAVAILABLE_REPLY)
                 stage = "model_validation"
-                try:
-                    arguments = ListMyAttendanceArguments.model_validate(dict(turn.arguments))
-                except ValidationError:
+                arguments = policy.validate_arguments(turn.arguments)
+                if arguments is None:
                     outcome = "invalid_request"
-                    error_type = "ValidationError"
                     return BotResponse(text=INVALID_REQUEST_REPLY)
                 stage = "mcp_tool_call"
-                page = await session.call_tool(
-                    name=SELF_ATTENDANCE_TOOL,
-                    arguments={
-                        "start_date": arguments.start_date.isoformat(),
-                        "end_date": arguments.end_date.isoformat(),
-                        "limit": 50,
-                        "offset": 0,
-                    },
-                )
+                page = await policy.call(session, arguments)
         except asyncio.CancelledError:
             cancelled = True
             raise
@@ -165,12 +203,31 @@ class AttendanceAgent:
                     error_type=error_type,
                     duration_ms=max(0, round((perf_counter() - started_at) * 1000)),
                 )
-        return BotResponse(text=render_attendance_page(page))
+        return BotResponse(text=policy.render(page))
 
 
-def _catalog_supports_self_attendance(tools: tuple[ToolDefinition, ...]) -> bool:
-    matches = [tool for tool in tools if tool.name == SELF_ATTENDANCE_TOOL]
-    return len(matches) == 1 and _is_compatible_self_attendance_schema(matches[0].input_schema)
+def _catalog_intersection(
+    remote_tools: tuple[ToolDefinition, ...], policies: tuple[FrozenReadOnlyTool, ...]
+) -> dict[str, FrozenReadOnlyTool] | None:
+    configured = {policy.definition.name: policy for policy in policies}
+    remote_by_name = {tool.name: tool for tool in remote_tools}
+    if (
+        len(configured) != len(policies)
+        or len(remote_by_name) != len(remote_tools)
+        or remote_by_name.keys() != configured.keys()
+    ):
+        return None
+    if not all(policy.supports_remote(remote_by_name[name]) for name, policy in configured.items()):
+        return None
+    return configured
+
+
+def _has_bounded_arguments(arguments: Mapping[str, object]) -> bool:
+    """Keep unusably large model output out of validation and downstream calls."""
+    return len(arguments) <= 2 and all(
+        isinstance(key, str) and len(key) <= 64 and isinstance(value, str) and len(value) <= 32
+        for key, value in arguments.items()
+    )
 
 
 def _is_compatible_self_attendance_schema(schema: Mapping[str, object]) -> bool:
