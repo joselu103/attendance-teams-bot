@@ -149,14 +149,17 @@ and changing provider composition only—not Teams handling, OBO, MCP transport,
 or the attendance application policy.
 
 For each accepted personal-chat turn, the bot opens one requester-authenticated
-MCP session with token B, discovers the catalog once, makes one model completion
-with a bot-owned tool definition, and permits at most one
-`list_my_attendance_events` call. The MCP advertisement must agree with the
-bot-owned requester-only schema; remote descriptions are never supplied as model
-instructions. The model may supply only `start_date` and `end_date`; the bot
-enforces inclusive Europe/Ljubljana calendar dates, a maximum 31-day range, and
-fixed `limit=50` / `offset=0` pagination. Identity, employee targets, roles,
-and pagination are never model-controlled.
+MCP session with token B and discovers the catalog once. It intersects that
+advertisement with its frozen first-party catalog before calling the model:
+every advertised tool must be configured, unique, schema-compatible, and marked
+`readOnlyHint=true`; unknown, duplicate, missing, or writable tools fail closed.
+The current frozen catalog contains only `list_my_attendance_events`. Its
+bot-owned definition—not remote descriptions or metadata—is the only tool prompt
+given to the model, and permits at most one call. The model may supply only
+`start_date` and `end_date`; the bot enforces inclusive Europe/Ljubljana calendar
+dates, a maximum 31-day range, bounded arguments, and fixed `limit=50` /
+`offset=0` pagination. Identity, employee targets, roles, and pagination are
+never model-controlled.
 
 The first enabled slice supports only personal one-to-one chats. Group, meeting,
 channel, missing, and unknown conversation scope stop before SSO, OBO, OpenAI,

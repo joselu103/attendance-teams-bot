@@ -92,6 +92,7 @@ class RecordingMcpSession:
                     "required": ["start_date", "end_date"],
                     "additionalProperties": False,
                 },
+                annotations={"readOnlyHint": True},
             ),
         )
 
