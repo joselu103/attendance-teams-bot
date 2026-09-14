@@ -121,6 +121,66 @@ def log_event(logger: structlog.BoundLogger, level: int, event: str, **fields: o
     logger.log(level, event, **fields)
 
 
+def operation_event(
+    logger: structlog.BoundLogger,
+    *,
+    event: str,
+    handler: str,
+    operation: str,
+    step: str,
+    duration_ms: int | None = None,
+    error_type: str | None = None,
+    input_metadata: Mapping[str, object] | None = None,
+    correlation_id: UUID | str | None = None,
+) -> None:
+    """Emit one safe, uniformly shaped operation lifecycle event.
+
+    Callers must supply metadata that describes input shape only (never input values).
+    """
+    fields: dict[str, object] = {
+        "handler": handler,
+        "operation": operation,
+        "step": step,
+        "input_metadata": dict(input_metadata or {}),
+    }
+    if duration_ms is not None:
+        fields["duration_ms"] = duration_ms
+    if error_type is not None:
+        fields["error_type"] = error_type
+    if correlation_id is not None:
+        fields["correlation_id"] = str(correlation_id)
+    log_event(
+        logger,
+        logging.ERROR if event == "operation_failed" else logging.INFO,
+        event,
+        **fields,
+    )
+
+
+def authentication_event(
+    logger: structlog.BoundLogger,
+    *,
+    event: str,
+    scheme: str,
+    failure_reason: str | None = None,
+    user_or_client_id: str = _UNAVAILABLE,
+) -> None:
+    """Emit authentication state without accepting unverified channel identity."""
+    log_event(
+        logger,
+        logging.WARNING if event != "auth_validated" else logging.INFO,
+        event,
+        scheme=scheme,
+        failure_reason=failure_reason,
+        user_or_client_id=user_or_client_id,
+    )
+
+
+def message_input_metadata(message: str) -> dict[str, object]:
+    """Describe a message without retaining any part of its content."""
+    return {"message_present": bool(message), "message_length": len(message)}
+
+
 @contextmanager
 def correlation_scope(correlation_id: UUID | None = None) -> Iterator[UUID]:
     """Bind a generated or trusted incoming trace ID to the current async context."""

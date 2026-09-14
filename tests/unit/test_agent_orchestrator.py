@@ -283,10 +283,10 @@ async def test_agent_records_a_correlated_terminal_outcome_without_sensitive_dat
     )
     events: list[tuple[str, dict[str, object]]] = []
 
-    def record_event(_logger, _level: int, event: str, **fields: object) -> None:
-        events.append((event, fields))
+    def record_event(_logger, **fields: object) -> None:
+        events.append((str(fields.pop("event")), fields))
 
-    monkeypatch.setattr(orchestrator, "log_event", record_event)
+    monkeypatch.setattr(orchestrator, "operation_event", record_event)
 
     response = await agent.handle(
         message="private attendance request",
@@ -294,14 +294,54 @@ async def test_agent_records_a_correlated_terminal_outcome_without_sensitive_dat
     )
 
     assert response.text
-    assert len(events) == 1
-    event, fields = events[0]
-    assert event == "attendance_turn_completed"
-    assert fields["correlation_id"] == "11111111-1111-1111-1111-111111111111"
-    assert fields["stage"] == "rendering"
-    assert fields["outcome"] == "success"
-    assert fields["error_code"] is None
+    assert [event for event, _ in events] == [
+        "operation_started",
+        "operation_step_completed",
+        "operation_step_completed",
+        "operation_step_completed",
+        "operation_step_completed",
+        "operation_succeeded",
+    ]
+    event, fields = events[-1]
+    assert event == "operation_succeeded"
+    assert fields["handler"] == "AttendanceAgent.handle"
+    assert fields["operation"] == "attendance_orchestration"
+    assert fields["step"] == "rendering"
+    assert fields["input_metadata"]["outcome"] == "success"
+    assert fields["input_metadata"]["error_code"] is None
     assert fields["error_type"] is None
     assert isinstance(fields["duration_ms"], int)
     assert "private attendance request" not in repr(events)
     assert "token-b" not in repr(events)
+
+
+@pytest.mark.anyio
+async def test_agent_records_permission_denial_without_mcp_error_message(monkeypatch) -> None:
+    agent, _, session = build_agent(
+        ToolCall(
+            "call-1",
+            SELF_ATTENDANCE_TOOL,
+            {"start_date": "2026-08-10", "end_date": "2026-08-12"},
+        )
+    )
+    session.failure = AttendanceToolFailure(
+        McpToolFailure(code="FORBIDDEN", message="You do not have permission to do that.")
+    )
+    auth_events: list[dict[str, object]] = []
+
+    def record_auth_event(_logger, **fields: object) -> None:
+        auth_events.append(fields)
+
+    monkeypatch.setattr(orchestrator, "authentication_event", record_auth_event)
+
+    await agent.handle(message="private attendance request", mcp_access_token=SecretStr("token-b"))
+
+    assert auth_events == [
+        {
+            "event": "permission_denied",
+            "scheme": "attendance_mcp",
+            "failure_reason": "FORBIDDEN",
+        }
+    ]
+    assert "private attendance request" not in repr(auth_events)
+    assert "token-b" not in repr(auth_events)

@@ -5,6 +5,8 @@ from typing import Protocol
 
 from pydantic import SecretStr
 
+from attendance_teams_bot.observability import authentication_event, get_logger
+
 
 class AccessTokenProvider(Protocol):
     async def acquire_token_on_behalf_of(self, scopes: list[str], user_assertion: str) -> str: ...
@@ -30,7 +32,20 @@ class MsalOboTokenExchange:
                 user_assertion.get_secret_value(),
             )
         except Exception as error:
+            authentication_event(
+                get_logger("auth.obo"),
+                event="auth_failed",
+                scheme="delegated_obo",
+                failure_reason=type(error).__name__,
+            )
             raise DelegatedAuthenticationUnavailable from error
         if not token:
+            authentication_event(
+                get_logger("auth.obo"),
+                event="auth_failed",
+                scheme="delegated_obo",
+                failure_reason="empty_token",
+            )
             raise DelegatedAuthenticationUnavailable
+        authentication_event(get_logger("auth.obo"), event="auth_validated", scheme="delegated_obo")
         return SecretStr(token)
