@@ -9,6 +9,7 @@ from pydantic import SecretStr
 from attendance_teams_bot.agent import orchestrator
 from attendance_teams_bot.agent.language_model import ModelRequest, NoTool, ToolCall, ToolDefinition
 from attendance_teams_bot.agent.orchestrator import (
+    _LEGACY_READ_ONLY_TOOL_NAMES,
     CLARIFICATION_REPLY,
     INVALID_REQUEST_REPLY,
     UNAVAILABLE_REPLY,
@@ -104,6 +105,20 @@ def compatible_tool(description: str = "Remote description") -> ToolDefinition:
     )
 
 
+def legacy_read_only_catalog() -> tuple[ToolDefinition, ...]:
+    return tuple(
+        compatible_tool()
+        if name == SELF_ATTENDANCE_TOOL
+        else ToolDefinition(
+            name=name,
+            description="Unprompted legacy read-only tool",
+            input_schema={"type": "object"},
+            annotations={"readOnlyHint": True},
+        )
+        for name in sorted(_LEGACY_READ_ONLY_TOOL_NAMES)
+    )
+
+
 def build_agent(
     turn: ToolCall | NoTool, tools: tuple[ToolDefinition, ...] | None = None
 ) -> tuple[AttendanceAgent, FakeLanguageModel, FakeMcpSession]:
@@ -146,6 +161,26 @@ async def test_agent_uses_bot_owned_schema_and_one_fixed_page_call() -> None:
     assert "Internal" not in response.text
     assert "13" not in response.text
     assert "7" not in response.text
+
+
+@pytest.mark.anyio
+async def test_agent_admits_full_legacy_catalog_but_prompts_and_calls_only_self_tool() -> None:
+    agent, model, session = build_agent(
+        ToolCall(
+            "call-1", SELF_ATTENDANCE_TOOL, {"start_date": "2026-08-10", "end_date": "2026-08-12"}
+        ),
+        legacy_read_only_catalog(),
+    )
+
+    await agent.handle(message="Show attendance", mcp_access_token=SecretStr("token-b"))
+
+    assert model.requests[0].tools == (canonical_self_attendance_tool(),)
+    assert session.calls == [
+        (
+            SELF_ATTENDANCE_TOOL,
+            {"start_date": "2026-08-10", "end_date": "2026-08-12", "limit": 50, "offset": 0},
+        )
+    ]
 
 
 @pytest.mark.anyio
@@ -213,6 +248,49 @@ async def test_agent_requires_the_remote_catalog_read_only_marker() -> None:
     remote = compatible_tool()
     remote = ToolDefinition(remote.name, remote.description, remote.input_schema)
     agent, model, session = build_agent(ToolCall("call", SELF_ATTENDANCE_TOOL, {}), (remote,))
+
+    response = await agent.handle(message="Show attendance", mcp_access_token=SecretStr("token-b"))
+
+    assert response.text == UNAVAILABLE_REPLY
+    assert model.requests == []
+    assert session.calls == []
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "tools",
+    [
+        tuple(tool for tool in legacy_read_only_catalog() if tool.name != SELF_ATTENDANCE_TOOL),
+        tuple(
+            ToolDefinition(
+                tool.name,
+                tool.description,
+                {"type": "object"} if tool.name == SELF_ATTENDANCE_TOOL else tool.input_schema,
+                tool.annotations,
+            )
+            for tool in legacy_read_only_catalog()
+        ),
+        tuple(
+            ToolDefinition(tool.name, tool.description, tool.input_schema, {})
+            if tool.name == SELF_ATTENDANCE_TOOL
+            else tool
+            for tool in legacy_read_only_catalog()
+        ),
+        tuple(
+            ToolDefinition(
+                tool.name,
+                tool.description,
+                {"type": object()} if tool.name == "list_locations" else tool.input_schema,
+                tool.annotations,
+            )
+            for tool in legacy_read_only_catalog()
+        ),
+    ],
+)
+async def test_agent_rejects_missing_or_incompatible_selected_tool_in_legacy_catalog(
+    tools: tuple[ToolDefinition, ...],
+) -> None:
+    agent, model, session = build_agent(ToolCall("call", SELF_ATTENDANCE_TOOL, {}), tools)
 
     response = await agent.handle(message="Show attendance", mcp_access_token=SecretStr("token-b"))
 

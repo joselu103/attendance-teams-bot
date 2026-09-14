@@ -154,10 +154,11 @@ and changing provider composition only—not Teams handling, OBO, MCP transport,
 or the attendance application policy.
 
 For each accepted personal-chat turn, the bot opens one requester-authenticated
-MCP session with token B and discovers the catalog once. It intersects that
-advertisement with its frozen first-party catalog before calling the model:
-every advertised tool must be configured, unique, schema-compatible, and marked
-`readOnlyHint=true`; unknown, duplicate, missing, or writable tools fail closed.
+MCP session with token B and discovers the catalog once. It admits only the
+fourteen established version-1 read-only CRMT tool names; every advertised entry
+must be unique, safely formed, and marked `readOnlyHint=true`. The selected
+requester tool must also be present and schema-compatible. Unknown, duplicate,
+missing, malformed, or writable entries fail closed.
 The current frozen catalog contains only `list_my_attendance_events`. Its
 bot-owned definition—not remote descriptions or metadata—is the only tool prompt
 given to the model, and permits at most one call. The model may supply only

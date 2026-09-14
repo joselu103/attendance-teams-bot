@@ -6,11 +6,13 @@ from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from time import perf_counter
+from typing import cast
 from uuid import UUID
 
 import httpx
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
+from mcp.types import ToolAnnotations
 from pydantic import SecretStr
 
 from attendance_teams_bot.agent.language_model import ToolDefinition
@@ -29,6 +31,14 @@ from attendance_teams_bot.mcp.contracts import (
 from attendance_teams_bot.observability import get_logger, operation_event
 
 _VERSION = re.compile(r"^(?P<major>[0-9]+)\.[0-9]+\.[0-9]+$")
+_TOOL_NAME = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+_ANNOTATION_TYPES: dict[str, type[str] | type[bool]] = {
+    "title": str,
+    "readOnlyHint": bool,
+    "destructiveHint": bool,
+    "idempotentHint": bool,
+    "openWorldHint": bool,
+}
 HttpClientFactory = Callable[[dict[str, str]], httpx.AsyncClient]
 
 
@@ -54,19 +64,14 @@ class StreamableHttpAttendanceSession:
                 description = getattr(tool, "description", None)
                 input_schema = getattr(tool, "inputSchema", None)
                 annotations = getattr(tool, "annotations", None)
-                if (
-                    not isinstance(name, str)
-                    or not isinstance(description, str)
-                    or not isinstance(input_schema, Mapping)
-                    or (annotations is not None and not isinstance(annotations, Mapping))
-                ):
+                if not _is_safe_tool_field(name, description, input_schema):
                     raise AttendanceMcpUnavailable
                 tools.append(
                     ToolDefinition(
-                        name=name,
-                        description=description,
-                        input_schema=dict(input_schema),
-                        annotations={} if annotations is None else dict(annotations),
+                        name=cast(str, name),
+                        description=cast(str, description),
+                        input_schema=dict(cast(Mapping[str, object], input_schema)),
+                        annotations=_normalize_annotations(annotations),
                     )
                 )
         except Exception as error:
@@ -244,6 +249,54 @@ def _tool_result_text(content: Sequence[object]) -> str:
         if isinstance(text, str):
             return text
     raise AttendanceMcpUnavailable
+
+
+def _is_safe_tool_field(name: object, description: object, input_schema: object) -> bool:
+    return (
+        isinstance(name, str)
+        and _TOOL_NAME.fullmatch(name) is not None
+        and isinstance(description, str)
+        and len(description) <= 4_096
+        and isinstance(input_schema, Mapping)
+        and _is_safe_json_value(input_schema)
+    )
+
+
+def _normalize_annotations(annotations: object) -> dict[str, object]:
+    """Accept only the MCP SDK's standard, scalar tool annotation fields."""
+    if annotations is None:
+        return {}
+    if isinstance(annotations, ToolAnnotations):
+        values = cast(Mapping[object, object], annotations.model_dump(exclude_none=True))
+    elif isinstance(annotations, Mapping):
+        values = annotations
+    else:
+        raise AttendanceMcpUnavailable
+    normalized: dict[str, object] = {}
+    for key, value in values.items():
+        if not isinstance(key, str) or key not in _ANNOTATION_TYPES:
+            raise AttendanceMcpUnavailable
+        if type(value) is not _ANNOTATION_TYPES[key]:
+            raise AttendanceMcpUnavailable
+        normalized[key] = value
+    return normalized
+
+
+def _is_safe_json_value(value: object, depth: int = 0) -> bool:
+    if depth > 16:
+        return False
+    if value is None or isinstance(value, bool | int | float):
+        return True
+    if isinstance(value, str):
+        return len(value) <= 4_096
+    if isinstance(value, Mapping):
+        return len(value) <= 256 and all(
+            isinstance(key, str) and len(key) <= 256 and _is_safe_json_value(item, depth + 1)
+            for key, item in value.items()
+        )
+    if isinstance(value, Sequence) and not isinstance(value, str | bytes):
+        return len(value) <= 256 and all(_is_safe_json_value(item, depth + 1) for item in value)
+    return False
 
 
 def _duration_ms(started_at: float) -> int:

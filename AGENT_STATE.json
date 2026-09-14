@@ -4,7 +4,7 @@
   "provided_exports": {
     "interfaces_or_endpoints": [
       "Provider-neutral async LanguageModel interface with the OpenAI OPENAI_API_KEY and OPENAI_MODEL adapter contract",
-      "One-shot authenticated MCP 1.2.0 discovery intersected with an exact frozen first-party read-only catalog; the current approved entry is list_my_attendance_events",
+      "One-shot authenticated MCP 1.2.0 discovery admits the bounded fourteen-tool legacy read-only catalog while exposing only the frozen requester-scoped list_my_attendance_events entry",
       "Authenticated Teams personal-chat requester flow with deterministic local attendance rendering and no model result re-entry"
     ],
     "events": []
