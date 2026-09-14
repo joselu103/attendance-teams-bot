@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
+from time import perf_counter
 
 from openai import AsyncOpenAI
 from pydantic import SecretStr
@@ -15,6 +16,7 @@ from attendance_teams_bot.agent.language_model import (
     ToolCall,
     ToolDefinition,
 )
+from attendance_teams_bot.observability import get_logger, message_input_metadata, operation_event
 
 CompletionCallable = Callable[..., Awaitable[object]]
 
@@ -27,6 +29,20 @@ class OpenAiLanguageModel:
     model: str
 
     async def complete(self, request: ModelRequest) -> ModelTurn:
+        started_at = perf_counter()
+        logger = get_logger("agent.openai")
+        metadata = {
+            **message_input_metadata(request.user_message),
+            "tool_count": len(request.tools),
+        }
+        operation_event(
+            logger,
+            event="operation_started",
+            handler="OpenAiLanguageModel.complete",
+            operation="language_model_completion",
+            step="request",
+            input_metadata=metadata,
+        )
         try:
             completion = await self.completion(
                 model=self.model,
@@ -37,13 +53,43 @@ class OpenAiLanguageModel:
                 tools=[_as_openai_tool(tool) for tool in request.tools],
                 parallel_tool_calls=False,
             )
-            return _parse_completion(completion)
-        except LanguageModelUnavailable:
+            turn = _parse_completion(completion)
+        except LanguageModelUnavailable as error:
+            operation_event(
+                logger,
+                event="operation_failed",
+                handler="OpenAiLanguageModel.complete",
+                operation="language_model_completion",
+                step="response_validation",
+                duration_ms=_duration_ms(started_at),
+                error_type=type(error).__name__,
+                input_metadata=metadata,
+            )
             raise
         except BaseException as error:
             if isinstance(error, (KeyboardInterrupt, SystemExit, GeneratorExit)):
                 raise
+            operation_event(
+                logger,
+                event="operation_failed",
+                handler="OpenAiLanguageModel.complete",
+                operation="language_model_completion",
+                step="request",
+                duration_ms=_duration_ms(started_at),
+                error_type=type(error).__name__,
+                input_metadata=metadata,
+            )
             raise LanguageModelUnavailable from None
+        operation_event(
+            logger,
+            event="operation_succeeded",
+            handler="OpenAiLanguageModel.complete",
+            operation="language_model_completion",
+            step="response_validation",
+            duration_ms=_duration_ms(started_at),
+            input_metadata=metadata,
+        )
+        return turn
 
 
 def create_openai_language_model(*, api_key: SecretStr, model: str) -> OpenAiLanguageModel:
@@ -110,3 +156,7 @@ def _parse_tool_call(tool_call: object) -> ToolCall:
     if not isinstance(arguments, Mapping) or not all(isinstance(key, str) for key in arguments):
         raise LanguageModelUnavailable
     return ToolCall(id=call_id, name=name, arguments=dict(arguments))
+
+
+def _duration_ms(started_at: float) -> int:
+    return max(0, round((perf_counter() - started_at) * 1000))

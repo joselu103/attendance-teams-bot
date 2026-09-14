@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 from collections.abc import Callable, Mapping
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
@@ -36,7 +35,13 @@ from attendance_teams_bot.mcp.contracts import (
     AttendanceEventPage,
     ListMyAttendanceArguments,
 )
-from attendance_teams_bot.observability import current_correlation_id, get_logger, log_event
+from attendance_teams_bot.observability import (
+    authentication_event,
+    current_correlation_id,
+    get_logger,
+    message_input_metadata,
+    operation_event,
+)
 
 INVALID_REQUEST_REPLY = "Please provide a date range of no more than 31 days."
 CLARIFICATION_REPLY = "Please ask for your attendance and include a date range."
@@ -131,6 +136,16 @@ class AttendanceAgent:
     async def handle(self, *, message: str, mcp_access_token: SecretStr) -> BotResponse:
         correlation_id = self.correlation_id_factory()
         started_at = perf_counter()
+        logger = get_logger("agent").bind(correlation_id=str(correlation_id))
+        input_metadata = message_input_metadata(message)
+        operation_event(
+            logger,
+            event="operation_started",
+            handler="AttendanceAgent.handle",
+            operation="attendance_orchestration",
+            step="mcp_open",
+            input_metadata=input_metadata,
+        )
         stage = "mcp_open"
         outcome = "success"
         error_code: str | None = None
@@ -140,9 +155,27 @@ class AttendanceAgent:
             async with self.mcp_session_factory.open(
                 access_token=mcp_access_token, correlation_id=correlation_id
             ) as session:
+                operation_event(
+                    logger,
+                    event="operation_step_completed",
+                    handler="AttendanceAgent.handle",
+                    operation="attendance_orchestration",
+                    step="mcp_open",
+                    duration_ms=_duration_ms(started_at),
+                    input_metadata=input_metadata,
+                )
                 stage = "mcp_catalog"
                 catalog = _catalog_intersection(
                     await session.list_tools(), frozen_read_only_catalog()
+                )
+                operation_event(
+                    logger,
+                    event="operation_step_completed",
+                    handler="AttendanceAgent.handle",
+                    operation="attendance_orchestration",
+                    step="mcp_catalog",
+                    duration_ms=_duration_ms(started_at),
+                    input_metadata=input_metadata,
                 )
                 if catalog is None:
                     outcome = "catalog_incompatible"
@@ -155,6 +188,15 @@ class AttendanceAgent:
                         timezone="Europe/Ljubljana",
                         tools=tuple(policy.definition for policy in catalog.values()),
                     )
+                )
+                operation_event(
+                    logger,
+                    event="operation_step_completed",
+                    handler="AttendanceAgent.handle",
+                    operation="attendance_orchestration",
+                    step="model_completion",
+                    duration_ms=_duration_ms(started_at),
+                    input_metadata=input_metadata,
                 )
                 if isinstance(turn, NoTool):
                     outcome = "clarification"
@@ -170,6 +212,15 @@ class AttendanceAgent:
                     return BotResponse(text=INVALID_REQUEST_REPLY)
                 stage = "mcp_tool_call"
                 page = await policy.call(session, arguments)
+                operation_event(
+                    logger,
+                    event="operation_step_completed",
+                    handler="AttendanceAgent.handle",
+                    operation="attendance_orchestration",
+                    step="mcp_tool_call",
+                    duration_ms=_duration_ms(started_at),
+                    input_metadata=input_metadata,
+                )
         except asyncio.CancelledError:
             cancelled = True
             raise
@@ -177,6 +228,20 @@ class AttendanceAgent:
             outcome = "tool_failure"
             error_code = error.failure.code
             error_type = type(error).__name__
+            if error.failure.code in {"FORBIDDEN", "IDENTITY_UNMAPPED", "IDENTITY_AMBIGUOUS"}:
+                authentication_event(
+                    logger,
+                    event="permission_denied",
+                    scheme="attendance_mcp",
+                    failure_reason=error.failure.code,
+                )
+            elif error.failure.code in {"AUTHENTICATION_REQUIRED", "TOKEN_INVALID"}:
+                authentication_event(
+                    logger,
+                    event="auth_failed",
+                    scheme="attendance_mcp",
+                    failure_reason=error.failure.code,
+                )
             return BotResponse(text=TOOL_FAILURE_REPLIES.get(error.failure.code, UNAVAILABLE_REPLY))
         except (
             AttendanceMcpUnavailable,
@@ -192,16 +257,15 @@ class AttendanceAgent:
             return BotResponse(text=UNAVAILABLE_REPLY)
         finally:
             if not cancelled:
-                log_event(
-                    get_logger("agent"),
-                    logging.INFO if outcome == "success" else logging.WARNING,
-                    "attendance_turn_completed",
-                    correlation_id=str(correlation_id),
-                    stage="rendering" if outcome == "success" else stage,
-                    outcome=outcome,
-                    error_code=error_code,
+                operation_event(
+                    logger,
+                    event="operation_succeeded" if outcome == "success" else "operation_failed",
+                    handler="AttendanceAgent.handle",
+                    operation="attendance_orchestration",
+                    step="rendering" if outcome == "success" else stage,
+                    duration_ms=_duration_ms(started_at),
                     error_type=error_type,
-                    duration_ms=max(0, round((perf_counter() - started_at) * 1000)),
+                    input_metadata={**input_metadata, "outcome": outcome, "error_code": error_code},
                 )
         return BotResponse(text=policy.render(page))
 
@@ -253,3 +317,7 @@ def _is_compatible_self_attendance_schema(schema: Mapping[str, object]) -> bool:
             return False
     forbidden = {"employee_id", "email", "role", "actor_id", "tenant_id", "object_id"}
     return not forbidden.intersection(properties)
+
+
+def _duration_ms(started_at: float) -> int:
+    return max(0, round((perf_counter() - started_at) * 1000))

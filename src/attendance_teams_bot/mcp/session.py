@@ -5,6 +5,7 @@ import re
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
+from time import perf_counter
 from uuid import UUID
 
 import httpx
@@ -25,6 +26,7 @@ from attendance_teams_bot.mcp.contracts import (
     AttendanceEventPage,
     McpToolFailure,
 )
+from attendance_teams_bot.observability import get_logger, operation_event
 
 _VERSION = re.compile(r"^(?P<major>[0-9]+)\.[0-9]+\.[0-9]+$")
 HttpClientFactory = Callable[[dict[str, str]], httpx.AsyncClient]
@@ -35,28 +37,58 @@ class StreamableHttpAttendanceSession:
     session: ClientSession
 
     async def list_tools(self) -> tuple[ToolDefinition, ...]:
-        result = await self.session.list_tools()
-        tools: list[ToolDefinition] = []
-        for tool in result.tools:
-            name = getattr(tool, "name", None)
-            description = getattr(tool, "description", None)
-            input_schema = getattr(tool, "inputSchema", None)
-            annotations = getattr(tool, "annotations", None)
-            if (
-                not isinstance(name, str)
-                or not isinstance(description, str)
-                or not isinstance(input_schema, Mapping)
-                or (annotations is not None and not isinstance(annotations, Mapping))
-            ):
-                raise AttendanceMcpUnavailable
-            tools.append(
-                ToolDefinition(
-                    name=name,
-                    description=description,
-                    input_schema=dict(input_schema),
-                    annotations={} if annotations is None else dict(annotations),
+        started_at = perf_counter()
+        logger = get_logger("mcp.session")
+        operation_event(
+            logger,
+            event="operation_started",
+            handler="StreamableHttpAttendanceSession.list_tools",
+            operation="mcp_tool_discovery",
+            step="request",
+        )
+        try:
+            result = await self.session.list_tools()
+            tools: list[ToolDefinition] = []
+            for tool in result.tools:
+                name = getattr(tool, "name", None)
+                description = getattr(tool, "description", None)
+                input_schema = getattr(tool, "inputSchema", None)
+                annotations = getattr(tool, "annotations", None)
+                if (
+                    not isinstance(name, str)
+                    or not isinstance(description, str)
+                    or not isinstance(input_schema, Mapping)
+                    or (annotations is not None and not isinstance(annotations, Mapping))
+                ):
+                    raise AttendanceMcpUnavailable
+                tools.append(
+                    ToolDefinition(
+                        name=name,
+                        description=description,
+                        input_schema=dict(input_schema),
+                        annotations={} if annotations is None else dict(annotations),
+                    )
                 )
+        except Exception as error:
+            operation_event(
+                logger,
+                event="operation_failed",
+                handler="StreamableHttpAttendanceSession.list_tools",
+                operation="mcp_tool_discovery",
+                step="request",
+                duration_ms=_duration_ms(started_at),
+                error_type=type(error).__name__,
             )
+            raise
+        operation_event(
+            logger,
+            event="operation_succeeded",
+            handler="StreamableHttpAttendanceSession.list_tools",
+            operation="mcp_tool_discovery",
+            step="response_validated",
+            duration_ms=_duration_ms(started_at),
+            input_metadata={"tool_count": len(tools)},
+        )
         return tuple(tools)
 
     async def call_tool(
@@ -65,11 +97,45 @@ class StreamableHttpAttendanceSession:
         name: str,
         arguments: Mapping[str, object],
     ) -> AttendanceEventPage:
-        result = await self.session.call_tool(name, dict(arguments))
-        text = _tool_result_text(result.content)
-        if result.isError:
-            raise AttendanceToolFailure(McpToolFailure.model_validate_json(text))
-        return AttendanceEventPage.model_validate(json.loads(text))
+        started_at = perf_counter()
+        logger = get_logger("mcp.session")
+        metadata = {"tool_name": name, "argument_count": len(arguments)}
+        operation_event(
+            logger,
+            event="operation_started",
+            handler="StreamableHttpAttendanceSession.call_tool",
+            operation="mcp_tool_execution",
+            step="request",
+            input_metadata=metadata,
+        )
+        try:
+            result = await self.session.call_tool(name, dict(arguments))
+            text = _tool_result_text(result.content)
+            if result.isError:
+                raise AttendanceToolFailure(McpToolFailure.model_validate_json(text))
+            page = AttendanceEventPage.model_validate(json.loads(text))
+        except Exception as error:
+            operation_event(
+                logger,
+                event="operation_failed",
+                handler="StreamableHttpAttendanceSession.call_tool",
+                operation="mcp_tool_execution",
+                step="request",
+                duration_ms=_duration_ms(started_at),
+                error_type=type(error).__name__,
+                input_metadata=metadata,
+            )
+            raise
+        operation_event(
+            logger,
+            event="operation_succeeded",
+            handler="StreamableHttpAttendanceSession.call_tool",
+            operation="mcp_tool_execution",
+            step="response_validated",
+            duration_ms=_duration_ms(started_at),
+            input_metadata=metadata,
+        )
+        return page
 
 
 class StreamableHttpAttendanceSessionFactory:
@@ -91,6 +157,15 @@ class StreamableHttpAttendanceSessionFactory:
         access_token: SecretStr,
         correlation_id: UUID,
     ) -> AsyncIterator[StreamableHttpAttendanceSession]:
+        started_at = perf_counter()
+        logger = get_logger("mcp.session")
+        operation_event(
+            logger,
+            event="operation_started",
+            handler="StreamableHttpAttendanceSessionFactory.open",
+            operation="mcp_session_connection",
+            step="connect",
+        )
         headers = {
             "Authorization": f"Bearer {access_token.get_secret_value()}",
             CORRELATION_ID_HEADER: str(correlation_id),
@@ -105,10 +180,44 @@ class StreamableHttpAttendanceSessionFactory:
                 )
                 session = await stack.enter_async_context(ClientSession(read_stream, write_stream))
                 await session.initialize()
+                operation_event(
+                    logger,
+                    event="operation_step_completed",
+                    handler="StreamableHttpAttendanceSessionFactory.open",
+                    operation="mcp_session_connection",
+                    step="initialized",
+                    duration_ms=_duration_ms(started_at),
+                )
                 yield StreamableHttpAttendanceSession(session)
-        except AttendanceToolFailure, McpContractIncompatible:
+                operation_event(
+                    logger,
+                    event="operation_succeeded",
+                    handler="StreamableHttpAttendanceSessionFactory.open",
+                    operation="mcp_session_connection",
+                    step="closed",
+                    duration_ms=_duration_ms(started_at),
+                )
+        except (AttendanceToolFailure, McpContractIncompatible) as error:
+            operation_event(
+                logger,
+                event="operation_failed",
+                handler="StreamableHttpAttendanceSessionFactory.open",
+                operation="mcp_session_connection",
+                step="connect",
+                duration_ms=_duration_ms(started_at),
+                error_type=type(error).__name__,
+            )
             raise
-        except Exception:
+        except Exception as error:
+            operation_event(
+                logger,
+                event="operation_failed",
+                handler="StreamableHttpAttendanceSessionFactory.open",
+                operation="mcp_session_connection",
+                step="connect",
+                duration_ms=_duration_ms(started_at),
+                error_type=type(error).__name__,
+            )
             raise AttendanceMcpUnavailable from None
 
     def _create_http_client(self, headers: dict[str, str]) -> httpx.AsyncClient:
@@ -135,3 +244,7 @@ def _tool_result_text(content: Sequence[object]) -> str:
         if isinstance(text, str):
             return text
     raise AttendanceMcpUnavailable
+
+
+def _duration_ms(started_at: float) -> int:
+    return max(0, round((perf_counter() - started_at) * 1000))

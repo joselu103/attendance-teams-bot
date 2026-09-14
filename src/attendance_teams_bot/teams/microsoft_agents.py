@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping
+from time import perf_counter
 from typing import Protocol, cast
 
 from fastapi import FastAPI, Request
@@ -27,10 +28,13 @@ from starlette.responses import JSONResponse, Response
 from attendance_teams_bot.agent.contracts import BotResponse
 from attendance_teams_bot.auth.obo import DelegatedAuthenticationUnavailable, MsalOboTokenExchange
 from attendance_teams_bot.observability import (
+    authentication_event,
     current_correlation_id,
     get_logger,
     install_http_request_observability,
     log_event,
+    message_input_metadata,
+    operation_event,
 )
 from attendance_teams_bot.settings import TeamsConnectionSettings
 from attendance_teams_bot.teams.authenticated import (
@@ -70,12 +74,28 @@ class TeamsAuthorizationSsoTokenProvider:
         self._auth_handler_id = auth_handler_id
 
     async def get_token(self, context: _TurnContext) -> SecretStr:
-        response = await self._authorization.get_token(
-            cast(TurnContext, context), self._auth_handler_id
-        )
+        try:
+            response = await self._authorization.get_token(
+                cast(TurnContext, context), self._auth_handler_id
+            )
+        except Exception as error:
+            authentication_event(
+                get_logger("teams.sso"),
+                event="auth_failed",
+                scheme="teams_sso",
+                failure_reason=type(error).__name__,
+            )
+            raise RuntimeError("Teams SSO token is unavailable") from error
         token = getattr(response, "token", None)
         if not isinstance(token, str) or not token:
+            authentication_event(
+                get_logger("teams.sso"),
+                event="auth_failed",
+                scheme="teams_sso",
+                failure_reason="token_unavailable",
+            )
             raise RuntimeError("Teams SSO token is unavailable")
+        authentication_event(get_logger("teams.sso"), event="auth_validated", scheme="teams_sso")
         return SecretStr(token)
 
 
@@ -151,7 +171,7 @@ async def route_attendance_turn(
     obo_token_exchange: _OboTokenExchange,
 ) -> None:
     correlation_id = current_correlation_id()
-    logger = get_logger("teams.turn")
+    logger = get_logger("teams.turn").bind(correlation_id=str(correlation_id))
     if context.activity.type != "message" or context.activity.text is None:
         return
     conversation = context.activity.conversation
@@ -176,6 +196,16 @@ async def route_attendance_turn(
         )
         await context.send_activity("Please send a message so I can help.")
         return
+    started_at = perf_counter()
+    input_metadata = message_input_metadata(message)
+    operation_event(
+        logger,
+        event="operation_started",
+        handler="route_attendance_turn",
+        operation="authenticated_attendance_turn",
+        step="teams_sso",
+        input_metadata=input_metadata,
+    )
     try:
         token_a = await sso_token_provider.get_token(context)
     except RuntimeError as error:
@@ -186,15 +216,28 @@ async def route_attendance_turn(
             correlation_id=str(correlation_id),
             error_type=type(error).__name__,
         )
+        operation_event(
+            logger,
+            event="operation_failed",
+            handler="route_attendance_turn",
+            operation="authenticated_attendance_turn",
+            step="teams_sso",
+            duration_ms=_duration_ms(started_at),
+            error_type=type(error).__name__,
+            input_metadata=input_metadata,
+        )
         await context.send_activity(
             "Authentication is temporarily unavailable. Please try again later."
         )
         return
-    log_event(
+    operation_event(
         logger,
-        logging.INFO,
-        "teams_sso_token_acquired",
-        correlation_id=str(correlation_id),
+        event="operation_step_completed",
+        handler="route_attendance_turn",
+        operation="authenticated_attendance_turn",
+        step="teams_sso",
+        duration_ms=_duration_ms(started_at),
+        input_metadata=input_metadata,
     )
     try:
         token = await obo_token_exchange.exchange(token_a)
@@ -206,17 +249,52 @@ async def route_attendance_turn(
             correlation_id=str(correlation_id),
             error_type=type(error).__name__,
         )
+        operation_event(
+            logger,
+            event="operation_failed",
+            handler="route_attendance_turn",
+            operation="authenticated_attendance_turn",
+            step="delegated_obo",
+            duration_ms=_duration_ms(started_at),
+            error_type=type(error).__name__,
+            input_metadata=input_metadata,
+        )
         await context.send_activity(
             "Authentication is temporarily unavailable. Please try again later."
         )
         return
-    log_event(
+    operation_event(
         logger,
-        logging.INFO,
-        "teams_obo_exchange_completed",
-        correlation_id=str(correlation_id),
+        event="operation_step_completed",
+        handler="route_attendance_turn",
+        operation="authenticated_attendance_turn",
+        step="delegated_obo",
+        duration_ms=_duration_ms(started_at),
+        input_metadata=input_metadata,
     )
-    response = await handler.handle(message=message, mcp_access_token=token)
+    try:
+        response = await handler.handle(message=message, mcp_access_token=token)
+    except Exception as error:
+        operation_event(
+            logger,
+            event="operation_failed",
+            handler="route_attendance_turn",
+            operation="authenticated_attendance_turn",
+            step="attendance_handler",
+            duration_ms=_duration_ms(started_at),
+            error_type=type(error).__name__,
+            input_metadata=input_metadata,
+        )
+        raise
+    operation_event(
+        logger,
+        event="operation_step_completed",
+        handler="route_attendance_turn",
+        operation="authenticated_attendance_turn",
+        step="attendance_handler",
+        duration_ms=_duration_ms(started_at),
+        input_metadata=input_metadata,
+    )
     try:
         await context.send_activity(response.text)
     except Exception as error:
@@ -227,13 +305,30 @@ async def route_attendance_turn(
             correlation_id=str(correlation_id),
             error_type=type(error).__name__,
         )
+        operation_event(
+            logger,
+            event="operation_failed",
+            handler="route_attendance_turn",
+            operation="authenticated_attendance_turn",
+            step="teams_reply_delivery",
+            duration_ms=_duration_ms(started_at),
+            error_type=type(error).__name__,
+            input_metadata=input_metadata,
+        )
         raise
-    log_event(
+    operation_event(
         logger,
-        logging.INFO,
-        "teams_reply_sent",
-        correlation_id=str(correlation_id),
+        event="operation_succeeded",
+        handler="route_attendance_turn",
+        operation="authenticated_attendance_turn",
+        step="teams_reply_delivery",
+        duration_ms=_duration_ms(started_at),
+        input_metadata=input_metadata,
     )
+
+
+def _duration_ms(started_at: float) -> int:
+    return max(0, round((perf_counter() - started_at) * 1000))
 
 
 async def route_authenticated_turn(

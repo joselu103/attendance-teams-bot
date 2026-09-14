@@ -1,6 +1,7 @@
 import pytest
 from pydantic import SecretStr
 
+from attendance_teams_bot.auth import obo
 from attendance_teams_bot.auth.obo import (
     DelegatedAuthenticationUnavailable,
     MsalOboTokenExchange,
@@ -54,3 +55,22 @@ async def test_obo_exchange_hides_provider_failures() -> None:
         await exchanger.exchange(SecretStr("teams-sso-token"))
 
     assert "token details" not in str(error.value)
+
+
+@pytest.mark.anyio
+async def test_obo_exchange_emits_safe_authentication_events(monkeypatch) -> None:
+    events: list[dict[str, object]] = []
+
+    def record_event(_logger, **fields: object) -> None:
+        events.append(fields)
+
+    monkeypatch.setattr(obo, "authentication_event", record_event)
+    exchanger = MsalOboTokenExchange(
+        provider=FakeAccessTokenProvider(),
+        delegated_scope="api://attendance-crmt/attendance.access",
+    )
+
+    await exchanger.exchange(SecretStr("teams-sso-token"))
+
+    assert events == [{"event": "auth_validated", "scheme": "delegated_obo"}]
+    assert "teams-sso-token" not in repr(events)
