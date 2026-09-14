@@ -46,6 +46,27 @@ from attendance_teams_bot.observability import (
 INVALID_REQUEST_REPLY = "Please provide a date range of no more than 31 days."
 CLARIFICATION_REPLY = "Please ask for your attendance and include a date range."
 
+# The version-1 CRMT inventory is fixed. Advertising one of these tools never
+# grants it to the model; this bot selects only the requester-scoped entry below.
+_LEGACY_READ_ONLY_TOOL_NAMES = frozenset(
+    {
+        "list_attendance_events",
+        "list_my_attendance_events",
+        "get_attendance_event",
+        "get_daily_attendance",
+        "get_planned_work",
+        "get_current_attendance",
+        "get_employee_attendance_analysis",
+        "get_employee_attendance_summary",
+        "get_exceptions",
+        "get_organization_attendance_analysis",
+        "list_employees",
+        "get_employee",
+        "list_punch_types",
+        "list_locations",
+    }
+)
+
 
 class AuthenticatedMcpSession(Protocol):
     async def list_tools(self) -> tuple[ToolDefinition, ...]: ...
@@ -275,15 +296,48 @@ def _catalog_intersection(
 ) -> dict[str, FrozenReadOnlyTool] | None:
     configured = {policy.definition.name: policy for policy in policies}
     remote_by_name = {tool.name: tool for tool in remote_tools}
-    if (
-        len(configured) != len(policies)
-        or len(remote_by_name) != len(remote_tools)
-        or remote_by_name.keys() != configured.keys()
-    ):
+    if len(configured) != len(policies) or len(remote_by_name) != len(remote_tools):
+        return None
+    if not remote_by_name.keys() <= _LEGACY_READ_ONLY_TOOL_NAMES:
+        return None
+    if not all(_is_safe_legacy_read_only_tool(tool) for tool in remote_tools):
         return None
     if not all(policy.supports_remote(remote_by_name[name]) for name, policy in configured.items()):
         return None
     return configured
+
+
+def _is_safe_legacy_read_only_tool(tool: ToolDefinition) -> bool:
+    """Validate unprompted legacy catalog entries before admitting the session."""
+    return (
+        isinstance(tool.name, str)
+        and tool.name in _LEGACY_READ_ONLY_TOOL_NAMES
+        and isinstance(tool.description, str)
+        and len(tool.description) <= 4_096
+        and isinstance(tool.input_schema, Mapping)
+        and _is_safe_unprompted_schema(tool.input_schema)
+        and tool.annotations.get("readOnlyHint") is True
+    )
+
+
+def _is_safe_unprompted_schema(value: object, depth: int = 0) -> bool:
+    """Bound catalog payloads even though only the canonical schema reaches the model."""
+    if depth > 16:
+        return False
+    if value is None or isinstance(value, bool | int | float):
+        return True
+    if isinstance(value, str):
+        return len(value) <= 4_096
+    if isinstance(value, Mapping):
+        return len(value) <= 256 and all(
+            isinstance(key, str) and len(key) <= 256 and _is_safe_unprompted_schema(item, depth + 1)
+            for key, item in value.items()
+        )
+    if isinstance(value, tuple | list):
+        return len(value) <= 256 and all(
+            _is_safe_unprompted_schema(item, depth + 1) for item in value
+        )
+    return False
 
 
 def _has_bounded_arguments(arguments: Mapping[str, object]) -> bool:
