@@ -47,9 +47,9 @@ class AttendanceIntegrationSettings(BaseModel):
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
-    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = Field(
-        default="INFO",
-        validation_alias="LOG_LEVEL",
+    log_environment: Literal["local", "staging", "production"] = Field(
+        default="local",
+        validation_alias="LOG_ENV",
     )
     app_version: str = Field(default="dev", validation_alias="APP_VERSION")
     mode: RuntimeMode = Field(

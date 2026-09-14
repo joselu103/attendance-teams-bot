@@ -1,44 +1,85 @@
 from __future__ import annotations
 
+import asyncio
 import json
-import logging
+from io import StringIO
 from uuid import UUID, uuid4
 
 import pytest
 
+import attendance_teams_bot.observability as observability
 from attendance_teams_bot.observability import (
-    JsonLogFormatter,
     correlation_scope,
     current_correlation_id,
+    get_logger,
     log_event,
+    trusted_context_scope,
 )
 
 
-def test_json_formatter_emits_only_the_event_and_explicit_safe_fields() -> None:
-    logger = logging.getLogger("test.observability")
-    record = logger.makeRecord(
-        logger.name,
-        logging.INFO,
-        __file__,
-        1,
-        "teams_callback_completed",
-        (),
-        None,
-        extra={"event_fields": {"correlation_id": "request-123", "status_code": 401}},
+def _configure_json(monkeypatch: pytest.MonkeyPatch) -> StringIO:
+    output = StringIO()
+    monkeypatch.setattr(observability.sys, "stdout", output)
+    observability.configure_logging(environment="production")
+    return output
+
+
+def test_production_logs_are_single_line_json_with_required_metadata(monkeypatch) -> None:
+    output = _configure_json(monkeypatch)
+
+    log_event(get_logger("test"), 20, "completed", status_code=200)
+
+    payload = json.loads(output.getvalue())
+    assert payload["event"] == "completed"
+    assert payload["level"] == "info"
+    assert payload["timestamp"].endswith("Z")
+    assert isinstance(UUID(payload["trace_id"]), UUID)
+    assert payload["user_or_client_id"] == "unavailable"
+    assert payload["filename"] == "test_observability.py"
+    assert (
+        payload["func_name"] == "test_production_logs_are_single_line_json_with_required_metadata"
     )
-    record.untrusted_detail = "must-not-be-serialized"  # type: ignore[attr-defined]
-
-    payload = json.loads(JsonLogFormatter().format(record))
-
-    assert payload["level"] == "INFO"
-    assert payload["event"] == "teams_callback_completed"
-    assert payload["correlation_id"] == "request-123"
-    assert payload["status_code"] == 401
-    assert "timestamp" in payload
-    assert "untrusted_detail" not in payload
+    assert isinstance(payload["lineno"], int)
 
 
-def test_correlation_scope_exposes_the_supplied_id_and_resets_after_exit() -> None:
+def test_local_uses_colored_console_and_debug_threshold(monkeypatch) -> None:
+    output = StringIO()
+    monkeypatch.setattr(observability.sys, "stdout", output)
+    observability.configure_logging(environment="local")
+
+    log_event(get_logger("test"), 10, "debug_event")
+
+    rendered = output.getvalue()
+    assert "\x1b[" in rendered
+    assert "debug_event" in rendered
+
+
+def test_redacts_nested_values_and_exception_text(monkeypatch) -> None:
+    output = _configure_json(monkeypatch)
+
+    try:
+        raise RuntimeError("authorization: Bearer real-token, access_token: downstream-secret")
+    except RuntimeError:
+        log_event(
+            get_logger("test"),
+            40,
+            "request_failed",
+            authorization="top-secret",
+            nested={"password": "hidden", "items": [{"api_key": "also-hidden"}]},
+            exc_info=True,
+        )
+
+    rendered = output.getvalue()
+    payload = json.loads(rendered)
+    assert payload["authorization"] == "[REDACTED]"
+    assert payload["nested"]["password"] == "[REDACTED]"
+    assert payload["nested"]["items"][0]["api_key"] == "[REDACTED]"
+    assert "real-token" not in rendered
+    assert "downstream-secret" not in rendered
+    assert "RuntimeError" in payload["exception"]
+
+
+def test_correlation_scope_binds_trace_id_and_resets_after_exit() -> None:
     correlation_id = uuid4()
 
     with correlation_scope(correlation_id) as active_id:
@@ -49,30 +90,30 @@ def test_correlation_scope_exposes_the_supplied_id_and_resets_after_exit() -> No
 
 
 @pytest.mark.anyio
-async def test_correlation_scopes_are_isolated_across_concurrent_tasks() -> None:
-    import anyio
+async def test_context_scopes_are_isolated_across_concurrent_tasks(monkeypatch) -> None:
+    output = _configure_json(monkeypatch)
+    trace_ids: list[UUID] = []
 
-    observed_ids: list[UUID] = []
+    async def record_trace_id() -> None:
+        with correlation_scope() as trace_id:
+            await asyncio.sleep(0)
+            with trusted_context_scope(user_or_client_id="validated-user", session_id="session-1"):
+                log_event(get_logger("test"), 20, "context_bound")
+            trace_ids.append(trace_id)
 
-    async def record_id() -> None:
-        with correlation_scope() as correlation_id:
-            await anyio.sleep(0)
-            assert current_correlation_id() == correlation_id
-            observed_ids.append(correlation_id)
+    await asyncio.gather(record_trace_id(), record_trace_id())
 
-    async with anyio.create_task_group() as task_group:
-        task_group.start_soon(record_id)
-        task_group.start_soon(record_id)
-
-    assert len(observed_ids) == 2
-    assert observed_ids[0] != observed_ids[1]
+    payloads = [json.loads(line) for line in output.getvalue().splitlines()]
+    assert {payload["trace_id"] for payload in payloads} == {
+        str(trace_id) for trace_id in trace_ids
+    }
+    assert {payload["user_or_client_id"] for payload in payloads} == {"validated-user"}
+    assert {payload["session_id"] for payload in payloads} == {"session-1"}
 
 
-def test_log_event_supplies_only_explicit_fields(caplog: pytest.LogCaptureFixture) -> None:
-    logger = logging.getLogger("attendance_teams_bot.test")
+def test_staging_filters_debug_events(monkeypatch) -> None:
+    output = _configure_json(monkeypatch)
 
-    with caplog.at_level(logging.INFO, logger=logger.name):
-        log_event(logger, logging.INFO, "attendance_turn_completed", stage="mcp_open")
+    log_event(get_logger("test"), 10, "not_emitted")
 
-    assert caplog.records[-1].message == "attendance_turn_completed"
-    assert caplog.records[-1].event_fields == {"stage": "mcp_open"}
+    assert output.getvalue() == ""

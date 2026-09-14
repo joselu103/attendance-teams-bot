@@ -13,7 +13,7 @@ from attendance_teams_bot.settings import RuntimeMode
 
 def test_asgi_module_configures_logging_before_runtime_composition(monkeypatch) -> None:
     runtime_settings = SimpleNamespace(
-        log_level="WARNING",
+        log_environment="staging",
         app_version="test-sha",
         mode=RuntimeMode.LOCAL,
         attendance_integration_enabled=False,
@@ -31,7 +31,7 @@ def test_asgi_module_configures_logging_before_runtime_composition(monkeypatch) 
         scoped_monkeypatch.setattr(
             observability,
             "configure_logging",
-            lambda *, level: events.append(("configure", level)),
+            lambda *, environment: events.append(("configure", environment)),
         )
         scoped_monkeypatch.setattr(
             observability,
@@ -42,13 +42,13 @@ def test_asgi_module_configures_logging_before_runtime_composition(monkeypatch) 
 
         assert calls == [runtime_settings]
         assert events == [
-            ("configure", "WARNING"),
+            ("configure", "staging"),
             (
                 "application_started",
                 {
                     "runtime_mode": "local",
                     "attendance_integration_enabled": False,
-                    "log_level": "WARNING",
+                    "log_environment": "staging",
                     "app_version": "test-sha",
                 },
             ),
