@@ -5,6 +5,7 @@ from typing import Any
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
 
+from attendance_teams_bot.observability import install_http_request_observability
 from attendance_teams_bot.teams.adapter import TeamsActivityAdapter, TeamsTextReply
 
 _SAFE_MESSAGE_REPLY = "Please send a text message so I can help."
@@ -12,6 +13,7 @@ _SAFE_MESSAGE_REPLY = "Please send a text message so I can help."
 
 def create_teams_http_app(adapter: TeamsActivityAdapter) -> FastAPI:
     app = FastAPI()
+    install_http_request_observability(app, logger_name="local.http")
 
     @app.post("/api/messages")
     async def receive_activity(request: Request) -> Response:

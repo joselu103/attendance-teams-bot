@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Awaitable, Callable, Mapping
-from time import perf_counter
+from collections.abc import Mapping
 from typing import Protocol, cast
 
 from fastapi import FastAPI, Request
@@ -28,9 +27,9 @@ from starlette.responses import JSONResponse, Response
 from attendance_teams_bot.agent.contracts import BotResponse
 from attendance_teams_bot.auth.obo import DelegatedAuthenticationUnavailable, MsalOboTokenExchange
 from attendance_teams_bot.observability import (
-    correlation_scope,
     current_correlation_id,
     get_logger,
+    install_http_request_observability,
     log_event,
 )
 from attendance_teams_bot.settings import TeamsConnectionSettings
@@ -93,43 +92,8 @@ class _OboTokenExchange(Protocol):
 
 
 def install_teams_callback_observability(app: FastAPI) -> None:
-    """Record callback completion without parsing or retaining activity bodies."""
-    logger = get_logger("teams.callback")
-
-    @app.middleware("http")
-    async def observe_callback(
-        request: Request,
-        call_next: Callable[[Request], Awaitable[Response]],
-    ) -> Response:
-        if request.url.path != "/api/messages":
-            return await call_next(request)
-        started_at = perf_counter()
-        with correlation_scope() as correlation_id:
-            try:
-                response = await call_next(request)
-            except Exception as error:
-                log_event(
-                    logger,
-                    logging.ERROR,
-                    "teams_callback_failed",
-                    correlation_id=str(correlation_id),
-                    method=request.method,
-                    path="/api/messages",
-                    error_type=type(error).__name__,
-                    duration_ms=max(0, round((perf_counter() - started_at) * 1000)),
-                )
-                raise
-            log_event(
-                logger,
-                logging.INFO,
-                "teams_callback_completed",
-                correlation_id=str(correlation_id),
-                method=request.method,
-                path="/api/messages",
-                status_code=response.status_code,
-                duration_ms=max(0, round((perf_counter() - started_at) * 1000)),
-            )
-            return response
+    """Install shared request lifecycle logging for the Teams HTTP entry point."""
+    install_http_request_observability(app, logger_name="teams.http")
 
 
 def normalize_oauth_invoke_response(

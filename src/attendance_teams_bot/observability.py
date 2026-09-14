@@ -3,12 +3,15 @@ from __future__ import annotations
 import logging
 import re
 import sys
-from collections.abc import Iterator, Mapping, MutableMapping
+from collections.abc import Awaitable, Callable, Iterator, Mapping, MutableMapping
 from contextlib import contextmanager
+from time import perf_counter
 from typing import Any, Final, cast
 from uuid import UUID, uuid4
 
 import structlog
+from fastapi import FastAPI, Request
+from starlette.responses import Response
 from structlog.contextvars import bind_contextvars, reset_contextvars
 from structlog.processors import CallsiteParameter, CallsiteParameterAdder
 
@@ -31,6 +34,7 @@ _TEXTUAL_SECRET: Final = re.compile(
     r"(?i)(?P<key>authorization|password|secret|api_key|token|bearer|access_token|client_secret)"
     r"(?:['\"])?(?P<separator>\s*(?:=|:)\s*)(?P<value>[^,\n;]+)"
 )
+_CORRELATION_ID_HEADER: Final = "X-Correlation-ID"
 
 
 def _redact_text(value: str) -> str:
@@ -152,3 +156,83 @@ def current_correlation_id() -> UUID:
         except ValueError:
             pass
     return uuid4()
+
+
+def install_http_request_observability(app: FastAPI, *, logger_name: str) -> None:
+    """Emit scrubbed lifecycle events for every request handled by an HTTP app."""
+    logger = get_logger(logger_name)
+
+    @app.middleware("http")
+    async def observe_request(
+        request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
+        correlation_id = _incoming_correlation_id(request)
+        route = request.url.path
+        started_at = perf_counter()
+        with correlation_scope(correlation_id) as trace_id:
+            log_event(
+                logger,
+                logging.INFO,
+                "request_received",
+                trace_id=str(trace_id),
+                route=route,
+                method=request.method,
+                state="received",
+            )
+            try:
+                response = await call_next(request)
+            except Exception as error:
+                log_event(
+                    logger,
+                    logging.ERROR,
+                    "request_failed",
+                    trace_id=str(trace_id),
+                    route=route,
+                    method=request.method,
+                    status_code=500,
+                    state="server_error",
+                    error_type=type(error).__name__,
+                    duration_ms=_duration_ms(started_at),
+                )
+                raise
+
+            if response.status_code < 400:
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "request_completed",
+                    trace_id=str(trace_id),
+                    route=route,
+                    method=request.method,
+                    status_code=response.status_code,
+                    state="completed",
+                    duration_ms=_duration_ms(started_at),
+                )
+            else:
+                status_state = "client_error" if response.status_code < 500 else "server_error"
+                log_event(
+                    logger,
+                    logging.WARNING if response.status_code < 500 else logging.ERROR,
+                    "request_failed",
+                    trace_id=str(trace_id),
+                    route=route,
+                    method=request.method,
+                    status_code=response.status_code,
+                    state=status_state,
+                    duration_ms=_duration_ms(started_at),
+                )
+            return response
+
+
+def _incoming_correlation_id(request: Request) -> UUID | None:
+    value = request.headers.get(_CORRELATION_ID_HEADER)
+    if value is None:
+        return None
+    try:
+        return UUID(value)
+    except ValueError:
+        return None
+
+
+def _duration_ms(started_at: float) -> int:
+    return max(0, round((perf_counter() - started_at) * 1000))
