@@ -8,17 +8,17 @@ from attendance_teams_bot.settings import RuntimeMode, Settings
 
 def test_logging_defaults_are_safe_and_operational(tmp_path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
-    monkeypatch.delenv("LOG_LEVEL", raising=False)
+    monkeypatch.delenv("LOG_ENV", raising=False)
     monkeypatch.delenv("APP_VERSION", raising=False)
 
     settings = Settings()
 
-    assert settings.log_level == "INFO"
+    assert settings.log_environment == "local"
     assert settings.app_version == "dev"
 
 
-def test_settings_reject_invalid_log_level(monkeypatch) -> None:
-    monkeypatch.setenv("LOG_LEVEL", "VERBOSE")
+def test_settings_reject_invalid_log_environment(monkeypatch) -> None:
+    monkeypatch.setenv("LOG_ENV", "development")
 
     with pytest.raises(ValidationError):
         Settings(_env_file=None)

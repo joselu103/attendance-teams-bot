@@ -93,6 +93,11 @@ env -u PYTHONPATH uv run mypy
 `BOT_RUNTIME_MODE` defaults to `local`. Set it to `teams` only for the
 single-tenant Bot Service callback runtime.
 
+`LOG_ENV` defaults to `local`, which emits colorized DEBUG console logs. Set it
+to `staging` or `production` for single-line JSON INFO logs on stdout. Logs carry
+a context-bound `trace_id`; trusted callers may additionally bind validated
+user/client and session context. Secrets are recursively redacted before output.
+
 `Settings` is the single configuration boundary: it reads the environment and
 optional local `.env` file once, validates every supported value, and passes a
 typed Teams connection to the Microsoft SDK adapter. Unknown dotenv variables
