@@ -10,9 +10,10 @@ from typing import Protocol
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
-from pydantic import SecretStr, ValidationError
+from pydantic import SecretStr
 
-from attendance_teams_bot.agent.contracts import BotResponse, ReplyLanguage
+from attendance_teams_bot.agent.contracts import BotResponse, OverallAttendanceRange, ReplyLanguage
+from attendance_teams_bot.agent.date_resolver import resolve_attendance_range
 from attendance_teams_bot.agent.language_model import (
     LanguageModel,
     LanguageModelUnavailable,
@@ -23,7 +24,7 @@ from attendance_teams_bot.agent.language_model import (
 from attendance_teams_bot.agent.rendering import (
     TOOL_FAILURE_REPLIES,
     UNAVAILABLE_REPLY,
-    render_attendance_page,
+    render_attendance_events,
 )
 from attendance_teams_bot.mcp.client import (
     AttendanceMcpUnavailable,
@@ -32,6 +33,7 @@ from attendance_teams_bot.mcp.client import (
 )
 from attendance_teams_bot.mcp.contracts import (
     SELF_ATTENDANCE_TOOL,
+    AttendanceEvent,
     AttendanceEventPage,
     ListMyAttendanceArguments,
 )
@@ -43,7 +45,7 @@ from attendance_teams_bot.observability import (
     operation_event,
 )
 
-INVALID_REQUEST_REPLY = "Please provide a date range of no more than 31 days."
+INVALID_REQUEST_REPLY = "Please provide a date range of no more than 12 calendar months."
 CLARIFICATION_REPLY = "Please clarify the attendance date range you want to view."
 GUIDANCE_TOOL = "respond_with_guidance"
 _GUIDANCE_INTENTS = frozenset({"unsupported", "date_ambiguous"})
@@ -97,7 +99,7 @@ class FrozenReadOnlyTool:
 
     def validate_arguments(
         self, arguments: Mapping[str, object]
-    ) -> tuple[ListMyAttendanceArguments, ReplyLanguage] | None:
+    ) -> tuple[OverallAttendanceRange, ReplyLanguage] | None:
         if not _has_bounded_arguments(arguments):
             return None
         language = _reply_language(arguments.get("reply_language"))
@@ -107,12 +109,15 @@ class FrozenReadOnlyTool:
             request_arguments = {
                 key: value for key, value in arguments.items() if key != "reply_language"
             }
-            return ListMyAttendanceArguments.model_validate(request_arguments), language
-        except ValidationError:
+            return OverallAttendanceRange(
+                date.fromisoformat(str(request_arguments["start_date"])),
+                date.fromisoformat(str(request_arguments["end_date"])),
+            ), language
+        except KeyError, ValueError:
             return None
 
     async def call(
-        self, session: AuthenticatedMcpSession, arguments: ListMyAttendanceArguments
+        self, session: AuthenticatedMcpSession, arguments: ListMyAttendanceArguments, offset: int
     ) -> AttendanceEventPage:
         return await session.call_tool(
             name=self.definition.name,
@@ -120,12 +125,18 @@ class FrozenReadOnlyTool:
                 "start_date": arguments.start_date.isoformat(),
                 "end_date": arguments.end_date.isoformat(),
                 "limit": 50,
-                "offset": 0,
+                "offset": offset,
             },
         )
 
-    def render(self, page: AttendanceEventPage, language: ReplyLanguage) -> str:
-        return render_attendance_page(page, language=language)
+    def render(
+        self,
+        events: tuple[AttendanceEvent, ...],
+        language: ReplyLanguage,
+        *,
+        records_omitted: bool,
+    ) -> str:
+        return render_attendance_events(events, language=language, records_omitted=records_omitted)
 
 
 def canonical_self_attendance_tool() -> ToolDefinition:
@@ -133,7 +144,8 @@ def canonical_self_attendance_tool() -> ToolDefinition:
     return ToolDefinition(
         name=SELF_ATTENDANCE_TOOL,
         description=(
-            "List the authenticated requester's attendance events for an inclusive date range."
+            "List the authenticated requester's attendance events for an inclusive date range of "
+            "no more than 12 rolling calendar months."
         ),
         input_schema={
             "type": "object",
@@ -237,48 +249,55 @@ class AttendanceAgent:
                 if catalog is None:
                     outcome = "catalog_incompatible"
                     return BotResponse(text=UNAVAILABLE_REPLY)
-                stage = "model_completion"
-                turn = await self.language_model.complete(
-                    ModelRequest(
-                        user_message=message,
-                        reference_date=self.reference_date_factory(),
-                        timezone="Europe/Ljubljana",
-                        tools=tuple(policy.definition for policy in catalog.values())
-                        + (guidance_tool(),),
+                reference_date = self.reference_date_factory()
+                resolution = resolve_attendance_range(message, reference_date=reference_date)
+                policy = catalog[SELF_ATTENDANCE_TOOL]
+                if resolution is not None:
+                    arguments, language = resolution.range, resolution.language
+                else:
+                    stage = "model_completion"
+                    turn = await self.language_model.complete(
+                        ModelRequest(
+                            user_message=message,
+                            reference_date=reference_date,
+                            timezone="Europe/Ljubljana",
+                            tools=tuple(policy.definition for policy in catalog.values())
+                            + (guidance_tool(),),
+                        )
                     )
-                )
-                operation_event(
-                    logger,
-                    event="operation_step_completed",
-                    handler="AttendanceAgent.handle",
-                    operation="attendance_orchestration",
-                    step="model_completion",
-                    duration_ms=_duration_ms(started_at),
-                    input_metadata=input_metadata,
-                )
-                if isinstance(turn, NoTool):
-                    outcome = "clarification"
-                    return _response(CLARIFICATION_REPLY, "en", display_name)
-                if turn.name == GUIDANCE_TOOL:
-                    guidance = _guidance_reply(turn.arguments)
-                    if guidance is None:
+                    operation_event(
+                        logger,
+                        event="operation_step_completed",
+                        handler="AttendanceAgent.handle",
+                        operation="attendance_orchestration",
+                        step="model_completion",
+                        duration_ms=_duration_ms(started_at),
+                        input_metadata=input_metadata,
+                    )
+                    if isinstance(turn, NoTool):
+                        outcome = "clarification"
+                        return _response(CLARIFICATION_REPLY, "en", display_name)
+                    if turn.name == GUIDANCE_TOOL:
+                        guidance = _guidance_reply(turn.arguments)
+                        if guidance is None:
+                            outcome = "tool_rejected"
+                            return _response(UNAVAILABLE_REPLY, "en", display_name)
+                        outcome = "guidance"
+                        return _response(*guidance, display_name)
+                    model_policy = catalog.get(turn.name)
+                    if model_policy is None:
                         outcome = "tool_rejected"
                         return _response(UNAVAILABLE_REPLY, "en", display_name)
-                    outcome = "guidance"
-                    return _response(*guidance, display_name)
-                policy = catalog.get(turn.name)
-                if policy is None:
-                    outcome = "tool_rejected"
-                    return _response(UNAVAILABLE_REPLY, "en", display_name)
-                stage = "model_validation"
-                validated = policy.validate_arguments(turn.arguments)
-                if validated is None:
-                    outcome = "invalid_request"
-                    return _response(INVALID_REQUEST_REPLY, "en", display_name)
-                arguments, language = validated
+                    policy = model_policy
+                    stage = "model_validation"
+                    validated = policy.validate_arguments(turn.arguments)
+                    if validated is None:
+                        outcome = "invalid_request"
+                        return _response(INVALID_REQUEST_REPLY, "en", display_name)
+                    arguments, language = validated
                 reply_language = language
                 stage = "mcp_tool_call"
-                page = await policy.call(session, arguments)
+                events, records_omitted = await _fetch_attendance_events(session, policy, arguments)
                 operation_event(
                     logger,
                     event="operation_step_completed",
@@ -348,7 +367,39 @@ class AttendanceAgent:
                     error_type=error_type,
                     input_metadata={**input_metadata, "outcome": outcome, "error_code": error_code},
                 )
-        return _response(policy.render(page, language), language, display_name)
+        return _response(
+            policy.render(events, language, records_omitted=records_omitted), language, display_name
+        )
+
+
+async def _fetch_attendance_events(
+    session: AuthenticatedMcpSession,
+    policy: FrozenReadOnlyTool,
+    overall_range: OverallAttendanceRange,
+) -> tuple[tuple[AttendanceEvent, ...], bool]:
+    """Read each bot-owned window and page; never render a partial failed result."""
+    events: list[AttendanceEvent] = []
+    records_omitted = False
+    for window in overall_range.windows():
+        offset = 0
+        while True:
+            page = await policy.call(
+                session,
+                ListMyAttendanceArguments(start_date=window.start_date, end_date=window.end_date),
+                offset,
+            )
+            if page.limit != 50 or page.offset != offset or len(page.items) > 50:
+                raise McpContractIncompatible
+            remaining = 200 - len(events)
+            events.extend(page.items[:remaining])
+            if len(page.items) > remaining:
+                records_omitted = True
+            if len(events) == 200:
+                return tuple(events), records_omitted or page.next_offset is not None
+            if page.next_offset is None:
+                break
+            offset += 50
+    return tuple(events), records_omitted
 
 
 def _catalog_intersection(

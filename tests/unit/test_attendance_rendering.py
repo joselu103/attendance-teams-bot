@@ -1,6 +1,10 @@
 from datetime import UTC, datetime
 
-from attendance_teams_bot.agent.rendering import render_attendance_page
+from attendance_teams_bot.agent.rendering import (
+    MAX_REPLY_CHARACTERS,
+    render_attendance_events,
+    render_attendance_page,
+)
 from attendance_teams_bot.mcp.contracts import AttendanceEvent, AttendanceEventPage
 
 
@@ -67,3 +71,14 @@ def test_rendering_handles_no_data() -> None:
     assert render_attendance_page(_page(), language="sl") == (
         "Za to obdobje ni evidentiranih dogodkov prisotnosti."
     )
+
+
+def test_aggregate_rendering_discloses_character_budget_omissions_without_recency_claim() -> None:
+    events = tuple(_event(index, location="x" * 160) for index in range(200))
+
+    result = render_attendance_events(events, records_omitted=False)
+
+    assert len(result) <= MAX_REPLY_CHARACTERS
+    assert "additional records were omitted" in result
+    assert "older" not in result
+    assert "newer" not in result

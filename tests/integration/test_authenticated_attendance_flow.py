@@ -181,7 +181,7 @@ async def test_authenticated_attendance_flow_exchanges_token_a_and_sends_only_to
             {"start_date": "2026-08-10", "end_date": "2026-08-12", "limit": 50, "offset": 0},
         )
     ]
-    assert len(model.requests) == 1
+    assert model.requests == []
     assert "token-a" not in repr(model.requests)
     assert "token-b" not in repr(model.requests)
     assert "Remote metadata" not in repr(model.requests)
