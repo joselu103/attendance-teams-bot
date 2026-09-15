@@ -15,6 +15,7 @@ from attendance_teams_bot.agent.orchestrator import (
     UNAVAILABLE_REPLY,
     AttendanceAgent,
     canonical_self_attendance_tool,
+    guidance_tool,
 )
 from attendance_teams_bot.mcp.client import AttendanceToolFailure
 from attendance_teams_bot.mcp.contracts import (
@@ -122,6 +123,12 @@ def legacy_read_only_catalog() -> tuple[ToolDefinition, ...]:
 def build_agent(
     turn: ToolCall | NoTool, tools: tuple[ToolDefinition, ...] | None = None
 ) -> tuple[AttendanceAgent, FakeLanguageModel, FakeMcpSession]:
+    if (
+        isinstance(turn, ToolCall)
+        and turn.name == SELF_ATTENDANCE_TOOL
+        and "reply_language" not in turn.arguments
+    ):
+        turn = ToolCall(turn.id, turn.name, {**turn.arguments, "reply_language": "en"})
     model = FakeLanguageModel(turn)
     session = FakeMcpSession((compatible_tool(),) if tools is None else tools)
     return (
@@ -148,7 +155,7 @@ async def test_agent_uses_bot_owned_schema_and_one_fixed_page_call() -> None:
         message="How was my attendance?", mcp_access_token=SecretStr("token-b")
     )
 
-    assert model.requests[0].tools == (canonical_self_attendance_tool(),)
+    assert model.requests[0].tools == (canonical_self_attendance_tool(), guidance_tool())
     assert "Remote description" not in repr(model.requests[0])
     assert model.requests[0].reference_date == date(2026, 8, 15)
     assert model.requests[0].timezone == "Europe/Ljubljana"
@@ -174,7 +181,7 @@ async def test_agent_admits_full_legacy_catalog_but_prompts_and_calls_only_self_
 
     await agent.handle(message="Show attendance", mcp_access_token=SecretStr("token-b"))
 
-    assert model.requests[0].tools == (canonical_self_attendance_tool(),)
+    assert model.requests[0].tools == (canonical_self_attendance_tool(), guidance_tool())
     assert session.calls == [
         (
             SELF_ATTENDANCE_TOOL,
@@ -346,6 +353,87 @@ async def test_agent_returns_fixed_clarification_for_no_tool_and_unknown_tool() 
     assert unknown_response.text == UNAVAILABLE_REPLY
     assert session.calls == []
     assert unknown_session.calls == []
+
+
+@pytest.mark.anyio
+async def test_agent_localizes_attendance_and_strips_reply_language_before_mcp() -> None:
+    agent, _, session = build_agent(
+        ToolCall(
+            "call",
+            SELF_ATTENDANCE_TOOL,
+            {"start_date": "2026-08-10", "end_date": "2026-08-12", "reply_language": "sl"},
+        )
+    )
+
+    response = await agent.handle(
+        message="Pokaži prisotnost", mcp_access_token=SecretStr("token-b")
+    )
+
+    assert "Prisotnost" in response.text
+    assert session.calls[0][1] == {
+        "start_date": "2026-08-10",
+        "end_date": "2026-08-12",
+        "limit": 50,
+        "offset": 0,
+    }
+
+
+@pytest.mark.anyio
+async def test_guidance_is_localized_and_never_reaches_mcp() -> None:
+    agent, _, session = build_agent(
+        ToolCall("call", "respond_with_guidance", {"intent": "date_ambiguous", "language": "sl"})
+    )
+
+    response = await agent.handle(message="moja prisotnost", mcp_access_token=SecretStr("token-b"))
+
+    assert response.text == "Prosimo, pojasnite obdobje prisotnosti, ki ga želite prikazati."
+    assert session.calls == []
+
+
+@pytest.mark.anyio
+async def test_agent_rejects_invalid_synthetic_guidance_and_language_arguments() -> None:
+    guidance_agent, _, guidance_session = build_agent(
+        ToolCall("call", "respond_with_guidance", {"intent": "other", "language": "sl"})
+    )
+    attendance_agent, _, attendance_session = build_agent(
+        ToolCall(
+            "call",
+            SELF_ATTENDANCE_TOOL,
+            {"start_date": "2026-08-10", "end_date": "2026-08-12", "reply_language": "de"},
+        )
+    )
+
+    guidance_response = await guidance_agent.handle(
+        message="x", mcp_access_token=SecretStr("token-b")
+    )
+    attendance_response = await attendance_agent.handle(
+        message="x", mcp_access_token=SecretStr("token-b")
+    )
+
+    assert guidance_response.text == UNAVAILABLE_REPLY
+    assert attendance_response.text == INVALID_REQUEST_REPLY
+    assert guidance_session.calls == []
+    assert attendance_session.calls == []
+
+
+@pytest.mark.anyio
+async def test_agent_greets_a_sanitized_presentation_only_display_name() -> None:
+    agent, _, session = build_agent(
+        ToolCall(
+            "call",
+            SELF_ATTENDANCE_TOOL,
+            {"start_date": "2026-08-10", "end_date": "2026-08-12", "reply_language": "en"},
+        )
+    )
+
+    response = await agent.handle(
+        message="Show attendance",
+        mcp_access_token=SecretStr("token-b"),
+        display_name="  Ana *Example*  ",
+    )
+
+    assert response.text.startswith("Hello, Ana \\*Example\\*!")
+    assert len(session.calls) == 1
 
 
 @pytest.mark.anyio

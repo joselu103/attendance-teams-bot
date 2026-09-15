@@ -159,13 +159,15 @@ fourteen established version-1 read-only CRMT tool names; every advertised entry
 must be unique, safely formed, and marked `readOnlyHint=true`. The selected
 requester tool must also be present and schema-compatible. Unknown, duplicate,
 missing, malformed, or writable entries fail closed.
-The current frozen catalog contains only `list_my_attendance_events`. Its
-bot-owned definition—not remote descriptions or metadata—is the only tool prompt
-given to the model, and permits at most one call. The model may supply only
-`start_date` and `end_date`; the bot enforces inclusive Europe/Ljubljana calendar
-dates, a maximum 31-day range, bounded arguments, and fixed `limit=50` /
-`offset=0` pagination. Identity, employee targets, roles, and pagination are
-never model-controlled.
+The current frozen MCP catalog contains only `list_my_attendance_events`. Its
+bot-owned definition—not remote descriptions or metadata—plus a bot-only
+deterministic guidance function are the only tool prompts given to the model,
+and permit at most one call. The model may supply only `start_date`, `end_date`,
+and a bounded English or Slovene reply-language value; the bot strips the
+language before the unchanged MCP call and enforces inclusive Europe/Ljubljana
+calendar dates, a maximum 31-day range, and fixed `limit=50` / `offset=0`
+pagination. Identity, employee targets, roles, and pagination are never
+model-controlled.
 
 The first enabled slice supports only personal one-to-one chats. Group, meeting,
 channel, missing, and unknown conversation scope stop before SSO, OBO, OpenAI,

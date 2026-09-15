@@ -26,9 +26,12 @@ async def test_bot_service_connectivity_handler_returns_a_safe_reply() -> None:
 
 
 class FakeApplication:
-    async def handle(self, *, message: str, mcp_access_token: SecretStr) -> BotResponse:
+    async def handle(
+        self, *, message: str, mcp_access_token: SecretStr, display_name: str | None = None
+    ) -> BotResponse:
         assert message == "Show my attendance"
         assert mcp_access_token == SecretStr("mcp-token")
+        assert display_name is None
         return BotResponse(text="attendance reply")
 
 
