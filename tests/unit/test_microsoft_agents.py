@@ -27,6 +27,7 @@ class FakeActivity:
     type: str
     text: str | None
     conversation: FakeConversation | None = None
+    from_property: object | None = None
 
 
 @dataclass
@@ -77,9 +78,13 @@ async def test_authenticated_message_routes_trimmed_text_and_sends_the_reply() -
 @dataclass
 class RecordingAttendanceHandler:
     received_token: SecretStr | None = None
+    received_display_name: str | None = None
 
-    async def handle(self, *, message: str, mcp_access_token: SecretStr) -> BotResponse:
+    async def handle(
+        self, *, message: str, mcp_access_token: SecretStr, display_name: str | None = None
+    ) -> BotResponse:
         assert message == "Show my attendance"
+        self.received_display_name = display_name
         self.received_token = mcp_access_token
         return BotResponse(text="safe reply")
 
@@ -197,7 +202,34 @@ async def test_attendance_turn_passes_only_the_obo_token_to_the_handler() -> Non
     )
 
     assert handler.received_token == SecretStr("mcp-token")
+    assert handler.received_display_name is None
     assert context.sent_texts == ["safe reply"]
+
+
+@pytest.mark.anyio
+async def test_attendance_turn_passes_teams_display_name_as_presentation_metadata() -> None:
+    @dataclass
+    class Sender:
+        name: str | None
+
+    context = FakeTurnContext(
+        activity=FakeActivity(
+            type="message",
+            text="Show my attendance",
+            conversation=FakeConversation("personal"),
+            from_property=Sender("Ana Example"),
+        )
+    )
+    handler = RecordingAttendanceHandler()
+
+    await route_attendance_turn(
+        context=context,
+        handler=handler,
+        sso_token_provider=FakeSsoTokenProvider(),
+        obo_token_exchange=FakeOboTokenExchange(),
+    )
+
+    assert handler.received_display_name == "Ana Example"
 
 
 @pytest.mark.anyio

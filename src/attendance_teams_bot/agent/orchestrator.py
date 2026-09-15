@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 
 from pydantic import SecretStr, ValidationError
 
-from attendance_teams_bot.agent.contracts import BotResponse
+from attendance_teams_bot.agent.contracts import BotResponse, ReplyLanguage
 from attendance_teams_bot.agent.language_model import (
     LanguageModel,
     LanguageModelUnavailable,
@@ -44,7 +44,9 @@ from attendance_teams_bot.observability import (
 )
 
 INVALID_REQUEST_REPLY = "Please provide a date range of no more than 31 days."
-CLARIFICATION_REPLY = "Please ask for your attendance and include a date range."
+CLARIFICATION_REPLY = "Please clarify the attendance date range you want to view."
+GUIDANCE_TOOL = "respond_with_guidance"
+_GUIDANCE_INTENTS = frozenset({"unsupported", "date_ambiguous"})
 
 # The version-1 CRMT inventory is fixed. Advertising one of these tools never
 # grants it to the model; this bot selects only the requester-scoped entry below.
@@ -95,11 +97,17 @@ class FrozenReadOnlyTool:
 
     def validate_arguments(
         self, arguments: Mapping[str, object]
-    ) -> ListMyAttendanceArguments | None:
+    ) -> tuple[ListMyAttendanceArguments, ReplyLanguage] | None:
         if not _has_bounded_arguments(arguments):
             return None
+        language = _reply_language(arguments.get("reply_language"))
+        if language is None:
+            return None
         try:
-            return ListMyAttendanceArguments.model_validate(dict(arguments))
+            request_arguments = {
+                key: value for key, value in arguments.items() if key != "reply_language"
+            }
+            return ListMyAttendanceArguments.model_validate(request_arguments), language
         except ValidationError:
             return None
 
@@ -116,8 +124,8 @@ class FrozenReadOnlyTool:
             },
         )
 
-    def render(self, page: AttendanceEventPage) -> str:
-        return render_attendance_page(page)
+    def render(self, page: AttendanceEventPage, language: ReplyLanguage) -> str:
+        return render_attendance_page(page, language=language)
 
 
 def canonical_self_attendance_tool() -> ToolDefinition:
@@ -132,8 +140,9 @@ def canonical_self_attendance_tool() -> ToolDefinition:
             "properties": {
                 "start_date": {"type": "string", "format": "date"},
                 "end_date": {"type": "string", "format": "date"},
+                "reply_language": {"type": "string", "enum": ["en", "sl"]},
             },
-            "required": ["start_date", "end_date"],
+            "required": ["start_date", "end_date", "reply_language"],
             "additionalProperties": False,
         },
         annotations={"readOnlyHint": True},
@@ -145,6 +154,26 @@ def frozen_read_only_catalog() -> tuple[FrozenReadOnlyTool, ...]:
     return (FrozenReadOnlyTool(definition=canonical_self_attendance_tool()),)
 
 
+def guidance_tool() -> ToolDefinition:
+    """Return the bot-only tool used for deterministic, non-attendance guidance."""
+    return ToolDefinition(
+        name=GUIDANCE_TOOL,
+        description=(
+            "Respond with safe guidance for an unsupported request or ambiguous date range."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "intent": {"type": "string", "enum": sorted(_GUIDANCE_INTENTS)},
+                "language": {"type": "string", "enum": ["en", "sl"]},
+            },
+            "required": ["intent", "language"],
+            "additionalProperties": False,
+        },
+        annotations={"readOnlyHint": True},
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class AttendanceAgent:
     language_model: LanguageModel
@@ -154,7 +183,13 @@ class AttendanceAgent:
         ZoneInfo("Europe/Ljubljana")
     ).date()
 
-    async def handle(self, *, message: str, mcp_access_token: SecretStr) -> BotResponse:
+    async def handle(
+        self,
+        *,
+        message: str,
+        mcp_access_token: SecretStr,
+        display_name: str | None = None,
+    ) -> BotResponse:
         correlation_id = self.correlation_id_factory()
         started_at = perf_counter()
         logger = get_logger("agent").bind(correlation_id=str(correlation_id))
@@ -172,6 +207,7 @@ class AttendanceAgent:
         error_code: str | None = None
         error_type: str | None = None
         cancelled = False
+        reply_language: ReplyLanguage = "en"
         try:
             async with self.mcp_session_factory.open(
                 access_token=mcp_access_token, correlation_id=correlation_id
@@ -207,7 +243,8 @@ class AttendanceAgent:
                         user_message=message,
                         reference_date=self.reference_date_factory(),
                         timezone="Europe/Ljubljana",
-                        tools=tuple(policy.definition for policy in catalog.values()),
+                        tools=tuple(policy.definition for policy in catalog.values())
+                        + (guidance_tool(),),
                     )
                 )
                 operation_event(
@@ -221,16 +258,25 @@ class AttendanceAgent:
                 )
                 if isinstance(turn, NoTool):
                     outcome = "clarification"
-                    return BotResponse(text=CLARIFICATION_REPLY)
+                    return _response(CLARIFICATION_REPLY, "en", display_name)
+                if turn.name == GUIDANCE_TOOL:
+                    guidance = _guidance_reply(turn.arguments)
+                    if guidance is None:
+                        outcome = "tool_rejected"
+                        return _response(UNAVAILABLE_REPLY, "en", display_name)
+                    outcome = "guidance"
+                    return _response(*guidance, display_name)
                 policy = catalog.get(turn.name)
                 if policy is None:
                     outcome = "tool_rejected"
-                    return BotResponse(text=UNAVAILABLE_REPLY)
+                    return _response(UNAVAILABLE_REPLY, "en", display_name)
                 stage = "model_validation"
-                arguments = policy.validate_arguments(turn.arguments)
-                if arguments is None:
+                validated = policy.validate_arguments(turn.arguments)
+                if validated is None:
                     outcome = "invalid_request"
-                    return BotResponse(text=INVALID_REQUEST_REPLY)
+                    return _response(INVALID_REQUEST_REPLY, "en", display_name)
+                arguments, language = validated
+                reply_language = language
                 stage = "mcp_tool_call"
                 page = await policy.call(session, arguments)
                 operation_event(
@@ -263,7 +309,13 @@ class AttendanceAgent:
                     scheme="attendance_mcp",
                     failure_reason=error.failure.code,
                 )
-            return BotResponse(text=TOOL_FAILURE_REPLIES.get(error.failure.code, UNAVAILABLE_REPLY))
+            return _response(
+                _localized_safe_reply(
+                    TOOL_FAILURE_REPLIES.get(error.failure.code, UNAVAILABLE_REPLY), reply_language
+                ),
+                reply_language,
+                display_name,
+            )
         except (
             AttendanceMcpUnavailable,
             McpContractIncompatible,
@@ -271,11 +323,19 @@ class AttendanceAgent:
         ) as error:
             outcome = "dependency_unavailable"
             error_type = type(error).__name__
-            return BotResponse(text=UNAVAILABLE_REPLY)
+            return _response(
+                _localized_safe_reply(UNAVAILABLE_REPLY, reply_language),
+                reply_language,
+                display_name,
+            )
         except Exception as error:
             outcome = "unexpected_failure"
             error_type = type(error).__name__
-            return BotResponse(text=UNAVAILABLE_REPLY)
+            return _response(
+                _localized_safe_reply(UNAVAILABLE_REPLY, reply_language),
+                reply_language,
+                display_name,
+            )
         finally:
             if not cancelled:
                 operation_event(
@@ -288,7 +348,7 @@ class AttendanceAgent:
                     error_type=error_type,
                     input_metadata={**input_metadata, "outcome": outcome, "error_code": error_code},
                 )
-        return BotResponse(text=policy.render(page))
+        return _response(policy.render(page, language), language, display_name)
 
 
 def _catalog_intersection(
@@ -342,7 +402,7 @@ def _is_safe_unprompted_schema(value: object, depth: int = 0) -> bool:
 
 def _has_bounded_arguments(arguments: Mapping[str, object]) -> bool:
     """Keep unusably large model output out of validation and downstream calls."""
-    return len(arguments) <= 2 and all(
+    return len(arguments) <= 3 and all(
         isinstance(key, str) and len(key) <= 64 and isinstance(value, str) and len(value) <= 32
         for key, value in arguments.items()
     )
@@ -375,3 +435,78 @@ def _is_compatible_self_attendance_schema(schema: Mapping[str, object]) -> bool:
 
 def _duration_ms(started_at: float) -> int:
     return max(0, round((perf_counter() - started_at) * 1000))
+
+
+def _reply_language(value: object) -> ReplyLanguage | None:
+    if value == "en" or value == "sl":
+        return value
+    return None
+
+
+def _guidance_reply(arguments: Mapping[str, object]) -> tuple[str, ReplyLanguage] | None:
+    if len(arguments) != 2 or set(arguments) != {"intent", "language"}:
+        return None
+    intent = arguments.get("intent")
+    language = _reply_language(arguments.get("language"))
+    if intent not in _GUIDANCE_INTENTS or language is None:
+        return None
+    if intent == "date_ambiguous":
+        return (
+            (
+                "Prosimo, pojasnite obdobje prisotnosti, ki ga želite prikazati."
+                if language == "sl"
+                else CLARIFICATION_REPLY
+            ),
+            language,
+        )
+    return (
+        (
+            "Lahko vam prikažem dogodke vaše prisotnosti za določeno obdobje."
+            if language == "sl"
+            else "I can show your attendance events for a specific date range."
+        ),
+        language,
+    )
+
+
+def _response(text: str, language: ReplyLanguage, display_name: str | None) -> BotResponse:
+    name = _safe_display_name(display_name)
+    if name:
+        greeting = "Pozdravljeni" if language == "sl" else "Hello"
+        text = f"{greeting}, {name}!\n\n{text}"
+    return BotResponse(text=text)
+
+
+def _safe_display_name(value: str | None) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = " ".join(value.split())[:80]
+    if not normalized:
+        return None
+    replacements: dict[str, str | int | None] = {
+        character: f"\\{character}" for character in r"\\`*_{}[]<>#()+-.!|"
+    }
+    return normalized.translate(str.maketrans(replacements))
+
+
+def _localized_safe_reply(text: str, language: ReplyLanguage) -> str:
+    if language == "en":
+        return text
+    slovene = {
+        UNAVAILABLE_REPLY: "Podatki o prisotnosti trenutno niso na voljo. Poskusite znova pozneje.",
+        INVALID_REQUEST_REPLY: "Prosimo, navedite obdobje največ 31 dni.",
+        TOOL_FAILURE_REPLIES[
+            "INVALID_ARGUMENT"
+        ]: "Preverite obdobje prisotnosti in poskusite znova.",
+        TOOL_FAILURE_REPLIES["FORBIDDEN"]: "Nimate dovoljenja za ogled te prisotnosti.",
+        TOOL_FAILURE_REPLIES["IDENTITY_UNMAPPED"]: (
+            "Vaš račun Teams ni povezan z aktivnim zaposlenim za evidenco prisotnosti. "
+            "Obrnite se na skrbnika."
+        ),
+        TOOL_FAILURE_REPLIES["IDENTITY_AMBIGUOUS"]: (
+            "Vašega računa Teams ni mogoče varno povezati. Obrnite se na skrbnika."
+        ),
+        TOOL_FAILURE_REPLIES["AUTHENTICATION_REQUIRED"]: "Prijavite se in poskusite znova.",
+        TOOL_FAILURE_REPLIES["TOKEN_INVALID"]: "Prijavite se in poskusite znova.",
+    }
+    return slovene.get(text, slovene[UNAVAILABLE_REPLY])

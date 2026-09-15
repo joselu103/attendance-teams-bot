@@ -18,11 +18,23 @@ class ChannelAuthenticatedMessageHandler(Protocol):
 
 
 class AttendanceMessageHandler(Protocol):
-    async def handle(self, *, message: str, mcp_access_token: SecretStr) -> BotResponse: ...
+    async def handle(
+        self,
+        *,
+        message: str,
+        mcp_access_token: SecretStr,
+        display_name: str | None = None,
+    ) -> BotResponse: ...
 
 
 class AttendanceApplication(Protocol):
-    async def handle(self, *, message: str, mcp_access_token: SecretStr) -> BotResponse: ...
+    async def handle(
+        self,
+        *,
+        message: str,
+        mcp_access_token: SecretStr,
+        display_name: str | None = None,
+    ) -> BotResponse: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,5 +52,15 @@ class AttendanceApplicationHandler:
 
     application: AttendanceApplication
 
-    async def handle(self, *, message: str, mcp_access_token: SecretStr) -> BotResponse:
-        return await self.application.handle(message=message, mcp_access_token=mcp_access_token)
+    async def handle(
+        self,
+        *,
+        message: str,
+        mcp_access_token: SecretStr,
+        display_name: str | None = None,
+    ) -> BotResponse:
+        return await self.application.handle(
+            message=message,
+            mcp_access_token=mcp_access_token,
+            display_name=display_name,
+        )

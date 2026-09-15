@@ -51,6 +51,11 @@ class _Activity(Protocol):
     type: str
     text: str | None
     conversation: _Conversation | None
+    from_property: _From | None
+
+
+class _From(Protocol):
+    name: str | None
 
 
 class _TurnContext(Protocol):
@@ -100,7 +105,13 @@ class TeamsAuthorizationSsoTokenProvider:
 
 
 class _AttendanceHandler(Protocol):
-    async def handle(self, *, message: str, mcp_access_token: SecretStr) -> BotResponse: ...
+    async def handle(
+        self,
+        *,
+        message: str,
+        mcp_access_token: SecretStr,
+        display_name: str | None = None,
+    ) -> BotResponse: ...
 
 
 class _SsoTokenProvider(Protocol):
@@ -273,7 +284,13 @@ async def route_attendance_turn(
         input_metadata=input_metadata,
     )
     try:
-        response = await handler.handle(message=message, mcp_access_token=token)
+        sender = getattr(context.activity, "from_property", None)
+        display_name = getattr(sender, "name", None)
+        response = await handler.handle(
+            message=message,
+            mcp_access_token=token,
+            display_name=display_name,
+        )
     except Exception as error:
         operation_event(
             logger,

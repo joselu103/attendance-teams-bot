@@ -68,7 +68,11 @@ class RecordingLanguageModel:
         return ToolCall(
             id="call-1",
             name=SELF_ATTENDANCE_TOOL,
-            arguments={"start_date": "2026-08-10", "end_date": "2026-08-12"},
+            arguments={
+                "start_date": "2026-08-10",
+                "end_date": "2026-08-12",
+                "reply_language": "en",
+            },
         )
 
 
