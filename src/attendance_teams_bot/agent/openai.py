@@ -102,7 +102,11 @@ def _system_prompt(request: ModelRequest) -> str:
         "You select only supplied requester attendance tools. Use no invented facts, identity, "
         "authorization, or results. Today is "
         f"{request.reference_date.isoformat()} in {request.timezone}. "
-        "Tool dates must be ISO calendar dates in that timezone."
+        "Tool dates must be ISO calendar dates in that timezone and cover no more than "
+        "12 rolling calendar months. The bot resolves explicit ISO dates, named months, "
+        "this/last month, this/last week, and last/past 1–12 months locally before you run. "
+        "For other date wording, either choose the supplied tool with an unambiguous range "
+        "or use the guidance tool."
     )
 
 

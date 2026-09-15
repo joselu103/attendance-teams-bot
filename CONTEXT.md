@@ -20,3 +20,12 @@ _Avoid_: open event, current attendance
 **Display name**:
 Unverified Teams-provided presentation metadata that may be used only in a greeting.
 _Avoid_: employee identity, authorization identity
+
+**Attendance window**:
+A bot-controlled, inclusive period of at most 31 calendar days used for one
+request to Attendance CRMT.
+_Avoid_: source query, model range
+
+**Attendance result**:
+The localized, bounded Teams presentation of safely returned attendance events.
+_Avoid_: attendance authority, source ordering

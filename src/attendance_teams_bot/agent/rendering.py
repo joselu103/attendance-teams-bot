@@ -6,6 +6,8 @@ from datetime import date, datetime
 from attendance_teams_bot.agent.contracts import ReplyLanguage
 from attendance_teams_bot.mcp.contracts import AttendanceEvent, AttendanceEventPage
 
+MAX_REPLY_CHARACTERS = 12_000
+
 UNAVAILABLE_REPLY = "Attendance data is temporarily unavailable. Please try again later."
 TOOL_FAILURE_REPLIES = {
     "INVALID_ARGUMENT": "Check the attendance date range and try again.",
@@ -78,14 +80,58 @@ _TYPE_LABELS: dict[ReplyLanguage, dict[str, str]] = {
 
 
 def render_attendance_page(page: AttendanceEventPage, *, language: ReplyLanguage = "en") -> str:
-    if not page.items:
+    """Render one legacy page while preserving its page-specific disclosure."""
+    response = _render_events(page.items, language)
+    if page.next_offset is not None and page.items:
+        response += "\n" + _copy(
+            language,
+            "Showing the first 50 events; more events are available.",
+            "Prikazanih je prvih 50 dogodkov; na voljo jih je še več.",
+        )
+    return response
+
+
+def render_attendance_events(
+    events: tuple[AttendanceEvent, ...],
+    *,
+    language: ReplyLanguage = "en",
+    records_omitted: bool = False,
+) -> str:
+    """Render an aggregate reply within the Teams character budget.
+
+    Events are retained in safely returned source order while the existing local
+    presentation sorts them by display date. The disclosure deliberately makes
+    no claim about the source's ordering.
+    """
+    selected: list[AttendanceEvent] = []
+    omitted = records_omitted
+    for index, event in enumerate(events):
+        candidate = tuple((*selected, event))
+        needs_disclosure = records_omitted or index < len(events) - 1
+        if (
+            len(_render_events(candidate, language, records_omitted=needs_disclosure))
+            > MAX_REPLY_CHARACTERS
+        ):
+            omitted = True
+            break
+        selected.append(event)
+    return _render_events(tuple(selected), language, records_omitted=omitted)
+
+
+def _render_events(
+    events: tuple[AttendanceEvent, ...],
+    language: ReplyLanguage,
+    *,
+    records_omitted: bool = False,
+) -> str:
+    if not events:
         return _copy(
             language,
             "No attendance events were found for that date range.",
             "Za to obdobje ni evidentiranih dogodkov prisotnosti.",
         )
     groups: defaultdict[date | None, list[AttendanceEvent]] = defaultdict(list)
-    for event in page.items:
+    for event in events:
         groups[_event_date(event)].append(event)
     dated_groups = sorted(day for day in groups if day is not None)
     response_parts = [_range_heading(dated_groups, language)] if dated_groups else []
@@ -100,11 +146,11 @@ def render_attendance_page(page: AttendanceEventPage, *, language: ReplyLanguage
             _render_attendance_event(event, language) for event in _sort_events(groups[None])
         )
     response = "\n".join(part for part in response_parts if part)
-    if page.next_offset is not None:
+    if records_omitted:
         response += "\n" + _copy(
             language,
-            "Showing the first 50 events; more events are available.",
-            "Prikazanih je prvih 50 dogodkov; na voljo jih je še več.",
+            "Showing returned events only; additional records were omitted.",
+            "Prikazani so samo vrnjeni dogodki; dodatni zapisi so izpuščeni.",
         )
     return response
 

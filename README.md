@@ -159,15 +159,15 @@ fourteen established version-1 read-only CRMT tool names; every advertised entry
 must be unique, safely formed, and marked `readOnlyHint=true`. The selected
 requester tool must also be present and schema-compatible. Unknown, duplicate,
 missing, malformed, or writable entries fail closed.
-The current frozen MCP catalog contains only `list_my_attendance_events`. Its
-bot-owned definition—not remote descriptions or metadata—plus a bot-only
-deterministic guidance function are the only tool prompts given to the model,
-and permit at most one call. The model may supply only `start_date`, `end_date`,
-and a bounded English or Slovene reply-language value; the bot strips the
-language before the unchanged MCP call and enforces inclusive Europe/Ljubljana
-calendar dates, a maximum 31-day range, and fixed `limit=50` / `offset=0`
-pagination. Identity, employee targets, roles, and pagination are never
-model-controlled.
+The current frozen MCP catalog contains only `list_my_attendance_events`.
+Before invoking a model, the bot deterministically resolves explicit ISO dates,
+English and Slovene named months, this/last month, this/last week, and last/past
+one through twelve months using Europe/Ljubljana calendar semantics. It uses the
+model only for unsupported wording. The bot accepts an overall inclusive range
+of up to twelve rolling calendar months, then partitions it into chronological,
+contiguous 31-day MCP windows and fixed `limit=50` pages with bot-controlled
+offsets. Identity, employee targets, roles, pagination, and MCP windowing are
+never model-controlled.
 
 The first enabled slice supports only personal one-to-one chats. Group, meeting,
 channel, missing, and unknown conversation scope stop before SSO, OBO, OpenAI,
@@ -175,9 +175,12 @@ or MCP. The bot calls Attendance CRMT MCP contract
 [`1.2.0`](../attendance-crmt/docs/integrations/teams-bot-mcp-auth-contract.md)
 and renders validated attendance locally and deterministically. Attendance
 records are deliberately **not** sent to OpenAI, avoiding a second model/tool
-loop and reducing employee-data exposure. Tokens, employee authority, arbitrary
-tools, provider or MCP diagnostics, internal identifiers, and notes do not enter
-model prompts or Teams replies. Stable tool failures map to fixed safe replies.
+loop and reducing employee-data exposure. A reply contains at most 200 safely
+returned events and 12,000 characters; a localized disclosure notes omitted
+records without claiming that the source is ordered by recency. Tokens, employee
+authority, arbitrary tools, provider or MCP diagnostics, internal identifiers,
+and notes do not enter model prompts or Teams replies. Stable tool failures map
+to fixed safe replies.
 
 This verified client-side behavior does not establish a real integration. Real
 attendance traffic remains disabled by default pending the Attendance CRMT

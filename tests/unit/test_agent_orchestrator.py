@@ -40,6 +40,8 @@ class FakeLanguageModel:
 class FakeMcpSession:
     tools: tuple[ToolDefinition, ...]
     failure: AttendanceToolFailure | None = None
+    failure_on_call: int | None = None
+    pages: list[AttendanceEventPage] = field(default_factory=list)
     calls: list[tuple[str, dict[str, object]]] = field(default_factory=list)
 
     async def list_tools(self) -> tuple[ToolDefinition, ...]:
@@ -47,8 +49,12 @@ class FakeMcpSession:
 
     async def call_tool(self, *, name: str, arguments: dict[str, object]) -> AttendanceEventPage:
         self.calls.append((name, arguments))
-        if self.failure is not None:
+        if self.failure is not None and (
+            self.failure_on_call is None or len(self.calls) == self.failure_on_call
+        ):
             raise self.failure
+        if self.pages:
+            return self.pages.pop(0)
         return page()
 
 
@@ -216,7 +222,7 @@ async def test_agent_fails_closed_before_model_for_incompatible_catalog(
 @pytest.mark.parametrize(
     "arguments",
     [
-        {"start_date": "2026-08-10", "end_date": "2026-09-10"},
+        {"start_date": "2025-08-10", "end_date": "2026-09-10"},
         {"start_date": "2026-08-10", "end_date": "2026-08-12", "employee_id": 7},
         {"start_date": "yesterday", "end_date": "today"},
         {"start_date": "2026-08-10", "end_date": "2026-08-12", "limit": 100},
@@ -317,6 +323,60 @@ async def test_agent_accepts_exactly_31_inclusive_dates() -> None:
     await agent.handle(message="Show attendance", mcp_access_token=SecretStr("token-b"))
 
     assert len(session.calls) == 1
+
+
+@pytest.mark.anyio
+async def test_agent_resolves_long_ranges_locally_and_partitions_mcp_windows() -> None:
+    agent, model, session = build_agent(NoTool())
+
+    await agent.handle(
+        message="Show my attendance for last 3 months", mcp_access_token=SecretStr("token-b")
+    )
+
+    assert model.requests == []
+    assert [call[1] for call in session.calls] == [
+        {"start_date": "2026-05-15", "end_date": "2026-06-14", "limit": 50, "offset": 0},
+        {"start_date": "2026-06-15", "end_date": "2026-07-15", "limit": 50, "offset": 0},
+        {"start_date": "2026-07-16", "end_date": "2026-08-15", "limit": 50, "offset": 0},
+    ]
+
+
+@pytest.mark.anyio
+async def test_agent_uses_bot_controlled_offsets_and_stops_at_two_hundred_events() -> None:
+    agent, _, session = build_agent(
+        ToolCall(
+            "call", SELF_ATTENDANCE_TOOL, {"start_date": "2026-08-10", "end_date": "2026-08-12"}
+        )
+    )
+    event = page().items[0]
+    session.pages = [
+        AttendanceEventPage(items=(event,) * 50, limit=50, offset=offset, next_offset=offset + 50)
+        for offset in range(0, 200, 50)
+    ]
+
+    response = await agent.handle(message="Show attendance", mcp_access_token=SecretStr("token-b"))
+
+    assert [call[1]["offset"] for call in session.calls] == [0, 50, 100, 150]
+    assert "additional records were omitted" in response.text
+
+
+@pytest.mark.anyio
+async def test_agent_discards_aggregate_when_a_later_page_fails() -> None:
+    agent, _, session = build_agent(
+        ToolCall(
+            "call", SELF_ATTENDANCE_TOOL, {"start_date": "2026-08-10", "end_date": "2026-08-12"}
+        )
+    )
+    session.pages = [AttendanceEventPage(items=page().items, limit=50, offset=0, next_offset=50)]
+    session.failure = AttendanceToolFailure(
+        McpToolFailure(code="FORBIDDEN", message="You do not have permission to do that.")
+    )
+    session.failure_on_call = 2
+
+    response = await agent.handle(message="Show attendance", mcp_access_token=SecretStr("token-b"))
+
+    assert response.text == "You do not have permission to view that attendance."
+    assert "Office" not in response.text
 
 
 @pytest.mark.anyio
