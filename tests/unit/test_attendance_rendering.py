@@ -39,7 +39,7 @@ def test_rendering_groups_offset_local_dates_orders_events_and_hides_offsets() -
         )
     )
 
-    assert result == "\n".join(
+    assert result == "\n\n".join(
         (
             "**Attendance: August 10, 2026–August 11, 2026**",
             "**Monday, August 10, 2026**",
@@ -49,6 +49,25 @@ def test_rendering_groups_offset_local_dates_orders_events_and_hides_offsets() -
         )
     )
     assert "+00:00" not in result
+
+
+def test_rendering_separates_date_blocks_but_keeps_same_day_events_contiguous() -> None:
+    result = render_attendance_page(
+        _page(
+            _event(1, checked_in_at=datetime(2026, 8, 10, 8, tzinfo=UTC)),
+            _event(2, checked_in_at=datetime(2026, 8, 10, 9, tzinfo=UTC)),
+            _event(3, checked_in_at=datetime(2026, 8, 11, 8, tzinfo=UTC)),
+        )
+    )
+
+    assert (
+        "**Attendance: August 10, 2026–August 11, 2026**\n\n"
+        "**Monday, August 10, 2026**\n\n"
+        "- 08:00–16:00: Office (Company)\n"
+        "- 09:00–16:00: Office (Company)\n\n"
+        "**Tuesday, August 11, 2026**\n\n"
+        "- 08:00–16:00: Office (Company)"
+    ) == result
 
 
 def test_rendering_localizes_types_active_partial_unknown_and_pagination() -> None:

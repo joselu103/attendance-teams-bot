@@ -137,15 +137,19 @@ def _render_events(
     response_parts = [_range_heading(dated_groups, language)] if dated_groups else []
     for day in dated_groups:
         response_parts.append(f"**{_format_date(day, language, weekday=True)}**")
-        response_parts.extend(
-            _render_attendance_event(event, language) for event in _sort_events(groups[day])
+        response_parts.append(
+            "\n".join(
+                _render_attendance_event(event, language) for event in _sort_events(groups[day])
+            )
         )
     if None in groups:
         response_parts.append(f"**{_copy(language, 'Date unavailable', 'Datum ni na voljo')}**")
-        response_parts.extend(
-            _render_attendance_event(event, language) for event in _sort_events(groups[None])
+        response_parts.append(
+            "\n".join(
+                _render_attendance_event(event, language) for event in _sort_events(groups[None])
+            )
         )
-    response = "\n".join(part for part in response_parts if part)
+    response = "\n\n".join(part for part in response_parts if part)
     if records_omitted:
         response += "\n" + _copy(
             language,
