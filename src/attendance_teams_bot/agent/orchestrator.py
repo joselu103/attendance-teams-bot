@@ -12,7 +12,12 @@ from zoneinfo import ZoneInfo
 
 from pydantic import SecretStr
 
-from attendance_teams_bot.agent.contracts import BotResponse, OverallAttendanceRange, ReplyLanguage
+from attendance_teams_bot.agent.attendance_window import (
+    AttendanceWindowExecutor,
+    McpAttendancePageReader,
+    OverallAttendanceRange,
+)
+from attendance_teams_bot.agent.contracts import BotResponse, ReplyLanguage
 from attendance_teams_bot.agent.date_resolver import resolve_attendance_range
 from attendance_teams_bot.agent.language_model import (
     LanguageModel,
@@ -35,7 +40,6 @@ from attendance_teams_bot.mcp.contracts import (
     SELF_ATTENDANCE_TOOL,
     AttendanceEvent,
     AttendanceEventPage,
-    ListMyAttendanceArguments,
 )
 from attendance_teams_bot.observability import (
     authentication_event,
@@ -115,19 +119,6 @@ class FrozenReadOnlyTool:
             ), language
         except KeyError, ValueError:
             return None
-
-    async def call(
-        self, session: AuthenticatedMcpSession, arguments: ListMyAttendanceArguments, offset: int
-    ) -> AttendanceEventPage:
-        return await session.call_tool(
-            name=self.definition.name,
-            arguments={
-                "start_date": arguments.start_date.isoformat(),
-                "end_date": arguments.end_date.isoformat(),
-                "limit": 50,
-                "offset": offset,
-            },
-        )
 
     def render(
         self,
@@ -297,7 +288,9 @@ class AttendanceAgent:
                     arguments, language = validated
                 reply_language = language
                 stage = "mcp_tool_call"
-                events, records_omitted = await _fetch_attendance_events(session, policy, arguments)
+                result = await AttendanceWindowExecutor(
+                    McpAttendancePageReader(session, policy.definition)
+                ).execute(arguments)
                 operation_event(
                     logger,
                     event="operation_step_completed",
@@ -368,38 +361,10 @@ class AttendanceAgent:
                     input_metadata={**input_metadata, "outcome": outcome, "error_code": error_code},
                 )
         return _response(
-            policy.render(events, language, records_omitted=records_omitted), language, display_name
+            policy.render(result.events, language, records_omitted=result.records_omitted),
+            language,
+            display_name,
         )
-
-
-async def _fetch_attendance_events(
-    session: AuthenticatedMcpSession,
-    policy: FrozenReadOnlyTool,
-    overall_range: OverallAttendanceRange,
-) -> tuple[tuple[AttendanceEvent, ...], bool]:
-    """Read each bot-owned window and page; never render a partial failed result."""
-    events: list[AttendanceEvent] = []
-    records_omitted = False
-    for window in overall_range.windows():
-        offset = 0
-        while True:
-            page = await policy.call(
-                session,
-                ListMyAttendanceArguments(start_date=window.start_date, end_date=window.end_date),
-                offset,
-            )
-            if page.limit != 50 or page.offset != offset or len(page.items) > 50:
-                raise McpContractIncompatible
-            remaining = 200 - len(events)
-            events.extend(page.items[:remaining])
-            if len(page.items) > remaining:
-                records_omitted = True
-            if len(events) == 200:
-                return tuple(events), records_omitted or page.next_offset is not None
-            if page.next_offset is None:
-                break
-            offset += 50
-    return tuple(events), records_omitted
 
 
 def _catalog_intersection(
