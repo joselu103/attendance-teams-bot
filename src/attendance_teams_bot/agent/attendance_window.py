@@ -7,7 +7,6 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Protocol
 
-from attendance_teams_bot.agent.language_model import ToolDefinition
 from attendance_teams_bot.mcp.client import McpContractIncompatible
 from attendance_teams_bot.mcp.contracts import AttendanceEvent, AttendanceEventPage
 
@@ -64,11 +63,11 @@ class McpAttendancePageReader:
     """Serializes only fixed, bot-owned attendance MCP page arguments."""
 
     session: AuthenticatedMcpToolCaller
-    admitted_tool: ToolDefinition
+    tool_name: str
 
     async def read_page(self, *, window: AttendanceWindow, offset: int) -> AttendanceEventPage:
         return await self.session.call_tool(
-            name=self.admitted_tool.name,
+            name=self.tool_name,
             arguments={
                 "start_date": window.start_date.isoformat(),
                 "end_date": window.end_date.isoformat(),

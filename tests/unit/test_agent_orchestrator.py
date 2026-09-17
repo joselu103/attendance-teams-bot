@@ -7,14 +7,17 @@ import pytest
 from pydantic import SecretStr
 
 from attendance_teams_bot.agent import orchestrator
-from attendance_teams_bot.agent.language_model import ModelRequest, NoTool, ToolCall, ToolDefinition
-from attendance_teams_bot.agent.orchestrator import (
+from attendance_teams_bot.agent.language_model import ModelRequest, NoTool, ToolCall
+from attendance_teams_bot.agent.mcp_catalog import (
     _LEGACY_READ_ONLY_TOOL_NAMES,
+    DiscoveredMcpTool,
+    canonical_self_attendance_tool,
+)
+from attendance_teams_bot.agent.orchestrator import (
     CLARIFICATION_REPLY,
     INVALID_REQUEST_REPLY,
     UNAVAILABLE_REPLY,
     AttendanceAgent,
-    canonical_self_attendance_tool,
     guidance_tool,
 )
 from attendance_teams_bot.mcp.client import AttendanceToolFailure
@@ -38,13 +41,13 @@ class FakeLanguageModel:
 
 @dataclass
 class FakeMcpSession:
-    tools: tuple[ToolDefinition, ...]
+    tools: tuple[DiscoveredMcpTool, ...]
     failure: AttendanceToolFailure | None = None
     failure_on_call: int | None = None
     pages: list[AttendanceEventPage] = field(default_factory=list)
     calls: list[tuple[str, dict[str, object]]] = field(default_factory=list)
 
-    async def list_tools(self) -> tuple[ToolDefinition, ...]:
+    async def list_tools(self) -> tuple[DiscoveredMcpTool, ...]:
         return self.tools
 
     async def call_tool(self, *, name: str, arguments: dict[str, object]) -> AttendanceEventPage:
@@ -93,8 +96,8 @@ def page() -> AttendanceEventPage:
     )
 
 
-def compatible_tool(description: str = "Remote description") -> ToolDefinition:
-    return ToolDefinition(
+def compatible_tool(description: str = "Remote description") -> DiscoveredMcpTool:
+    return DiscoveredMcpTool(
         name=SELF_ATTENDANCE_TOOL,
         description=description,
         input_schema={
@@ -112,11 +115,11 @@ def compatible_tool(description: str = "Remote description") -> ToolDefinition:
     )
 
 
-def legacy_read_only_catalog() -> tuple[ToolDefinition, ...]:
+def legacy_read_only_catalog() -> tuple[DiscoveredMcpTool, ...]:
     return tuple(
         compatible_tool()
         if name == SELF_ATTENDANCE_TOOL
-        else ToolDefinition(
+        else DiscoveredMcpTool(
             name=name,
             description="Unprompted legacy read-only tool",
             input_schema={"type": "object"},
@@ -127,7 +130,7 @@ def legacy_read_only_catalog() -> tuple[ToolDefinition, ...]:
 
 
 def build_agent(
-    turn: ToolCall | NoTool, tools: tuple[ToolDefinition, ...] | None = None
+    turn: ToolCall | NoTool, tools: tuple[DiscoveredMcpTool, ...] | None = None
 ) -> tuple[AttendanceAgent, FakeLanguageModel, FakeMcpSession]:
     if (
         isinstance(turn, ToolCall)
@@ -201,13 +204,13 @@ async def test_agent_admits_full_legacy_catalog_but_prompts_and_calls_only_self_
     "tools",
     [
         (),
-        (ToolDefinition("admin_tool", "x", {"type": "object"}),),
+        (DiscoveredMcpTool("admin_tool", "x", {"type": "object"}, {}),),
         (compatible_tool(), compatible_tool()),
-        (compatible_tool(), ToolDefinition("unexpected_tool", "x", {"type": "object"})),
+        (compatible_tool(), DiscoveredMcpTool("unexpected_tool", "x", {"type": "object"}, {})),
     ],
 )
 async def test_agent_fails_closed_before_model_for_incompatible_catalog(
-    tools: tuple[ToolDefinition, ...],
+    tools: tuple[DiscoveredMcpTool, ...],
 ) -> None:
     agent, model, session = build_agent(ToolCall("call", SELF_ATTENDANCE_TOOL, {}), tools)
 
@@ -259,7 +262,7 @@ async def test_agent_rejects_an_oversized_model_argument_before_the_mcp_call() -
 @pytest.mark.anyio
 async def test_agent_requires_the_remote_catalog_read_only_marker() -> None:
     remote = compatible_tool()
-    remote = ToolDefinition(remote.name, remote.description, remote.input_schema)
+    remote = DiscoveredMcpTool(remote.name, remote.description, remote.input_schema, None)
     agent, model, session = build_agent(ToolCall("call", SELF_ATTENDANCE_TOOL, {}), (remote,))
 
     response = await agent.handle(message="Show attendance", mcp_access_token=SecretStr("token-b"))
@@ -275,7 +278,7 @@ async def test_agent_requires_the_remote_catalog_read_only_marker() -> None:
     [
         tuple(tool for tool in legacy_read_only_catalog() if tool.name != SELF_ATTENDANCE_TOOL),
         tuple(
-            ToolDefinition(
+            DiscoveredMcpTool(
                 tool.name,
                 tool.description,
                 {"type": "object"} if tool.name == SELF_ATTENDANCE_TOOL else tool.input_schema,
@@ -284,13 +287,13 @@ async def test_agent_requires_the_remote_catalog_read_only_marker() -> None:
             for tool in legacy_read_only_catalog()
         ),
         tuple(
-            ToolDefinition(tool.name, tool.description, tool.input_schema, {})
+            DiscoveredMcpTool(tool.name, tool.description, tool.input_schema, {})
             if tool.name == SELF_ATTENDANCE_TOOL
             else tool
             for tool in legacy_read_only_catalog()
         ),
         tuple(
-            ToolDefinition(
+            DiscoveredMcpTool(
                 tool.name,
                 tool.description,
                 {"type": object()} if tool.name == "list_locations" else tool.input_schema,
@@ -301,7 +304,7 @@ async def test_agent_requires_the_remote_catalog_read_only_marker() -> None:
     ],
 )
 async def test_agent_rejects_missing_or_incompatible_selected_tool_in_legacy_catalog(
-    tools: tuple[ToolDefinition, ...],
+    tools: tuple[DiscoveredMcpTool, ...],
 ) -> None:
     agent, model, session = build_agent(ToolCall("call", SELF_ATTENDANCE_TOOL, {}), tools)
 

@@ -9,7 +9,6 @@ from attendance_teams_bot.agent.attendance_window import (
     McpAttendancePageReader,
     OverallAttendanceRange,
 )
-from attendance_teams_bot.agent.language_model import ToolDefinition
 from attendance_teams_bot.mcp.client import AttendanceToolFailure, McpContractIncompatible
 from attendance_teams_bot.mcp.contracts import AttendanceEvent, AttendanceEventPage, McpToolFailure
 
@@ -90,7 +89,7 @@ async def test_mcp_page_reader_serializes_fixed_bot_owned_request() -> None:
     session = FakeMcpSession()
     reader = McpAttendancePageReader(
         session,
-        ToolDefinition("list_my_attendance_events", "", {"type": "object"}),
+        "list_my_attendance_events",
     )
 
     await reader.read_page(window=AttendanceWindow(date(2026, 8, 10), date(2026, 8, 12)), offset=50)

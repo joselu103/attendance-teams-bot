@@ -4,7 +4,6 @@ from unittest.mock import AsyncMock
 import pytest
 from mcp.types import Tool, ToolAnnotations
 
-from attendance_teams_bot.mcp.client import AttendanceMcpUnavailable
 from attendance_teams_bot.mcp.session import StreamableHttpAttendanceSession
 
 
@@ -29,28 +28,17 @@ async def test_list_tools_normalizes_sdk_tool_annotations() -> None:
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize(
-    "tool",
-    [
-        SimpleNamespace(name=None, description="x", inputSchema={"type": "object"}),
-        SimpleNamespace(name="safe_name", description=None, inputSchema={"type": "object"}),
-        SimpleNamespace(name="safe_name", description="x", inputSchema=["not", "a", "schema"]),
-        SimpleNamespace(
-            name="safe_name",
-            description="x",
-            inputSchema={"type": "object"},
-            annotations={"readOnlyHint": "true"},
-        ),
-        SimpleNamespace(
-            name="safe_name",
-            description="x",
-            inputSchema={"type": "object"},
-            annotations={"unrecognized": True},
-        ),
-    ],
-)
-async def test_list_tools_rejects_malformed_required_fields_and_annotations(tool: object) -> None:
-    client = SimpleNamespace(list_tools=AsyncMock(return_value=SimpleNamespace(tools=[tool])))
+async def test_list_tools_preserves_untrusted_sdk_fields_for_catalog_admission() -> None:
+    sdk_tool = SimpleNamespace(
+        name=None,
+        description="x",
+        inputSchema=["not", "a", "schema"],
+        annotations={"readOnlyHint": "true"},
+    )
+    client = SimpleNamespace(list_tools=AsyncMock(return_value=SimpleNamespace(tools=[sdk_tool])))
 
-    with pytest.raises(AttendanceMcpUnavailable):
-        await StreamableHttpAttendanceSession(session=client).list_tools()
+    tools = await StreamableHttpAttendanceSession(session=client).list_tools()
+
+    assert tools[0].name is None
+    assert tools[0].input_schema == ["not", "a", "schema"]
+    assert tools[0].annotations == {"readOnlyHint": "true"}

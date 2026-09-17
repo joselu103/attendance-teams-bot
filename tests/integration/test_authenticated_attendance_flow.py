@@ -6,7 +6,7 @@ from uuid import UUID, uuid4
 import pytest
 from pydantic import SecretStr
 
-from attendance_teams_bot.agent.language_model import ToolDefinition
+from attendance_teams_bot.agent.mcp_catalog import DiscoveredMcpTool
 from attendance_teams_bot.agent.orchestrator import AttendanceAgent
 from attendance_teams_bot.mcp.contracts import (
     SELF_ATTENDANCE_TOOL,
@@ -56,9 +56,9 @@ class Obo:
 
 @dataclass
 class Session:
-    async def list_tools(self) -> tuple[ToolDefinition, ...]:
+    async def list_tools(self) -> tuple[DiscoveredMcpTool, ...]:
         return (
-            ToolDefinition(
+            DiscoveredMcpTool(
                 name=SELF_ATTENDANCE_TOOL,
                 description="metadata",
                 input_schema={"type": "object", "properties": {}, "additionalProperties": False},
