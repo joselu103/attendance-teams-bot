@@ -116,7 +116,7 @@ async def test_enabled_attendance_endpoint_exposes_health_and_rejects_unsigned_r
     assert connection is not None
     app = create_attendance_teams_http_app(
         connection=connection,
-        attendance_handler=_UnusedAttendanceHandler(),
+        attendance_application=_UnusedAttendanceHandler(),
         oauth_connection_name="attendance-teams-sso",
         delegated_scope="api://attendance-crmt/attendance.access",
     )

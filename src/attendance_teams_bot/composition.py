@@ -7,7 +7,6 @@ from attendance_teams_bot.mcp.session import StreamableHttpAttendanceSessionFact
 from attendance_teams_bot.settings import RuntimeMode, Settings
 from attendance_teams_bot.teams.adapter import TeamsActivityAdapter
 from attendance_teams_bot.teams.authenticated import (
-    AttendanceApplicationHandler,
     BotServiceConnectivityHandler,
 )
 from attendance_teams_bot.teams.http import create_teams_http_app
@@ -39,7 +38,7 @@ def create_http_app(settings: Settings) -> FastAPI:
             )
             return create_attendance_teams_http_app(
                 connection=connection,
-                attendance_handler=AttendanceApplicationHandler(application),
+                attendance_application=application,
                 oauth_connection_name=integration.teams_sso_oauth_connection_name,
                 delegated_scope=integration.delegated_scope,
             )
