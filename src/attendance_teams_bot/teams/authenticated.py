@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
-from time import perf_counter
 from typing import Protocol
 
 from pydantic import SecretStr
@@ -11,11 +10,11 @@ from pydantic import SecretStr
 from attendance_teams_bot.agent.contracts import BotResponse
 from attendance_teams_bot.auth.obo import DelegatedAuthenticationUnavailable
 from attendance_teams_bot.observability import (
+    OperationLifecycle,
     current_correlation_id,
     get_logger,
     log_event,
     message_input_metadata,
-    operation_event,
 )
 
 _SAFE_BOT_SERVICE_REPLY = (
@@ -128,17 +127,15 @@ class AuthenticatedAttendanceTurnHandler:
     ) -> None:
         correlation_id = current_correlation_id()
         logger = get_logger("teams.turn").bind(correlation_id=str(correlation_id))
-        started_at = perf_counter()
         input_metadata = message_input_metadata(message)
         step = "teams_sso"
-        operation_event(
+        lifecycle = OperationLifecycle(
             logger,
-            event="operation_started",
             handler=type(self).__name__,
             operation="authenticated_attendance_turn",
-            step=step,
             input_metadata=input_metadata,
         )
+        lifecycle.start(step=step)
         try:
             try:
                 token_a = await self.sso_token_provider.get_token(context)
@@ -146,14 +143,12 @@ class AuthenticatedAttendanceTurnHandler:
                 await self._reply_for_authentication_failure(
                     context=context,
                     logger=logger,
-                    started_at=started_at,
-                    step=step,
+                    lifecycle=lifecycle,
                     error=error,
-                    input_metadata=input_metadata,
                     event="teams_sso_token_unavailable",
                 )
                 return
-            self._step_completed(logger, started_at, step, input_metadata)
+            lifecycle.step_completed()
 
             step = "delegated_obo"
             try:
@@ -162,14 +157,12 @@ class AuthenticatedAttendanceTurnHandler:
                 await self._reply_for_authentication_failure(
                     context=context,
                     logger=logger,
-                    started_at=started_at,
-                    step=step,
+                    lifecycle=lifecycle,
                     error=error,
-                    input_metadata=input_metadata,
                     event="teams_obo_exchange_failed",
                 )
                 return
-            self._step_completed(logger, started_at, step, input_metadata)
+            lifecycle.step_completed(step=step)
 
             step = "attendance_application"
             response = await self.application.handle(
@@ -177,7 +170,7 @@ class AuthenticatedAttendanceTurnHandler:
                 mcp_access_token=token_b,
                 display_name=self._display_name(context),
             )
-            self._step_completed(logger, started_at, step, input_metadata)
+            lifecycle.step_completed(step=step)
 
             step = "teams_reply_delivery"
             try:
@@ -191,28 +184,13 @@ class AuthenticatedAttendanceTurnHandler:
                     error_type=type(error).__name__,
                 )
                 raise
-            operation_event(
-                logger,
-                event="operation_succeeded",
-                handler=type(self).__name__,
-                operation="authenticated_attendance_turn",
-                step=step,
-                duration_ms=_duration_ms(started_at),
-                input_metadata=input_metadata,
-            )
+            lifecycle.succeed(step=step)
         except asyncio.CancelledError:
-            operation_event(
-                logger,
-                event="operation_cancelled",
-                handler=type(self).__name__,
-                operation="authenticated_attendance_turn",
-                step=step,
-                duration_ms=_duration_ms(started_at),
-                input_metadata=input_metadata,
-            )
+            if not lifecycle.terminal:
+                lifecycle.cancel(step=step)
             raise
         except Exception as error:
-            self._failed(logger, started_at, step, error, input_metadata)
+            lifecycle.fail(error, step=step)
             raise
 
     async def _reply_for_authentication_failure(
@@ -220,10 +198,8 @@ class AuthenticatedAttendanceTurnHandler:
         *,
         context: AuthenticatedTurnContext,
         logger: object,
-        started_at: float,
-        step: str,
+        lifecycle: OperationLifecycle,
         error: RuntimeError | DelegatedAuthenticationUnavailable,
-        input_metadata: dict[str, object],
         event: str,
     ) -> None:
         log_event(
@@ -233,46 +209,10 @@ class AuthenticatedAttendanceTurnHandler:
             correlation_id=str(current_correlation_id()),
             error_type=type(error).__name__,
         )
-        self._failed(logger, started_at, step, error, input_metadata)
+        lifecycle.fail(error)
         await context.send_activity(_SAFE_AUTHENTICATION_REPLY)
-
-    def _step_completed(
-        self, logger: object, started_at: float, step: str, input_metadata: dict[str, object]
-    ) -> None:
-        operation_event(
-            logger,  # type: ignore[arg-type]
-            event="operation_step_completed",
-            handler=type(self).__name__,
-            operation="authenticated_attendance_turn",
-            step=step,
-            duration_ms=_duration_ms(started_at),
-            input_metadata=input_metadata,
-        )
-
-    def _failed(
-        self,
-        logger: object,
-        started_at: float,
-        step: str,
-        error: Exception,
-        input_metadata: dict[str, object],
-    ) -> None:
-        operation_event(
-            logger,  # type: ignore[arg-type]
-            event="operation_failed",
-            handler=type(self).__name__,
-            operation="authenticated_attendance_turn",
-            step=step,
-            duration_ms=_duration_ms(started_at),
-            error_type=type(error).__name__,
-            input_metadata=input_metadata,
-        )
 
     @staticmethod
     def _display_name(context: AuthenticatedTurnContext) -> str | None:
         sender = context.activity.from_property
         return sender.name if sender is not None else None
-
-
-def _duration_ms(started_at: float) -> int:
-    return max(0, round((perf_counter() - started_at) * 1000))

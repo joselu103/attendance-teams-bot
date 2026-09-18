@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 import pytest
 from pydantic import SecretStr
 
-import attendance_teams_bot.teams.authenticated as authenticated
+import attendance_teams_bot.observability as observability
 from attendance_teams_bot.agent.contracts import BotResponse
 from attendance_teams_bot.auth.obo import DelegatedAuthenticationUnavailable
 from attendance_teams_bot.teams.authenticated import (
@@ -171,7 +171,7 @@ async def test_cancellation_emits_one_terminal_event_and_does_not_reply(monkeypa
     def record_event(_logger: object, *, event: str, **fields: object) -> None:
         events.append((event, fields))
 
-    monkeypatch.setattr(authenticated, "operation_event", record_event)
+    monkeypatch.setattr(observability, "operation_event", record_event)
 
     class CancellingApplication(Application):
         async def handle(self, **kwargs: object) -> BotResponse:
@@ -199,7 +199,7 @@ async def test_application_and_reply_failures_emit_the_active_step_lifecycle_eve
     def record_event(_logger: object, *, event: str, **fields: object) -> None:
         events.append((event, fields))
 
-    monkeypatch.setattr(authenticated, "operation_event", record_event)
+    monkeypatch.setattr(observability, "operation_event", record_event)
 
     class FailingApplication(Application):
         async def handle(self, **kwargs: object) -> BotResponse:

@@ -6,6 +6,7 @@ from uuid import UUID
 import pytest
 from pydantic import SecretStr
 
+import attendance_teams_bot.observability as observability
 from attendance_teams_bot.agent import orchestrator
 from attendance_teams_bot.agent.language_model import ModelRequest, NoTool, ToolCall
 from attendance_teams_bot.agent.mcp_catalog import (
@@ -447,7 +448,7 @@ async def test_agent_records_a_correlated_terminal_outcome_without_sensitive_dat
     def record_event(_logger, **fields: object) -> None:
         events.append((str(fields.pop("event")), fields))
 
-    monkeypatch.setattr(orchestrator, "operation_event", record_event)
+    monkeypatch.setattr(observability, "operation_event", record_event)
 
     response = await agent.handle(
         message="private attendance request",

@@ -9,6 +9,7 @@ import pytest
 
 import attendance_teams_bot.observability as observability
 from attendance_teams_bot.observability import (
+    OperationLifecycle,
     correlation_scope,
     current_correlation_id,
     get_logger,
@@ -117,3 +118,84 @@ def test_staging_filters_debug_events(monkeypatch) -> None:
     log_event(get_logger("test"), 10, "not_emitted")
 
     assert output.getvalue() == ""
+
+
+def test_operation_lifecycle_emits_safe_steps_and_one_terminal_event(monkeypatch) -> None:
+    events: list[tuple[str, dict[str, object]]] = []
+    clock = iter((10.0, 10.025, 10.075))
+
+    def record_event(_logger, *, event: str, **fields: object) -> None:
+        events.append((event, fields))
+
+    monkeypatch.setattr(observability, "operation_event", record_event)
+    lifecycle = OperationLifecycle(
+        get_logger("test"),
+        handler="handler",
+        operation="operation",
+        input_metadata={"message_present": True, "message": "not allowed"},
+        clock=lambda: next(clock),
+    )
+
+    lifecycle.start(step="request")
+    lifecycle.step_completed(step="validated", input_metadata={"tool_count": 1})
+    lifecycle.succeed(input_metadata={"outcome": "success", "token": "not allowed"})
+
+    assert [event for event, _ in events] == [
+        "operation_started",
+        "operation_step_completed",
+        "operation_succeeded",
+    ]
+    assert events[0][1]["duration_ms"] is None
+    assert events[1][1]["duration_ms"] == 25
+    assert events[2][1]["duration_ms"] == 75
+    assert events[2][1]["step"] == "validated"
+    assert events[2][1]["input_metadata"] == {
+        "message_present": True,
+        "tool_count": 1,
+        "outcome": "success",
+    }
+    with pytest.raises(RuntimeError, match="terminal"):
+        lifecycle.fail(RuntimeError())
+
+
+def test_operation_lifecycle_requires_start_and_never_reports_negative_duration(
+    monkeypatch,
+) -> None:
+    events: list[dict[str, object]] = []
+    clock = iter((10.0, 9.0))
+
+    def record_event(_logger, *, event: str, **fields: object) -> None:
+        del event
+        events.append(fields)
+
+    monkeypatch.setattr(observability, "operation_event", record_event)
+    lifecycle = OperationLifecycle(
+        get_logger("test"), handler="handler", operation="operation", clock=lambda: next(clock)
+    )
+
+    with pytest.raises(RuntimeError, match="not started"):
+        lifecycle.step_completed()
+    lifecycle.start(step="request")
+    lifecycle.fail(ValueError())
+
+    assert events[-1]["duration_ms"] == 0
+    assert events[-1]["error_type"] == "ValueError"
+
+
+def test_operation_lifecycle_cancellation_emits_before_reraising(monkeypatch) -> None:
+    events: list[str] = []
+
+    def record_event(_logger, *, event: str, **fields: object) -> None:
+        del fields
+        events.append(event)
+
+    monkeypatch.setattr(observability, "operation_event", record_event)
+    lifecycle = OperationLifecycle(get_logger("test"), handler="handler", operation="operation")
+    lifecycle.start(step="request")
+    with pytest.raises(asyncio.CancelledError):
+        try:
+            raise asyncio.CancelledError
+        except asyncio.CancelledError:
+            lifecycle.cancel()
+            assert events[-1] == "operation_cancelled"
+            raise

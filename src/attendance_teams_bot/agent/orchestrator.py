@@ -5,7 +5,6 @@ from collections.abc import Callable, Mapping
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field
 from datetime import date, datetime
-from time import perf_counter
 from typing import Protocol, cast
 from uuid import UUID
 from zoneinfo import ZoneInfo
@@ -44,11 +43,11 @@ from attendance_teams_bot.mcp.client import (
 )
 from attendance_teams_bot.mcp.contracts import AttendanceEventPage
 from attendance_teams_bot.observability import (
+    OperationLifecycle,
     authentication_event,
     current_correlation_id,
     get_logger,
     message_input_metadata,
-    operation_event,
 )
 
 GUIDANCE_TOOL = "respond_with_guidance"
@@ -107,47 +106,29 @@ class AttendanceAgent:
         display_name: str | None = None,
     ) -> BotResponse:
         correlation_id = self.correlation_id_factory()
-        started_at = perf_counter()
         logger = get_logger("agent").bind(correlation_id=str(correlation_id))
         input_metadata = message_input_metadata(message)
-        operation_event(
+        lifecycle = OperationLifecycle(
             logger,
-            event="operation_started",
             handler="AttendanceAgent.handle",
             operation="attendance_orchestration",
-            step="mcp_open",
             input_metadata=input_metadata,
         )
+        lifecycle.start(step="mcp_open")
         stage = "mcp_open"
         outcome = "success"
         error_code: str | None = None
-        error_type: str | None = None
+        terminal_error: Exception | None = None
         cancelled = False
         reply_language: ReplyLanguage = "en"
         try:
             async with self.mcp_session_factory.open(
                 access_token=mcp_access_token, correlation_id=correlation_id
             ) as session:
-                operation_event(
-                    logger,
-                    event="operation_step_completed",
-                    handler="AttendanceAgent.handle",
-                    operation="attendance_orchestration",
-                    step="mcp_open",
-                    duration_ms=_duration_ms(started_at),
-                    input_metadata=input_metadata,
-                )
+                lifecycle.step_completed()
                 stage = "mcp_catalog"
                 catalog = admit_mcp_catalog(await session.list_tools())
-                operation_event(
-                    logger,
-                    event="operation_step_completed",
-                    handler="AttendanceAgent.handle",
-                    operation="attendance_orchestration",
-                    step="mcp_catalog",
-                    duration_ms=_duration_ms(started_at),
-                    input_metadata=input_metadata,
-                )
+                lifecycle.step_completed(step=stage)
                 if catalog is None:
                     outcome = "catalog_incompatible"
                     return self.presenter.present(
@@ -168,15 +149,7 @@ class AttendanceAgent:
                             tools=catalog.model_tools + (guidance_tool(),),
                         )
                     )
-                    operation_event(
-                        logger,
-                        event="operation_step_completed",
-                        handler="AttendanceAgent.handle",
-                        operation="attendance_orchestration",
-                        step="model_completion",
-                        duration_ms=_duration_ms(started_at),
-                        input_metadata=input_metadata,
-                    )
+                    lifecycle.step_completed(step=stage)
                     if isinstance(turn, NoTool):
                         outcome = "clarification"
                         return self.presenter.present(
@@ -216,22 +189,15 @@ class AttendanceAgent:
                 result = await AttendanceWindowExecutor(
                     McpAttendancePageReader(session, policy.definition.name)
                 ).execute(arguments)
-                operation_event(
-                    logger,
-                    event="operation_step_completed",
-                    handler="AttendanceAgent.handle",
-                    operation="attendance_orchestration",
-                    step="mcp_tool_call",
-                    duration_ms=_duration_ms(started_at),
-                    input_metadata=input_metadata,
-                )
+                lifecycle.step_completed(step=stage)
         except asyncio.CancelledError:
             cancelled = True
+            lifecycle.cancel(step=stage)
             raise
         except AttendanceToolFailure as error:
             outcome = "tool_failure"
             error_code = error.failure.code
-            error_type = type(error).__name__
+            terminal_error = error
             if error.failure.code in {"FORBIDDEN", "IDENTITY_UNMAPPED", "IDENTITY_AMBIGUOUS"}:
                 authentication_event(
                     logger,
@@ -259,28 +225,27 @@ class AttendanceAgent:
             LanguageModelUnavailable,
         ) as error:
             outcome = "dependency_unavailable"
-            error_type = type(error).__name__
+            terminal_error = error
             return self.presenter.present(
                 UnavailablePresentation(language=reply_language, display_name=display_name)
             )
         except Exception as error:
             outcome = "unexpected_failure"
-            error_type = type(error).__name__
+            terminal_error = error
             return self.presenter.present(
                 UnavailablePresentation(language=reply_language, display_name=display_name)
             )
         finally:
             if not cancelled:
-                operation_event(
-                    logger,
-                    event="operation_succeeded" if outcome == "success" else "operation_failed",
-                    handler="AttendanceAgent.handle",
-                    operation="attendance_orchestration",
-                    step="rendering" if outcome == "success" else stage,
-                    duration_ms=_duration_ms(started_at),
-                    error_type=error_type,
-                    input_metadata={**input_metadata, "outcome": outcome, "error_code": error_code},
-                )
+                terminal_metadata = {"outcome": outcome, "error_code": error_code}
+                if outcome == "success":
+                    lifecycle.succeed(step="rendering", input_metadata=terminal_metadata)
+                else:
+                    lifecycle.fail(
+                        terminal_error,
+                        step=stage,
+                        input_metadata=terminal_metadata,
+                    )
         return self.presenter.present(
             EventResultPresentation(
                 events=result.events,
@@ -289,10 +254,6 @@ class AttendanceAgent:
                 display_name=display_name,
             )
         )
-
-
-def _duration_ms(started_at: float) -> int:
-    return max(0, round((perf_counter() - started_at) * 1000))
 
 
 def _guidance_intent(
