@@ -3,10 +3,10 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable, Mapping
 from contextlib import AbstractAsyncContextManager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from time import perf_counter
-from typing import Protocol
+from typing import Protocol, cast
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
@@ -26,7 +26,17 @@ from attendance_teams_bot.agent.language_model import (
     ToolDefinition,
 )
 from attendance_teams_bot.agent.mcp_catalog import DiscoveredMcpTool, admit_mcp_catalog
-from attendance_teams_bot.agent.rendering import TOOL_FAILURE_REPLIES, UNAVAILABLE_REPLY
+from attendance_teams_bot.agent.rendering import (
+    AttendanceResultPresenter,
+    CatalogUnavailablePresentation,
+    ClarificationPresentation,
+    EventResultPresentation,
+    GuidanceIntent,
+    GuidancePresentation,
+    InvalidRequestPresentation,
+    ToolFailurePresentation,
+    UnavailablePresentation,
+)
 from attendance_teams_bot.mcp.client import (
     AttendanceMcpUnavailable,
     AttendanceToolFailure,
@@ -41,8 +51,6 @@ from attendance_teams_bot.observability import (
     operation_event,
 )
 
-INVALID_REQUEST_REPLY = "Please provide a date range of no more than 12 calendar months."
-CLARIFICATION_REPLY = "Please clarify the attendance date range you want to view."
 GUIDANCE_TOOL = "respond_with_guidance"
 _GUIDANCE_INTENTS = frozenset({"unsupported", "date_ambiguous"})
 
@@ -85,6 +93,7 @@ def guidance_tool() -> ToolDefinition:
 class AttendanceAgent:
     language_model: LanguageModel
     mcp_session_factory: McpSessionFactory
+    presenter: AttendanceResultPresenter = field(default_factory=AttendanceResultPresenter)
     correlation_id_factory: Callable[[], UUID] = current_correlation_id
     reference_date_factory: Callable[[], date] = lambda: datetime.now(
         ZoneInfo("Europe/Ljubljana")
@@ -141,7 +150,9 @@ class AttendanceAgent:
                 )
                 if catalog is None:
                     outcome = "catalog_incompatible"
-                    return BotResponse(text=UNAVAILABLE_REPLY)
+                    return self.presenter.present(
+                        CatalogUnavailablePresentation(language="en", display_name=display_name)
+                    )
                 reference_date = self.reference_date_factory()
                 resolution = resolve_attendance_range(message, reference_date=reference_date)
                 policy = catalog.requester_attendance_tool
@@ -168,24 +179,37 @@ class AttendanceAgent:
                     )
                     if isinstance(turn, NoTool):
                         outcome = "clarification"
-                        return _response(CLARIFICATION_REPLY, "en", display_name)
+                        return self.presenter.present(
+                            ClarificationPresentation(language="en", display_name=display_name)
+                        )
                     if turn.name == GUIDANCE_TOOL:
-                        guidance = _guidance_reply(turn.arguments)
+                        guidance = _guidance_intent(turn.arguments)
                         if guidance is None:
                             outcome = "tool_rejected"
-                            return _response(UNAVAILABLE_REPLY, "en", display_name)
+                            return self.presenter.present(
+                                UnavailablePresentation(language="en", display_name=display_name)
+                            )
                         outcome = "guidance"
-                        return _response(*guidance, display_name)
+                        intent, language = guidance
+                        return self.presenter.present(
+                            GuidancePresentation(
+                                intent=intent, language=language, display_name=display_name
+                            )
+                        )
                     model_policy = catalog.selected_tool(turn.name)
                     if model_policy is None:
                         outcome = "tool_rejected"
-                        return _response(UNAVAILABLE_REPLY, "en", display_name)
+                        return self.presenter.present(
+                            UnavailablePresentation(language="en", display_name=display_name)
+                        )
                     policy = model_policy
                     stage = "model_validation"
                     validated = policy.validate_arguments(turn.arguments)
                     if validated is None:
                         outcome = "invalid_request"
-                        return _response(INVALID_REQUEST_REPLY, "en", display_name)
+                        return self.presenter.present(
+                            InvalidRequestPresentation(language="en", display_name=display_name)
+                        )
                     arguments, language = validated
                 reply_language = language
                 stage = "mcp_tool_call"
@@ -222,12 +246,12 @@ class AttendanceAgent:
                     scheme="attendance_mcp",
                     failure_reason=error.failure.code,
                 )
-            return _response(
-                _localized_safe_reply(
-                    TOOL_FAILURE_REPLIES.get(error.failure.code, UNAVAILABLE_REPLY), reply_language
-                ),
-                reply_language,
-                display_name,
+            return self.presenter.present(
+                ToolFailurePresentation(
+                    code=error.failure.code,
+                    language=reply_language,
+                    display_name=display_name,
+                )
             )
         except (
             AttendanceMcpUnavailable,
@@ -236,18 +260,14 @@ class AttendanceAgent:
         ) as error:
             outcome = "dependency_unavailable"
             error_type = type(error).__name__
-            return _response(
-                _localized_safe_reply(UNAVAILABLE_REPLY, reply_language),
-                reply_language,
-                display_name,
+            return self.presenter.present(
+                UnavailablePresentation(language=reply_language, display_name=display_name)
             )
         except Exception as error:
             outcome = "unexpected_failure"
             error_type = type(error).__name__
-            return _response(
-                _localized_safe_reply(UNAVAILABLE_REPLY, reply_language),
-                reply_language,
-                display_name,
+            return self.presenter.present(
+                UnavailablePresentation(language=reply_language, display_name=display_name)
             )
         finally:
             if not cancelled:
@@ -261,10 +281,13 @@ class AttendanceAgent:
                     error_type=error_type,
                     input_metadata={**input_metadata, "outcome": outcome, "error_code": error_code},
                 )
-        return _response(
-            policy.render(result.events, language, records_omitted=result.records_omitted),
-            language,
-            display_name,
+        return self.presenter.present(
+            EventResultPresentation(
+                events=result.events,
+                records_omitted=result.records_omitted,
+                language=language,
+                display_name=display_name,
+            )
         )
 
 
@@ -272,76 +295,19 @@ def _duration_ms(started_at: float) -> int:
     return max(0, round((perf_counter() - started_at) * 1000))
 
 
-def _guidance_reply(arguments: Mapping[str, object]) -> tuple[str, ReplyLanguage] | None:
+def _guidance_intent(
+    arguments: Mapping[str, object],
+) -> tuple[GuidanceIntent, ReplyLanguage] | None:
     if len(arguments) != 2 or set(arguments) != {"intent", "language"}:
         return None
     intent = arguments.get("intent")
     language = _guidance_reply_language(arguments.get("language"))
     if intent not in _GUIDANCE_INTENTS or language is None:
         return None
-    if intent == "date_ambiguous":
-        return (
-            (
-                "Prosimo, pojasnite obdobje prisotnosti, ki ga želite prikazati."
-                if language == "sl"
-                else CLARIFICATION_REPLY
-            ),
-            language,
-        )
-    return (
-        (
-            "Lahko vam prikažem dogodke vaše prisotnosti za določeno obdobje."
-            if language == "sl"
-            else "I can show your attendance events for a specific date range."
-        ),
-        language,
-    )
+    return cast(GuidanceIntent, intent), language
 
 
 def _guidance_reply_language(value: object) -> ReplyLanguage | None:
     if value == "en" or value == "sl":
         return value
     return None
-
-
-def _response(text: str, language: ReplyLanguage, display_name: str | None) -> BotResponse:
-    name = _safe_display_name(display_name)
-    if name:
-        greeting = "Pozdravljeni" if language == "sl" else "Hello"
-        text = f"{greeting}, {name}!\n\n{text}"
-    return BotResponse(text=text)
-
-
-def _safe_display_name(value: str | None) -> str | None:
-    if not isinstance(value, str):
-        return None
-    normalized = " ".join(value.split())[:80]
-    if not normalized:
-        return None
-    replacements: dict[str, str | int | None] = {
-        character: f"\\{character}" for character in r"\\`*_{}[]<>#()+-.!|"
-    }
-    return normalized.translate(str.maketrans(replacements))
-
-
-def _localized_safe_reply(text: str, language: ReplyLanguage) -> str:
-    if language == "en":
-        return text
-    slovene = {
-        UNAVAILABLE_REPLY: "Podatki o prisotnosti trenutno niso na voljo. Poskusite znova pozneje.",
-        INVALID_REQUEST_REPLY: "Prosimo, navedite obdobje največ 31 dni.",
-        TOOL_FAILURE_REPLIES[
-            "INVALID_ARGUMENT"
-        ]: "Preverite obdobje prisotnosti in poskusite znova.",
-        TOOL_FAILURE_REPLIES["FORBIDDEN"]: "Nimate dovoljenja za ogled te prisotnosti.",
-        TOOL_FAILURE_REPLIES["IDENTITY_UNMAPPED"]: (
-            "Vaš račun Teams ni povezan z aktivnim zaposlenim za evidenco prisotnosti. "
-            "Obrnite se na skrbnika."
-        ),
-        TOOL_FAILURE_REPLIES["IDENTITY_AMBIGUOUS"]: (
-            "Vašega računa Teams ni mogoče varno povezati. Obrnite se na skrbnika."
-        ),
-        TOOL_FAILURE_REPLIES["AUTHENTICATION_REQUIRED"]: "Prijavite se in poskusite znova.",
-        TOOL_FAILURE_REPLIES["TOKEN_INVALID"]: "Prijavite se in poskusite znova.",
-    }
-    return slovene.get(text, slovene[UNAVAILABLE_REPLY])

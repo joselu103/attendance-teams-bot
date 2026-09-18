@@ -10,8 +10,7 @@ from datetime import date
 from attendance_teams_bot.agent.attendance_window import OverallAttendanceRange
 from attendance_teams_bot.agent.contracts import ReplyLanguage
 from attendance_teams_bot.agent.language_model import ToolDefinition
-from attendance_teams_bot.agent.rendering import render_attendance_events
-from attendance_teams_bot.mcp.contracts import SELF_ATTENDANCE_TOOL, AttendanceEvent
+from attendance_teams_bot.mcp.contracts import SELF_ATTENDANCE_TOOL
 
 _TOOL_NAME = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 _ANNOTATION_TYPES: dict[str, type[str] | type[bool]] = {
@@ -75,15 +74,6 @@ class AdmittedReadOnlyTool:
             ), language
         except KeyError, ValueError:
             return None
-
-    def render(
-        self,
-        events: tuple[AttendanceEvent, ...],
-        language: ReplyLanguage,
-        *,
-        records_omitted: bool,
-    ) -> str:
-        return render_attendance_events(events, language=language, records_omitted=records_omitted)
 
 
 @dataclass(frozen=True, slots=True)

@@ -13,12 +13,11 @@ from attendance_teams_bot.agent.mcp_catalog import (
     DiscoveredMcpTool,
     canonical_self_attendance_tool,
 )
-from attendance_teams_bot.agent.orchestrator import (
+from attendance_teams_bot.agent.orchestrator import AttendanceAgent, guidance_tool
+from attendance_teams_bot.agent.rendering import (
     CLARIFICATION_REPLY,
     INVALID_REQUEST_REPLY,
     UNAVAILABLE_REPLY,
-    AttendanceAgent,
-    guidance_tool,
 )
 from attendance_teams_bot.mcp.client import AttendanceToolFailure
 from attendance_teams_bot.mcp.contracts import (

@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from dataclasses import dataclass
 from datetime import date, datetime
+from typing import Literal
 
-from attendance_teams_bot.agent.contracts import ReplyLanguage
-from attendance_teams_bot.mcp.contracts import AttendanceEvent, AttendanceEventPage
+from attendance_teams_bot.agent.contracts import BotResponse, ReplyLanguage
+from attendance_teams_bot.mcp.contracts import AttendanceEvent, McpToolErrorCode
 
 MAX_REPLY_CHARACTERS = 12_000
 
 UNAVAILABLE_REPLY = "Attendance data is temporarily unavailable. Please try again later."
+INVALID_REQUEST_REPLY = "Please provide a date range of no more than 12 calendar months."
+CLARIFICATION_REPLY = "Please clarify the attendance date range you want to view."
 TOOL_FAILURE_REPLIES = {
     "INVALID_ARGUMENT": "Check the attendance date range and try again.",
     "FORBIDDEN": "You do not have permission to view that attendance.",
@@ -23,6 +27,93 @@ TOOL_FAILURE_REPLIES = {
     "INTERNAL_ERROR": UNAVAILABLE_REPLY,
     "CORRELATION_ID_INVALID": UNAVAILABLE_REPLY,
 }
+
+GuidanceIntent = Literal["unsupported", "date_ambiguous"]
+
+
+@dataclass(frozen=True, slots=True)
+class EventResultPresentation:
+    events: tuple[AttendanceEvent, ...]
+    records_omitted: bool
+    language: ReplyLanguage
+    display_name: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class ClarificationPresentation:
+    language: ReplyLanguage
+    display_name: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class GuidancePresentation:
+    intent: GuidanceIntent
+    language: ReplyLanguage
+    display_name: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class InvalidRequestPresentation:
+    language: ReplyLanguage
+    display_name: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class ToolFailurePresentation:
+    code: McpToolErrorCode
+    language: ReplyLanguage
+    display_name: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class UnavailablePresentation:
+    language: ReplyLanguage
+    display_name: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class CatalogUnavailablePresentation:
+    language: ReplyLanguage
+    display_name: str | None
+
+
+AttendancePresentation = (
+    EventResultPresentation
+    | ClarificationPresentation
+    | GuidancePresentation
+    | InvalidRequestPresentation
+    | ToolFailurePresentation
+    | UnavailablePresentation
+    | CatalogUnavailablePresentation
+)
+
+
+class AttendanceResultPresenter:
+    """Build every safe, localized Attendance reply from a typed outcome."""
+
+    def present(self, presentation: AttendancePresentation) -> BotResponse:
+        if isinstance(presentation, EventResultPresentation):
+            text = render_attendance_events(
+                presentation.events,
+                language=presentation.language,
+                records_omitted=presentation.records_omitted,
+            )
+        elif isinstance(presentation, ClarificationPresentation):
+            text = CLARIFICATION_REPLY
+        elif isinstance(presentation, GuidancePresentation):
+            text = _guidance_copy(presentation.intent, presentation.language)
+        elif isinstance(presentation, InvalidRequestPresentation):
+            text = _localized_safe_reply(INVALID_REQUEST_REPLY, presentation.language)
+        elif isinstance(presentation, ToolFailurePresentation):
+            text = _localized_safe_reply(
+                TOOL_FAILURE_REPLIES.get(presentation.code, UNAVAILABLE_REPLY),
+                presentation.language,
+            )
+        elif isinstance(presentation, UnavailablePresentation):
+            text = _localized_safe_reply(UNAVAILABLE_REPLY, presentation.language)
+        else:
+            return BotResponse(text=UNAVAILABLE_REPLY)
+        return _response(text, presentation.language, presentation.display_name)
 
 
 _MONTHS: dict[ReplyLanguage, tuple[str, ...]] = {
@@ -77,18 +168,6 @@ _TYPE_LABELS: dict[ReplyLanguage, dict[str, str]] = {
         "leave": "Odsotnost",
     },
 }
-
-
-def render_attendance_page(page: AttendanceEventPage, *, language: ReplyLanguage = "en") -> str:
-    """Render one legacy page while preserving its page-specific disclosure."""
-    response = _render_events(page.items, language)
-    if page.next_offset is not None and page.items:
-        response += "\n" + _copy(
-            language,
-            "Showing the first 50 events; more events are available.",
-            "Prikazanih je prvih 50 dogodkov; na voljo jih je še več.",
-        )
-    return response
 
 
 def render_attendance_events(
@@ -233,6 +312,63 @@ def _safe_text(value: str | None) -> str:
         character: f"\\{character}" for character in r"\\`*_{}[]<>#()+-.!|"
     }
     return normalized.translate(str.maketrans(replacements))
+
+
+def _guidance_copy(intent: GuidanceIntent, language: ReplyLanguage) -> str:
+    if intent == "date_ambiguous":
+        return _copy(
+            language,
+            CLARIFICATION_REPLY,
+            "Prosimo, pojasnite obdobje prisotnosti, ki ga želite prikazati.",
+        )
+    return _copy(
+        language,
+        "I can show your attendance events for a specific date range.",
+        "Lahko vam prikažem dogodke vaše prisotnosti za določeno obdobje.",
+    )
+
+
+def _response(text: str, language: ReplyLanguage, display_name: str | None) -> BotResponse:
+    name = _safe_display_name(display_name)
+    if name:
+        greeting = "Pozdravljeni" if language == "sl" else "Hello"
+        text = f"{greeting}, {name}!\n\n{text}"
+    return BotResponse(text=text)
+
+
+def _safe_display_name(value: str | None) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = " ".join(value.split())[:80]
+    if not normalized:
+        return None
+    replacements: dict[str, str | int | None] = {
+        character: f"\\{character}" for character in r"\\`*_{}[]<>#()+-.!|"
+    }
+    return normalized.translate(str.maketrans(replacements))
+
+
+def _localized_safe_reply(text: str, language: ReplyLanguage) -> str:
+    if language == "en":
+        return text
+    slovene = {
+        UNAVAILABLE_REPLY: "Podatki o prisotnosti trenutno niso na voljo. Poskusite znova pozneje.",
+        INVALID_REQUEST_REPLY: "Prosimo, navedite obdobje največ 31 dni.",
+        TOOL_FAILURE_REPLIES[
+            "INVALID_ARGUMENT"
+        ]: "Preverite obdobje prisotnosti in poskusite znova.",
+        TOOL_FAILURE_REPLIES["FORBIDDEN"]: "Nimate dovoljenja za ogled te prisotnosti.",
+        TOOL_FAILURE_REPLIES["IDENTITY_UNMAPPED"]: (
+            "Vaš račun Teams ni povezan z aktivnim zaposlenim za evidenco prisotnosti. "
+            "Obrnite se na skrbnika."
+        ),
+        TOOL_FAILURE_REPLIES["IDENTITY_AMBIGUOUS"]: (
+            "Vašega računa Teams ni mogoče varno povezati. Obrnite se na skrbnika."
+        ),
+        TOOL_FAILURE_REPLIES["AUTHENTICATION_REQUIRED"]: "Prijavite se in poskusite znova.",
+        TOOL_FAILURE_REPLIES["TOKEN_INVALID"]: "Prijavite se in poskusite znova.",
+    }
+    return slovene.get(text, slovene[UNAVAILABLE_REPLY])
 
 
 def _copy(language: ReplyLanguage, english: str, slovene: str) -> str:
