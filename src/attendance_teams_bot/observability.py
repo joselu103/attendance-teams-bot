@@ -6,7 +6,7 @@ import sys
 from collections.abc import Awaitable, Callable, Iterator, Mapping, MutableMapping
 from contextlib import contextmanager
 from time import perf_counter
-from typing import Any, Final, cast
+from typing import Any, Final
 from uuid import UUID, uuid4
 
 import structlog
@@ -15,7 +15,6 @@ from starlette.responses import Response
 from structlog.contextvars import bind_contextvars, reset_contextvars
 from structlog.processors import CallsiteParameter, CallsiteParameterAdder
 
-_LOGGER_NAME: Final = "attendance_teams_bot"
 _REDACTED: Final = "[REDACTED]"
 _UNAVAILABLE: Final = "unavailable"
 _SENSITIVE_KEYS: Final = frozenset(
@@ -35,6 +34,7 @@ _TEXTUAL_SECRET: Final = re.compile(
     r"(?:['\"])?(?P<separator>\s*(?:=|:)\s*)(?P<value>[^,\n;]+)"
 )
 _CORRELATION_ID_HEADER: Final = "X-Correlation-ID"
+_LOGGER = structlog.get_logger(__name__)
 
 
 def _redact_text(value: str) -> str:
@@ -113,14 +113,6 @@ def configure_logging(*, environment: str) -> None:
     )
 
 
-def get_logger(name: str) -> structlog.BoundLogger:
-    return cast(structlog.BoundLogger, structlog.get_logger(f"{_LOGGER_NAME}.{name}"))
-
-
-def log_event(logger: structlog.BoundLogger, level: int, event: str, **fields: object) -> None:
-    logger.log(level, event, **fields)
-
-
 def operation_event(
     logger: structlog.BoundLogger,
     *,
@@ -149,12 +141,7 @@ def operation_event(
         fields["error_type"] = error_type
     if correlation_id is not None:
         fields["correlation_id"] = str(correlation_id)
-    log_event(
-        logger,
-        logging.ERROR if event == "operation_failed" else logging.INFO,
-        event,
-        **fields,
-    )
+    logger.log(logging.ERROR if event == "operation_failed" else logging.INFO, event, **fields)
 
 
 _LIFECYCLE_METADATA_KEYS: Final = frozenset(
@@ -298,8 +285,7 @@ def authentication_event(
     user_or_client_id: str = _UNAVAILABLE,
 ) -> None:
     """Emit authentication state without accepting unverified channel identity."""
-    log_event(
-        logger,
+    logger.log(
         logging.WARNING if event != "auth_validated" else logging.INFO,
         event,
         scheme=scheme,
@@ -350,9 +336,8 @@ def current_correlation_id() -> UUID:
     return uuid4()
 
 
-def install_http_request_observability(app: FastAPI, *, logger_name: str) -> None:
+def install_http_request_observability(app: FastAPI) -> None:
     """Emit scrubbed lifecycle events for every request handled by an HTTP app."""
-    logger = get_logger(logger_name)
 
     @app.middleware("http")
     async def observe_request(
@@ -362,8 +347,7 @@ def install_http_request_observability(app: FastAPI, *, logger_name: str) -> Non
         route = request.url.path
         started_at = perf_counter()
         with correlation_scope(correlation_id) as trace_id:
-            log_event(
-                logger,
+            _LOGGER.log(
                 logging.INFO,
                 "request_received",
                 trace_id=str(trace_id),
@@ -374,8 +358,7 @@ def install_http_request_observability(app: FastAPI, *, logger_name: str) -> Non
             try:
                 response = await call_next(request)
             except Exception as error:
-                log_event(
-                    logger,
+                _LOGGER.log(
                     logging.ERROR,
                     "request_failed",
                     trace_id=str(trace_id),
@@ -389,8 +372,7 @@ def install_http_request_observability(app: FastAPI, *, logger_name: str) -> Non
                 raise
 
             if response.status_code < 400:
-                log_event(
-                    logger,
+                _LOGGER.log(
                     logging.INFO,
                     "request_completed",
                     trace_id=str(trace_id),
@@ -402,8 +384,7 @@ def install_http_request_observability(app: FastAPI, *, logger_name: str) -> Non
                 )
             else:
                 status_state = "client_error" if response.status_code < 500 else "server_error"
-                log_event(
-                    logger,
+                _LOGGER.log(
                     logging.WARNING if response.status_code < 500 else logging.ERROR,
                     "request_failed",
                     trace_id=str(trace_id),

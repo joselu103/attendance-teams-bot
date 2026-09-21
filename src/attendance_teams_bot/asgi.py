@@ -1,13 +1,16 @@
 import logging
 
+import structlog
+
 from attendance_teams_bot.composition import create_http_app
-from attendance_teams_bot.observability import configure_logging, get_logger, log_event
+from attendance_teams_bot.observability import configure_logging
 from attendance_teams_bot.settings import Settings
+
+_LOGGER = structlog.get_logger(__name__)
 
 settings = Settings()
 configure_logging(environment=settings.log_environment)
-log_event(
-    get_logger("startup"),
+_LOGGER.log(
     logging.INFO,
     "application_started",
     runtime_mode=settings.mode.value,

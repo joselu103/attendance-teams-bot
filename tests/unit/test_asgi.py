@@ -1,6 +1,7 @@
 import importlib
 from types import SimpleNamespace
 
+import structlog
 from fastapi import FastAPI
 
 import attendance_teams_bot.asgi as asgi
@@ -21,6 +22,10 @@ def test_asgi_module_configures_logging_before_runtime_composition(monkeypatch) 
     calls: list[object] = []
     events: list[tuple[object, ...]] = []
 
+    class RecordingLogger:
+        def log(self, _level: int, event: str, **fields: object) -> None:
+            events.append((event, fields))
+
     def record_create_http_app(received_settings: object) -> FastAPI:
         calls.append(received_settings)
         return FastAPI()
@@ -33,11 +38,7 @@ def test_asgi_module_configures_logging_before_runtime_composition(monkeypatch) 
             "configure_logging",
             lambda *, environment: events.append(("configure", environment)),
         )
-        scoped_monkeypatch.setattr(
-            observability,
-            "log_event",
-            lambda _logger, _level, event, **fields: events.append((event, fields)),
-        )
+        scoped_monkeypatch.setattr(structlog, "get_logger", lambda _name: RecordingLogger())
         importlib.reload(asgi)
 
         assert calls == [runtime_settings]

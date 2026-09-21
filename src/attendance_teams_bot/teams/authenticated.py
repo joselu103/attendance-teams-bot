@@ -5,6 +5,7 @@ import logging
 from dataclasses import dataclass
 from typing import Protocol
 
+import structlog
 from pydantic import SecretStr
 
 from attendance_teams_bot.agent.contracts import BotResponse
@@ -12,8 +13,6 @@ from attendance_teams_bot.auth.obo import DelegatedAuthenticationUnavailable
 from attendance_teams_bot.observability import (
     OperationLifecycle,
     current_correlation_id,
-    get_logger,
-    log_event,
     message_input_metadata,
 )
 
@@ -22,6 +21,7 @@ _SAFE_BOT_SERVICE_REPLY = (
     "and LLM adapters are not configured yet."
 )
 _SAFE_AUTHENTICATION_REPLY = "Authentication is temporarily unavailable. Please try again later."
+_LOGGER = structlog.get_logger(__name__)
 
 
 class ChannelAuthenticatedMessageHandler(Protocol):
@@ -101,9 +101,8 @@ class AuthenticatedAttendanceTurnHandler:
 
     async def _reject_nonpersonal(self, context: AuthenticatedTurnContext) -> None:
         correlation_id = current_correlation_id()
-        logger = get_logger("teams.turn").bind(correlation_id=str(correlation_id))
-        log_event(
-            logger,
+        logger = _LOGGER.bind(correlation_id=str(correlation_id))
+        logger.log(
             logging.INFO,
             "teams_turn_rejected",
             correlation_id=str(correlation_id),
@@ -113,9 +112,8 @@ class AuthenticatedAttendanceTurnHandler:
 
     async def _reject_blank(self, context: AuthenticatedTurnContext) -> None:
         correlation_id = current_correlation_id()
-        logger = get_logger("teams.turn").bind(correlation_id=str(correlation_id))
-        log_event(
-            logger,
+        logger = _LOGGER.bind(correlation_id=str(correlation_id))
+        logger.log(
             logging.INFO,
             "teams_turn_rejected",
             correlation_id=str(correlation_id),
@@ -127,7 +125,7 @@ class AuthenticatedAttendanceTurnHandler:
         self, *, context: AuthenticatedTurnContext, message: str
     ) -> None:
         correlation_id = current_correlation_id()
-        logger = get_logger("teams.turn").bind(correlation_id=str(correlation_id))
+        logger = _LOGGER.bind(correlation_id=str(correlation_id))
         input_metadata = message_input_metadata(message)
         step = "teams_sso"
         lifecycle = OperationLifecycle(
@@ -177,8 +175,7 @@ class AuthenticatedAttendanceTurnHandler:
             try:
                 await context.send_activity(response.text)
             except Exception as error:
-                log_event(
-                    logger,
+                logger.log(
                     logging.ERROR,
                     "teams_reply_send_failed",
                     correlation_id=str(correlation_id),
@@ -198,13 +195,12 @@ class AuthenticatedAttendanceTurnHandler:
         self,
         *,
         context: AuthenticatedTurnContext,
-        logger: object,
+        logger: structlog.BoundLogger,
         lifecycle: OperationLifecycle,
         error: RuntimeError | DelegatedAuthenticationUnavailable,
         event: str,
     ) -> None:
-        log_event(
-            logger,  # type: ignore[arg-type]
+        logger.log(
             logging.WARNING,
             event,
             correlation_id=str(current_correlation_id()),

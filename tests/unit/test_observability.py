@@ -6,16 +6,17 @@ from io import StringIO
 from uuid import UUID, uuid4
 
 import pytest
+import structlog
 
 import attendance_teams_bot.observability as observability
 from attendance_teams_bot.observability import (
     OperationLifecycle,
     correlation_scope,
     current_correlation_id,
-    get_logger,
-    log_event,
     trusted_context_scope,
 )
+
+_LOGGER = structlog.get_logger(__name__)
 
 
 def _configure_json(monkeypatch: pytest.MonkeyPatch) -> StringIO:
@@ -28,7 +29,7 @@ def _configure_json(monkeypatch: pytest.MonkeyPatch) -> StringIO:
 def test_production_logs_are_single_line_json_with_required_metadata(monkeypatch) -> None:
     output = _configure_json(monkeypatch)
 
-    log_event(get_logger("test"), 20, "completed", status_code=200)
+    _LOGGER.log(20, "completed", status_code=200)
 
     payload = json.loads(output.getvalue())
     assert payload["event"] == "completed"
@@ -48,7 +49,7 @@ def test_local_uses_colored_console_and_debug_threshold(monkeypatch) -> None:
     monkeypatch.setattr(observability.sys, "stdout", output)
     observability.configure_logging(environment="local")
 
-    log_event(get_logger("test"), 10, "debug_event")
+    _LOGGER.log(10, "debug_event")
 
     rendered = output.getvalue()
     assert "\x1b[" in rendered
@@ -61,8 +62,7 @@ def test_redacts_nested_values_and_exception_text(monkeypatch) -> None:
     try:
         raise RuntimeError("authorization: Bearer real-token, access_token: downstream-secret")
     except RuntimeError:
-        log_event(
-            get_logger("test"),
+        _LOGGER.log(
             40,
             "request_failed",
             authorization="top-secret",
@@ -99,7 +99,7 @@ async def test_context_scopes_are_isolated_across_concurrent_tasks(monkeypatch) 
         with correlation_scope() as trace_id:
             await asyncio.sleep(0)
             with trusted_context_scope(user_or_client_id="validated-user", session_id="session-1"):
-                log_event(get_logger("test"), 20, "context_bound")
+                _LOGGER.log(20, "context_bound")
             trace_ids.append(trace_id)
 
     await asyncio.gather(record_trace_id(), record_trace_id())
@@ -115,7 +115,7 @@ async def test_context_scopes_are_isolated_across_concurrent_tasks(monkeypatch) 
 def test_staging_filters_debug_events(monkeypatch) -> None:
     output = _configure_json(monkeypatch)
 
-    log_event(get_logger("test"), 10, "not_emitted")
+    _LOGGER.log(10, "not_emitted")
 
     assert output.getvalue() == ""
 
@@ -129,7 +129,7 @@ def test_operation_lifecycle_emits_safe_steps_and_one_terminal_event(monkeypatch
 
     monkeypatch.setattr(observability, "operation_event", record_event)
     lifecycle = OperationLifecycle(
-        get_logger("test"),
+        _LOGGER,
         handler="handler",
         operation="operation",
         input_metadata={"message_present": True, "message": "not allowed"},
@@ -170,7 +170,7 @@ def test_operation_lifecycle_requires_start_and_never_reports_negative_duration(
 
     monkeypatch.setattr(observability, "operation_event", record_event)
     lifecycle = OperationLifecycle(
-        get_logger("test"), handler="handler", operation="operation", clock=lambda: next(clock)
+        _LOGGER, handler="handler", operation="operation", clock=lambda: next(clock)
     )
 
     with pytest.raises(RuntimeError, match="not started"):
@@ -190,7 +190,7 @@ def test_operation_lifecycle_cancellation_emits_before_reraising(monkeypatch) ->
         events.append(event)
 
     monkeypatch.setattr(observability, "operation_event", record_event)
-    lifecycle = OperationLifecycle(get_logger("test"), handler="handler", operation="operation")
+    lifecycle = OperationLifecycle(_LOGGER, handler="handler", operation="operation")
     lifecycle.start(step="request")
     with pytest.raises(asyncio.CancelledError):
         try:

@@ -3,9 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
+import structlog
 from pydantic import SecretStr
 
-from attendance_teams_bot.observability import authentication_event, get_logger
+from attendance_teams_bot.observability import authentication_event
+
+_LOGGER = structlog.get_logger(__name__)
 
 
 class AccessTokenProvider(Protocol):
@@ -36,7 +39,7 @@ class MsalOboTokenExchange:
             )
         except Exception as error:
             authentication_event(
-                get_logger("auth.obo"),
+                _LOGGER,
                 event="auth_failed",
                 scheme="delegated_obo",
                 failure_reason=type(error).__name__,
@@ -44,11 +47,11 @@ class MsalOboTokenExchange:
             raise DelegatedAuthenticationUnavailable from error
         if not token:
             authentication_event(
-                get_logger("auth.obo"),
+                _LOGGER,
                 event="auth_failed",
                 scheme="delegated_obo",
                 failure_reason="empty_token",
             )
             raise DelegatedAuthenticationUnavailable
-        authentication_event(get_logger("auth.obo"), event="auth_validated", scheme="delegated_obo")
+        authentication_event(_LOGGER, event="auth_validated", scheme="delegated_obo")
         return SecretStr(token)

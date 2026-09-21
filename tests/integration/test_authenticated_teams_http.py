@@ -3,8 +3,8 @@ from uuid import UUID, uuid4
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from structlog.testing import capture_logs
 
-import attendance_teams_bot.observability as observability
 from attendance_teams_bot.settings import Settings
 from attendance_teams_bot.teams.authenticated import BotServiceConnectivityHandler
 from attendance_teams_bot.teams.microsoft_agents import (
@@ -49,12 +49,6 @@ async def test_authenticated_endpoint_rejects_requests_without_bot_service_crede
 
 @pytest.mark.anyio
 async def test_authenticated_endpoint_records_a_safe_callback_lifecycle(monkeypatch) -> None:
-    events: list[tuple[str, dict[str, object]]] = []
-
-    def record_event(_logger, _level: int, event: str, **fields: object) -> None:
-        events.append((event, fields))
-
-    monkeypatch.setattr(observability, "log_event", record_event)
     monkeypatch.setenv("CONNECTIONS__SERVICE_CONNECTION__SETTINGS__CLIENTID", str(uuid4()))
     monkeypatch.setenv("CONNECTIONS__SERVICE_CONNECTION__SETTINGS__TENANTID", str(uuid4()))
     monkeypatch.setenv("CONNECTIONS__SERVICE_CONNECTION__SETTINGS__CLIENTSECRET", token_urlsafe())
@@ -65,22 +59,25 @@ async def test_authenticated_endpoint_records_a_safe_callback_lifecycle(monkeypa
         handler=BotServiceConnectivityHandler(),
     )
 
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="https://test") as client:
-        response = await client.post("/api/messages", json={"type": "message", "text": "secret"})
+    with capture_logs() as events:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="https://test") as client:
+            response = await client.post(
+                "/api/messages", json={"type": "message", "text": "secret"}
+            )
 
     assert response.status_code == 401
-    assert [(event, fields["state"]) for event, fields in events] == [
+    assert [(event["event"], event["state"]) for event in events] == [
         ("request_received", "received"),
         ("request_failed", "client_error"),
     ]
-    event, fields = events[1]
-    assert event == "request_failed"
-    assert fields["method"] == "POST"
-    assert fields["route"] == "/api/messages"
-    assert fields["status_code"] == 401
-    assert isinstance(UUID(str(fields["trace_id"])), UUID)
-    assert isinstance(fields["duration_ms"], int)
-    assert fields["duration_ms"] >= 0
+    event = events[1]
+    assert event["event"] == "request_failed"
+    assert event["method"] == "POST"
+    assert event["route"] == "/api/messages"
+    assert event["status_code"] == 401
+    assert isinstance(UUID(str(event["trace_id"])), UUID)
+    assert isinstance(event["duration_ms"], int)
+    assert event["duration_ms"] >= 0
     assert "secret" not in repr(events)
 
 
