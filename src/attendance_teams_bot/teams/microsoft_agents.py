@@ -56,6 +56,7 @@ class TeamsAuthorizationSsoTokenProvider:
         self._auth_handler_id = auth_handler_id
 
     async def get_token(self, context: AuthenticatedTurnContext) -> SecretStr:
+        """Retrieve a non-empty Teams SSO token or raise the neutral runtime error."""
         try:
             response = await self._authorization.get_token(
                 cast(TurnContext, context), self._auth_handler_id
@@ -138,6 +139,7 @@ async def route_authenticated_turn(
     context: AuthenticatedTurnContext,
     handler: ChannelAuthenticatedMessageHandler,
 ) -> None:
+    """Forward a non-blank message from an SDK-authenticated turn to a neutral handler."""
     if context.activity.type != "message" or context.activity.text is None:
         return
     message = context.activity.text.strip()
@@ -163,6 +165,7 @@ def _sdk_configuration(connection: TeamsConnectionSettings) -> Any:
 def create_authenticated_teams_http_app(
     *, connection: TeamsConnectionSettings, handler: ChannelAuthenticatedMessageHandler
 ) -> FastAPI:
+    """Create a Bot Service-authenticated app that exposes connectivity-only replies."""
     sdk_configuration = _sdk_configuration(connection)
     storage = MemoryStorage()
     connection_manager = MsalConnectionManager(**sdk_configuration)
@@ -191,6 +194,7 @@ def create_attendance_teams_http_app(
     delegated_scope: str,
     storage: Storage | None = None,
 ) -> FastAPI:
+    """Create the authenticated Teams app that performs SSO, OBO, and attendance handling."""
     if not oauth_connection_name.strip():
         raise ValueError("Teams SSO OAuth connection name is required")
     sdk_configuration = _sdk_configuration(connection)

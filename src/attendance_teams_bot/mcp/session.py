@@ -35,9 +35,12 @@ HttpClientFactory = Callable[[dict[str, str]], httpx.AsyncClient]
 
 @dataclass(frozen=True, slots=True)
 class StreamableHttpAttendanceSession:
+    """Adapt an initialized streamable-HTTP MCP session to the bot's typed session port."""
+
     session: ClientSession
 
     async def list_tools(self) -> tuple[DiscoveredMcpTool, ...]:
+        """Return untrusted discovery fields for later bot-side catalog admission."""
         logger = get_logger("mcp.session")
         lifecycle = OperationLifecycle(
             logger,
@@ -71,6 +74,7 @@ class StreamableHttpAttendanceSession:
         name: str,
         arguments: Mapping[str, object],
     ) -> AttendanceEventPage:
+        """Execute an admitted tool and validate its text result as an attendance page."""
         logger = get_logger("mcp.session")
         metadata = {"tool_name": name, "argument_count": len(arguments)}
         lifecycle = OperationLifecycle(
@@ -97,6 +101,8 @@ class StreamableHttpAttendanceSession:
 
 
 class StreamableHttpAttendanceSessionFactory:
+    """Open streamable-HTTP MCP sessions with delegated authentication and contract checking."""
+
     def __init__(
         self,
         *,
@@ -115,6 +121,7 @@ class StreamableHttpAttendanceSessionFactory:
         access_token: SecretStr,
         correlation_id: UUID,
     ) -> AsyncIterator[StreamableHttpAttendanceSession]:
+        """Yield an initialized session, translating connection failures to the safe MCP error."""
         logger = get_logger("mcp.session")
         lifecycle = OperationLifecycle(
             logger,

@@ -59,6 +59,7 @@ class AdmittedReadOnlyTool:
     def validate_arguments(
         self, arguments: Mapping[str, object]
     ) -> tuple[OverallAttendanceRange, ReplyLanguage] | None:
+        """Accept only a bounded, requester-scoped range and supported reply language."""
         if not _has_bounded_arguments(arguments):
             return None
         language = _reply_language(arguments.get("reply_language"))
@@ -87,6 +88,7 @@ class AdmittedMcpCatalog:
         return (self.requester_attendance_tool.definition,)
 
     def selected_tool(self, name: str) -> AdmittedReadOnlyTool | None:
+        """Return the admitted policy only when ``name`` is the canonical tool name."""
         if name == self.requester_attendance_tool.definition.name:
             return self.requester_attendance_tool
         return None
@@ -95,7 +97,7 @@ class AdmittedMcpCatalog:
 def admit_mcp_catalog(
     discovered_tools: Sequence[DiscoveredMcpTool],
 ) -> AdmittedMcpCatalog | None:
-    """Admit the fixed v1 catalog and isolate all remote metadata from the model."""
+    """Admit only compatible read-only discovery and replace remote metadata with local policy."""
     remote_tools: list[_ValidatedMcpTool] = []
     for discovered in discovered_tools:
         remote = _validate_discovered_tool(discovered)

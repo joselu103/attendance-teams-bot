@@ -86,6 +86,7 @@ class AuthenticatedAttendanceTurnHandler:
     obo_token_exchange: OboTokenExchange
 
     async def handle(self, context: AuthenticatedTurnContext) -> None:
+        """Process personal text turns only, obtaining SSO and OBO tokens before delegation."""
         if context.activity.type != "message" or context.activity.text is None:
             return
         conversation = context.activity.conversation

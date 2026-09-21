@@ -12,6 +12,7 @@ _SAFE_MESSAGE_REPLY = "Please send a text message so I can help."
 
 
 def create_teams_http_app(adapter: TeamsActivityAdapter) -> FastAPI:
+    """Create the unauthenticated local-only Teams-compatible HTTP endpoint."""
     app = FastAPI()
     install_http_request_observability(app, logger_name="local.http")
 

@@ -22,10 +22,13 @@ class DelegatedAuthenticationUnavailable(Exception):
 
 @dataclass(frozen=True, slots=True)
 class MsalOboTokenExchange:
+    """Exchange a Teams SSO assertion for the configured downstream delegated scope."""
+
     provider: AccessTokenProvider
     delegated_scope: str
 
     async def exchange(self, user_assertion: SecretStr) -> SecretStr:
+        """Return a non-empty delegated token or raise the neutral authentication failure."""
         try:
             token = await self.provider.acquire_token_on_behalf_of(
                 [self.delegated_scope],

@@ -55,6 +55,8 @@ _GUIDANCE_INTENTS = frozenset({"unsupported", "date_ambiguous"})
 
 
 class AuthenticatedMcpSession(Protocol):
+    """Expose discovery and tool execution within one authenticated MCP session."""
+
     async def list_tools(self) -> tuple[DiscoveredMcpTool, ...]: ...
 
     async def call_tool(
@@ -63,6 +65,8 @@ class AuthenticatedMcpSession(Protocol):
 
 
 class McpSessionFactory(Protocol):
+    """Open authenticated MCP sessions bound to one correlation identifier."""
+
     def open(
         self, *, access_token: SecretStr, correlation_id: UUID
     ) -> AbstractAsyncContextManager[AuthenticatedMcpSession]: ...
@@ -90,6 +94,12 @@ def guidance_tool() -> ToolDefinition:
 
 @dataclass(frozen=True, slots=True)
 class AttendanceAgent:
+    """Coordinate one requester-scoped attendance query across model and MCP boundaries.
+
+    Attendance data is rendered deterministically after MCP execution; it is not sent back to
+    the language model.
+    """
+
     language_model: LanguageModel
     mcp_session_factory: McpSessionFactory
     presenter: AttendanceResultPresenter = field(default_factory=AttendanceResultPresenter)
@@ -105,6 +115,7 @@ class AttendanceAgent:
         mcp_access_token: SecretStr,
         display_name: str | None = None,
     ) -> BotResponse:
+        """Handle one authenticated message, failing closed on unsafe dependencies or output."""
         correlation_id = self.correlation_id_factory()
         logger = get_logger("agent").bind(correlation_id=str(correlation_id))
         input_metadata = message_input_metadata(message)

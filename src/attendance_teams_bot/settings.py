@@ -20,6 +20,8 @@ class RuntimeMode(StrEnum):
 
 
 class TeamsConnectionSettings(BaseModel):
+    """Contain the Bot Service credentials required for Teams runtime wiring."""
+
     model_config = ConfigDict(frozen=True)
 
     client_id: UUID
@@ -28,6 +30,8 @@ class TeamsConnectionSettings(BaseModel):
 
 
 class OpenAiSettings(BaseModel):
+    """Contain the OpenAI credentials and model name after configuration validation."""
+
     model_config = ConfigDict(frozen=True)
 
     api_key: SecretStr
@@ -35,6 +39,8 @@ class OpenAiSettings(BaseModel):
 
 
 class AttendanceIntegrationSettings(BaseModel):
+    """Contain all validated settings required to enable the real attendance flow."""
+
     model_config = ConfigDict(frozen=True)
 
     endpoint: HttpUrl
@@ -45,6 +51,8 @@ class AttendanceIntegrationSettings(BaseModel):
 
 
 class Settings(BaseSettings):
+    """Load runtime settings and keep attendance integration disabled unless fully configured."""
+
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
     log_environment: Literal["local", "staging", "production"] = Field(
@@ -109,6 +117,7 @@ class Settings(BaseSettings):
 
     @property
     def teams_connection(self) -> TeamsConnectionSettings | None:
+        """Return Teams credentials only when all three Bot Service fields are configured."""
         if (
             self.teams_client_id is None
             or self.teams_tenant_id is None
@@ -124,6 +133,7 @@ class Settings(BaseSettings):
 
     @property
     def attendance_integration(self) -> AttendanceIntegrationSettings | None:
+        """Return a validated integration only when the explicit enablement gate is satisfied."""
         if not self.attendance_integration_enabled:
             return None
         if (
