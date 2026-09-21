@@ -5,6 +5,7 @@ import json
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 
+import structlog
 from openai import AsyncOpenAI
 from pydantic import SecretStr
 
@@ -18,11 +19,11 @@ from attendance_teams_bot.agent.language_model import (
 )
 from attendance_teams_bot.observability import (
     OperationLifecycle,
-    get_logger,
     message_input_metadata,
 )
 
 CompletionCallable = Callable[..., Awaitable[object]]
+_LOGGER = structlog.get_logger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,13 +35,12 @@ class OpenAiLanguageModel:
 
     async def complete(self, request: ModelRequest) -> ModelTurn:
         """Translate one neutral request and reject unusable provider responses."""
-        logger = get_logger("agent.openai")
         metadata = {
             **message_input_metadata(request.user_message),
             "tool_count": len(request.tools),
         }
         lifecycle = OperationLifecycle(
-            logger,
+            _LOGGER,
             handler="OpenAiLanguageModel.complete",
             operation="language_model_completion",
             input_metadata=metadata,

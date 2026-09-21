@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from structlog.testing import capture_logs
 
-import attendance_teams_bot.observability as observability
 from attendance_teams_bot.agent.contracts import BotResponse
 from attendance_teams_bot.teams.adapter import TeamsActivityAdapter
 from attendance_teams_bot.teams.http import create_teams_http_app
@@ -84,96 +84,75 @@ async def test_messages_endpoint_returns_a_safe_teams_reply_for_an_incomplete_me
 
 
 @pytest.mark.anyio
-async def test_local_endpoint_emits_correlated_lifecycle_events_without_request_data(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    events: list[tuple[int, str, dict[str, object]]] = []
-
-    def record_event(_logger, level: int, event: str, **fields: object) -> None:
-        events.append((level, event, fields))
-
+async def test_local_endpoint_emits_correlated_lifecycle_events_without_request_data() -> None:
     trace_id = "11111111-1111-1111-1111-111111111111"
-    monkeypatch.setattr(observability, "log_event", record_event)
     app = create_teams_http_app(TeamsActivityAdapter(handler=RecordingHandler()))
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        response = await client.post(
-            "/api/messages",
-            headers={
-                "X-Correlation-ID": trace_id,
-                "Authorization": "Bearer should-not-appear",
-            },
-            json={"type": "message", "id": "raw-activity-id", "text": "private text"},
-        )
+    with capture_logs() as events:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.post(
+                "/api/messages",
+                headers={
+                    "X-Correlation-ID": trace_id,
+                    "Authorization": "Bearer should-not-appear",
+                },
+                json={"type": "message", "id": "raw-activity-id", "text": "private text"},
+            )
 
     assert response.status_code == 200
-    assert [(level, event) for level, event, _ in events] == [
-        (20, "request_received"),
-        (20, "request_completed"),
+    assert [(event["log_level"], event["event"]) for event in events] == [
+        ("info", "request_received"),
+        ("info", "request_completed"),
     ]
-    for _, _, fields in events:
-        assert fields["trace_id"] == trace_id
-        assert fields["route"] == "/api/messages"
-        assert fields["method"] == "POST"
-    assert events[0][2]["state"] == "received"
-    assert events[1][2]["state"] == "completed"
-    assert events[1][2]["status_code"] == 200
-    assert isinstance(events[1][2]["duration_ms"], int)
+    for event in events:
+        assert event["trace_id"] == trace_id
+        assert event["route"] == "/api/messages"
+        assert event["method"] == "POST"
+    assert events[0]["state"] == "received"
+    assert events[1]["state"] == "completed"
+    assert events[1]["status_code"] == 200
+    assert isinstance(events[1]["duration_ms"], int)
     assert "should-not-appear" not in repr(events)
     assert "raw-activity-id" not in repr(events)
     assert "private text" not in repr(events)
 
 
 @pytest.mark.anyio
-async def test_malformed_local_payload_uses_a_fresh_context_and_completes(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    events: list[tuple[str, dict[str, object]]] = []
-
-    def record_event(_logger, _level: int, event: str, **fields: object) -> None:
-        events.append((event, fields))
-
-    monkeypatch.setattr(observability, "log_event", record_event)
+async def test_malformed_local_payload_uses_a_fresh_context_and_completes() -> None:
     app = create_teams_http_app(TeamsActivityAdapter(handler=RecordingHandler()))
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        malformed = await client.post(
-            "/api/messages",
-            headers={"X-Correlation-ID": "not-a-uuid"},
-            content=b"not-json",
-        )
-        normal = await client.post("/api/messages", json={"type": "conversationUpdate"})
+    with capture_logs() as events:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            malformed = await client.post(
+                "/api/messages",
+                headers={"X-Correlation-ID": "not-a-uuid"},
+                content=b"not-json",
+            )
+            normal = await client.post("/api/messages", json={"type": "conversationUpdate"})
 
     assert malformed.status_code == 200
     assert normal.status_code == 204
     received_trace_ids = [
-        fields["trace_id"] for event, fields in events if event == "request_received"
+        event["trace_id"] for event in events if event["event"] == "request_received"
     ]
     assert len(received_trace_ids) == 2
     assert received_trace_ids[0] != received_trace_ids[1]
 
 
 @pytest.mark.anyio
-async def test_unhandled_local_failure_is_logged_safely(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    events: list[tuple[int, str, dict[str, object]]] = []
-
-    def record_event(_logger, level: int, event: str, **fields: object) -> None:
-        events.append((level, event, fields))
-
-    monkeypatch.setattr(observability, "log_event", record_event)
+async def test_unhandled_local_failure_is_logged_safely() -> None:
     app = create_teams_http_app(TeamsActivityAdapter(handler=FailingHandler()))
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        with pytest.raises(RuntimeError, match="must-not-be-logged"):
-            await client.post(
-                "/api/messages",
-                json={"type": "message", "from": {"id": "user"}, "text": "private"},
-            )
+    with capture_logs() as events:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            with pytest.raises(RuntimeError, match="must-not-be-logged"):
+                await client.post(
+                    "/api/messages",
+                    json={"type": "message", "from": {"id": "user"}, "text": "private"},
+                )
 
-    assert [(level, event) for level, event, _ in events] == [
-        (20, "request_received"),
-        (40, "request_failed"),
+    assert [(event["log_level"], event["event"]) for event in events] == [
+        ("info", "request_received"),
+        ("error", "request_failed"),
     ]
-    failure = events[1][2]
+    failure = events[1]
     assert failure["status_code"] == 500
     assert failure["state"] == "server_error"
     assert failure["error_type"] == "RuntimeError"

@@ -9,6 +9,7 @@ from typing import Protocol, cast
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
+import structlog
 from pydantic import SecretStr
 
 from attendance_teams_bot.agent.attendance_window import (
@@ -46,12 +47,12 @@ from attendance_teams_bot.observability import (
     OperationLifecycle,
     authentication_event,
     current_correlation_id,
-    get_logger,
     message_input_metadata,
 )
 
 GUIDANCE_TOOL = "respond_with_guidance"
 _GUIDANCE_INTENTS = frozenset({"unsupported", "date_ambiguous"})
+_LOGGER = structlog.get_logger(__name__)
 
 
 class AuthenticatedMcpSession(Protocol):
@@ -117,7 +118,7 @@ class AttendanceAgent:
     ) -> BotResponse:
         """Handle one authenticated message, failing closed on unsafe dependencies or output."""
         correlation_id = self.correlation_id_factory()
-        logger = get_logger("agent").bind(correlation_id=str(correlation_id))
+        logger = _LOGGER.bind(correlation_id=str(correlation_id))
         input_metadata = message_input_metadata(message)
         lifecycle = OperationLifecycle(
             logger,

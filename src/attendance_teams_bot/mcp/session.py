@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from uuid import UUID
 
 import httpx
+import structlog
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 from mcp.types import ToolAnnotations
@@ -27,10 +28,11 @@ from attendance_teams_bot.mcp.contracts import (
     AttendanceEventPage,
     McpToolFailure,
 )
-from attendance_teams_bot.observability import OperationLifecycle, get_logger
+from attendance_teams_bot.observability import OperationLifecycle
 
 _VERSION = re.compile(r"^(?P<major>[0-9]+)\.[0-9]+\.[0-9]+$")
 HttpClientFactory = Callable[[dict[str, str]], httpx.AsyncClient]
+_LOGGER = structlog.get_logger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,9 +43,8 @@ class StreamableHttpAttendanceSession:
 
     async def list_tools(self) -> tuple[DiscoveredMcpTool, ...]:
         """Return untrusted discovery fields for later bot-side catalog admission."""
-        logger = get_logger("mcp.session")
         lifecycle = OperationLifecycle(
-            logger,
+            _LOGGER,
             handler="StreamableHttpAttendanceSession.list_tools",
             operation="mcp_tool_discovery",
         )
@@ -75,10 +76,9 @@ class StreamableHttpAttendanceSession:
         arguments: Mapping[str, object],
     ) -> AttendanceEventPage:
         """Execute an admitted tool and validate its text result as an attendance page."""
-        logger = get_logger("mcp.session")
         metadata = {"tool_name": name, "argument_count": len(arguments)}
         lifecycle = OperationLifecycle(
-            logger,
+            _LOGGER,
             handler="StreamableHttpAttendanceSession.call_tool",
             operation="mcp_tool_execution",
             input_metadata=metadata,
@@ -122,9 +122,8 @@ class StreamableHttpAttendanceSessionFactory:
         correlation_id: UUID,
     ) -> AsyncIterator[StreamableHttpAttendanceSession]:
         """Yield an initialized session, translating connection failures to the safe MCP error."""
-        logger = get_logger("mcp.session")
         lifecycle = OperationLifecycle(
-            logger,
+            _LOGGER,
             handler="StreamableHttpAttendanceSessionFactory.open",
             operation="mcp_session_connection",
         )

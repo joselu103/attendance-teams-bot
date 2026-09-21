@@ -4,6 +4,7 @@ import logging
 from collections.abc import Mapping
 from typing import Any, Protocol, cast
 
+import structlog
 from fastapi import FastAPI, Request
 from microsoft_agents.activity import load_configuration_from_env
 from microsoft_agents.authentication.msal import MsalConnectionManager
@@ -27,9 +28,7 @@ from starlette.responses import JSONResponse, Response
 from attendance_teams_bot.auth.obo import MsalOboTokenExchange
 from attendance_teams_bot.observability import (
     authentication_event,
-    get_logger,
     install_http_request_observability,
-    log_event,
 )
 from attendance_teams_bot.settings import TeamsConnectionSettings
 from attendance_teams_bot.teams.authenticated import (
@@ -38,6 +37,8 @@ from attendance_teams_bot.teams.authenticated import (
     AuthenticatedTurnContext,
     ChannelAuthenticatedMessageHandler,
 )
+
+_LOGGER = structlog.get_logger(__name__)
 
 
 class _Authorization(Protocol):
@@ -63,7 +64,7 @@ class TeamsAuthorizationSsoTokenProvider:
             )
         except Exception as error:
             authentication_event(
-                get_logger("teams.sso"),
+                _LOGGER,
                 event="auth_failed",
                 scheme="teams_sso",
                 failure_reason=type(error).__name__,
@@ -72,19 +73,19 @@ class TeamsAuthorizationSsoTokenProvider:
         token = getattr(response, "token", None)
         if not isinstance(token, str) or not token:
             authentication_event(
-                get_logger("teams.sso"),
+                _LOGGER,
                 event="auth_failed",
                 scheme="teams_sso",
                 failure_reason="token_unavailable",
             )
             raise RuntimeError("Teams SSO token is unavailable")
-        authentication_event(get_logger("teams.sso"), event="auth_validated", scheme="teams_sso")
+        authentication_event(_LOGGER, event="auth_validated", scheme="teams_sso")
         return SecretStr(token)
 
 
 def install_teams_callback_observability(app: FastAPI) -> None:
     """Install shared request lifecycle logging for the Teams HTTP entry point."""
-    install_http_request_observability(app, logger_name="teams.http")
+    install_http_request_observability(app)
 
 
 def normalize_oauth_invoke_response(
@@ -111,8 +112,7 @@ def normalize_oauth_invoke_response(
     else:
         reason = "unrelated_invoke"
 
-    log_event(
-        get_logger("teams.sso"),
+    _LOGGER.log(
         logging.WARNING,
         "teams_sso_token_exchange_fallback",
         activity_type=activity_type if isinstance(activity_type, str) else None,
