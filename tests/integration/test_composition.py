@@ -5,7 +5,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from attendance_teams_bot.composition import (
-    create_connectivity_only_teams_http_app,
+    create_bot_service_only_app,
     create_http_app,
     create_local_http_app,
 )
@@ -43,7 +43,7 @@ async def test_default_runtime_composes_the_safe_local_http_app() -> None:
 
 
 @pytest.mark.anyio
-async def test_teams_runtime_composes_the_authenticated_http_app(monkeypatch) -> None:
+async def test_teams_runtime_composes_the_bot_service_only_http_app(monkeypatch) -> None:
     monkeypatch.setenv("BOT_RUNTIME_MODE", "teams")
     monkeypatch.setenv("CONNECTIONS__SERVICE_CONNECTION__SETTINGS__CLIENTID", str(uuid4()))
     monkeypatch.setenv("CONNECTIONS__SERVICE_CONNECTION__SETTINGS__TENANTID", str(uuid4()))
@@ -59,7 +59,7 @@ async def test_teams_runtime_composes_the_authenticated_http_app(monkeypatch) ->
     assert response.status_code == 401
 
 
-def test_connectivity_only_teams_composition_uses_connectivity_handler(monkeypatch) -> None:
+def test_bot_service_only_composition_uses_its_handler(monkeypatch) -> None:
     from attendance_teams_bot import composition
 
     monkeypatch.setenv("BOT_RUNTIME_MODE", "teams")
@@ -75,12 +75,12 @@ def test_connectivity_only_teams_composition_uses_connectivity_handler(monkeypat
 
     monkeypatch.setattr(
         composition,
-        "create_authenticated_teams_http_app",
+        "create_bot_service_only_callback_http_app",
         fake_connectivity_factory,
     )
 
-    assert create_connectivity_only_teams_http_app(Settings()) is expected_app
-    assert isinstance(recorded["handler"], composition.BotServiceConnectivityHandler)
+    assert create_bot_service_only_app(Settings()) is expected_app
+    assert isinstance(recorded["handler"], composition.BotServiceOnlyHandler)
 
 
 def test_teams_mode_composes_enabled_attendance_integration(monkeypatch) -> None:

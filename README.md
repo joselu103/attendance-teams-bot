@@ -15,13 +15,13 @@ entry point listens on `127.0.0.1:3978`; the container entry point listens on
 | Mode | Purpose | Request authentication |
 | --- | --- | --- |
 | `local` (default) | Offline connectivity and activity-adapter development | None — never configure this route as a real Bot Service callback. |
-| `teams` | Bot Service callback foundation | Microsoft Agents SDK validates the Bot Service bearer credential before application handling. |
+| `teams` | Bot Service-only callback foundation | Microsoft Agents SDK validates the Bot Service callback credential before application handling. |
 
 Teams mode has two explicit, fail-closed paths:
 
 ```text
 Integration disabled:
-Teams → authenticated Bot Service callback → connectivity reply
+Teams → Bot Service-only callback → connectivity reply
 
 Integration enabled:
 Teams → Azure Bot OAuth connection → token A → OBO → token B
@@ -117,8 +117,8 @@ for deployment. Never put real values, bearer tokens, or client secrets in
 `.env.example`, source control, logs, test fixtures, or chat.
 
 `CLIENTID` and `TENANTID` identify the Bot Service application and tenant;
-`CLIENTSECRET` is sensitive. The authenticated runtime currently verifies the
-Bot Service request only unless attendance integration is explicitly enabled.
+`CLIENTSECRET` is sensitive. The Bot Service-only runtime verifies the Bot Service
+request only unless attendance integration is explicitly enabled.
 
 The enabled integration requires all of these environment-variable names in
 addition to the Teams connection settings:

@@ -13,7 +13,7 @@ from attendance_teams_bot.mcp.contracts import (
     AttendanceEvent,
     AttendanceEventPage,
 )
-from attendance_teams_bot.teams.authenticated import AuthenticatedAttendanceTurnHandler
+from attendance_teams_bot.teams.authenticated import SsoOboAttendanceTurnHandler
 
 
 @dataclass
@@ -119,7 +119,7 @@ async def test_authenticated_turn_uses_only_obo_token_for_attendance_mcp() -> No
     )
     context = Context()
 
-    await AuthenticatedAttendanceTurnHandler(attendance, Sso(), obo).handle(context)
+    await SsoOboAttendanceTurnHandler(attendance, Sso(), obo).handle(context)
 
     assert obo.assertions == [SecretStr("token-a")]
     assert factory.tokens == [SecretStr("token-b")]

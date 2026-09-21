@@ -6,10 +6,10 @@ from httpx import ASGITransport, AsyncClient
 from structlog.testing import capture_logs
 
 from attendance_teams_bot.settings import Settings
-from attendance_teams_bot.teams.authenticated import BotServiceConnectivityHandler
+from attendance_teams_bot.teams.authenticated import BotServiceOnlyHandler
 from attendance_teams_bot.teams.microsoft_agents import (
     create_attendance_teams_http_app,
-    create_authenticated_teams_http_app,
+    create_bot_service_only_http_app,
 )
 
 
@@ -25,7 +25,7 @@ def anyio_backend() -> str:
 
 
 @pytest.mark.anyio
-async def test_authenticated_endpoint_rejects_requests_without_bot_service_credentials(
+async def test_bot_service_only_endpoint_rejects_unsigned_requests(
     monkeypatch,
 ) -> None:
     monkeypatch.setenv("CONNECTIONS__SERVICE_CONNECTION__SETTINGS__CLIENTID", str(uuid4()))
@@ -33,9 +33,9 @@ async def test_authenticated_endpoint_rejects_requests_without_bot_service_crede
     monkeypatch.setenv("CONNECTIONS__SERVICE_CONNECTION__SETTINGS__CLIENTSECRET", token_urlsafe())
     connection = Settings().teams_connection
     assert connection is not None
-    app = create_authenticated_teams_http_app(
+    app = create_bot_service_only_http_app(
         connection=connection,
-        handler=BotServiceConnectivityHandler(),
+        handler=BotServiceOnlyHandler(),
     )
 
     async with AsyncClient(
@@ -48,15 +48,17 @@ async def test_authenticated_endpoint_rejects_requests_without_bot_service_crede
 
 
 @pytest.mark.anyio
-async def test_authenticated_endpoint_records_a_safe_callback_lifecycle(monkeypatch) -> None:
+async def test_bot_service_only_endpoint_records_a_safe_callback_lifecycle(
+    monkeypatch,
+) -> None:
     monkeypatch.setenv("CONNECTIONS__SERVICE_CONNECTION__SETTINGS__CLIENTID", str(uuid4()))
     monkeypatch.setenv("CONNECTIONS__SERVICE_CONNECTION__SETTINGS__TENANTID", str(uuid4()))
     monkeypatch.setenv("CONNECTIONS__SERVICE_CONNECTION__SETTINGS__CLIENTSECRET", token_urlsafe())
     connection = Settings().teams_connection
     assert connection is not None
-    app = create_authenticated_teams_http_app(
+    app = create_bot_service_only_http_app(
         connection=connection,
-        handler=BotServiceConnectivityHandler(),
+        handler=BotServiceOnlyHandler(),
     )
 
     with capture_logs() as events:
@@ -82,15 +84,15 @@ async def test_authenticated_endpoint_records_a_safe_callback_lifecycle(monkeypa
 
 
 @pytest.mark.anyio
-async def test_authenticated_endpoint_exposes_a_health_probe(monkeypatch) -> None:
+async def test_bot_service_only_endpoint_exposes_a_health_probe(monkeypatch) -> None:
     monkeypatch.setenv("CONNECTIONS__SERVICE_CONNECTION__SETTINGS__CLIENTID", str(uuid4()))
     monkeypatch.setenv("CONNECTIONS__SERVICE_CONNECTION__SETTINGS__TENANTID", str(uuid4()))
     monkeypatch.setenv("CONNECTIONS__SERVICE_CONNECTION__SETTINGS__CLIENTSECRET", token_urlsafe())
     connection = Settings().teams_connection
     assert connection is not None
-    app = create_authenticated_teams_http_app(
+    app = create_bot_service_only_http_app(
         connection=connection,
-        handler=BotServiceConnectivityHandler(),
+        handler=BotServiceOnlyHandler(),
     )
 
     async with AsyncClient(

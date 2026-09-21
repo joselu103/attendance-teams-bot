@@ -16,15 +16,15 @@ from attendance_teams_bot.observability import (
     message_input_metadata,
 )
 
-_SAFE_BOT_SERVICE_REPLY = (
-    "Microsoft Bot Service connectivity is verified, but Teams SSO, MCP, "
+_SAFE_BOT_SERVICE_ONLY_REPLY = (
+    "Bot Service connectivity is verified, but Teams SSO, MCP, "
     "and LLM adapters are not configured yet."
 )
 _SAFE_AUTHENTICATION_REPLY = "Authentication is temporarily unavailable. Please try again later."
 _LOGGER = structlog.get_logger(__name__)
 
 
-class ChannelAuthenticatedMessageHandler(Protocol):
+class BotServiceOnlyMessageHandler(Protocol):
     async def handle(self, *, message: str) -> BotResponse: ...
 
 
@@ -53,7 +53,7 @@ class TurnActivity(Protocol):
     from_property: TurnSender | None
 
 
-class AuthenticatedTurnContext(Protocol):
+class BotServiceAuthenticatedTurnContext(Protocol):
     @property
     def activity(self) -> TurnActivity: ...
 
@@ -61,7 +61,7 @@ class AuthenticatedTurnContext(Protocol):
 
 
 class SsoTokenProvider(Protocol):
-    async def get_token(self, context: AuthenticatedTurnContext) -> SecretStr: ...
+    async def get_token(self, context: BotServiceAuthenticatedTurnContext) -> SecretStr: ...
 
 
 class OboTokenExchange(Protocol):
@@ -69,23 +69,23 @@ class OboTokenExchange(Protocol):
 
 
 @dataclass(frozen=True, slots=True)
-class BotServiceConnectivityHandler:
-    """Safe handler used after Bot Service request authentication."""
+class BotServiceOnlyHandler:
+    """Safe handler used after Bot Service authentication without attendance integrations."""
 
     async def handle(self, *, message: str) -> BotResponse:
         del message
-        return BotResponse(text=_SAFE_BOT_SERVICE_REPLY)
+        return BotResponse(text=_SAFE_BOT_SERVICE_ONLY_REPLY)
 
 
 @dataclass(frozen=True, slots=True)
-class AuthenticatedAttendanceTurnHandler:
+class SsoOboAttendanceTurnHandler:
     """Run an admitted personal Teams turn through SSO, OBO, and attendance processing."""
 
     application: AttendanceApplication
     sso_token_provider: SsoTokenProvider
     obo_token_exchange: OboTokenExchange
 
-    async def handle(self, context: AuthenticatedTurnContext) -> None:
+    async def handle(self, context: BotServiceAuthenticatedTurnContext) -> None:
         """Process personal text turns only, obtaining SSO and OBO tokens before delegation."""
         if context.activity.type != "message" or context.activity.text is None:
             return
@@ -99,7 +99,7 @@ class AuthenticatedAttendanceTurnHandler:
             return
         await self._handle_attendance_message(context=context, message=message)
 
-    async def _reject_nonpersonal(self, context: AuthenticatedTurnContext) -> None:
+    async def _reject_nonpersonal(self, context: BotServiceAuthenticatedTurnContext) -> None:
         correlation_id = current_correlation_id()
         logger = _LOGGER.bind(correlation_id=str(correlation_id))
         logger.log(
@@ -110,7 +110,7 @@ class AuthenticatedAttendanceTurnHandler:
         )
         await context.send_activity("Attendance is available only in a personal chat.")
 
-    async def _reject_blank(self, context: AuthenticatedTurnContext) -> None:
+    async def _reject_blank(self, context: BotServiceAuthenticatedTurnContext) -> None:
         correlation_id = current_correlation_id()
         logger = _LOGGER.bind(correlation_id=str(correlation_id))
         logger.log(
@@ -122,7 +122,7 @@ class AuthenticatedAttendanceTurnHandler:
         await context.send_activity("Please send a message so I can help.")
 
     async def _handle_attendance_message(
-        self, *, context: AuthenticatedTurnContext, message: str
+        self, *, context: BotServiceAuthenticatedTurnContext, message: str
     ) -> None:
         correlation_id = current_correlation_id()
         logger = _LOGGER.bind(correlation_id=str(correlation_id))
@@ -194,7 +194,7 @@ class AuthenticatedAttendanceTurnHandler:
     async def _reply_for_authentication_failure(
         self,
         *,
-        context: AuthenticatedTurnContext,
+        context: BotServiceAuthenticatedTurnContext,
         logger: structlog.BoundLogger,
         lifecycle: OperationLifecycle,
         error: RuntimeError | DelegatedAuthenticationUnavailable,
@@ -210,6 +210,6 @@ class AuthenticatedAttendanceTurnHandler:
         await context.send_activity(_SAFE_AUTHENTICATION_REPLY)
 
     @staticmethod
-    def _display_name(context: AuthenticatedTurnContext) -> str | None:
+    def _display_name(context: BotServiceAuthenticatedTurnContext) -> str | None:
         sender = context.activity.from_property
         return sender.name if sender is not None else None

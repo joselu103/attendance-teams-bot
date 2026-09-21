@@ -12,7 +12,7 @@ from attendance_teams_bot.teams.microsoft_agents import (
     TeamsAuthorizationSsoTokenProvider,
     create_attendance_teams_http_app,
     normalize_oauth_invoke_response,
-    route_authenticated_turn,
+    route_bot_service_authenticated_turn,
 )
 
 
@@ -51,8 +51,8 @@ async def test_connectivity_route_handles_blank_and_trimmed_messages() -> None:
     blank = FakeTurnContext(FakeActivity(type="message", text="  "))
     message = FakeTurnContext(FakeActivity(type="message", text="  Hello  "))
 
-    await route_authenticated_turn(context=blank, handler=handler)
-    await route_authenticated_turn(context=message, handler=handler)
+    await route_bot_service_authenticated_turn(context=blank, handler=handler)
+    await route_bot_service_authenticated_turn(context=message, handler=handler)
 
     assert blank.sent_texts == ["Please send a message so I can help."]
     assert handler.messages == ["Hello"]

@@ -8,8 +8,8 @@ import attendance_teams_bot.observability as observability
 from attendance_teams_bot.agent.contracts import BotResponse
 from attendance_teams_bot.auth.obo import DelegatedAuthenticationUnavailable
 from attendance_teams_bot.teams.authenticated import (
-    AuthenticatedAttendanceTurnHandler,
-    BotServiceConnectivityHandler,
+    BotServiceOnlyHandler,
+    SsoOboAttendanceTurnHandler,
 )
 
 
@@ -84,8 +84,8 @@ class Obo:
 
 def handler(
     application: Application, sso: Sso | None = None, obo: Obo | None = None
-) -> AuthenticatedAttendanceTurnHandler:
-    return AuthenticatedAttendanceTurnHandler(
+) -> SsoOboAttendanceTurnHandler:
+    return SsoOboAttendanceTurnHandler(
         application=application,
         sso_token_provider=sso or Sso(),
         obo_token_exchange=obo or Obo(),
@@ -93,8 +93,8 @@ def handler(
 
 
 @pytest.mark.anyio
-async def test_bot_service_connectivity_handler_returns_a_safe_reply() -> None:
-    response = await BotServiceConnectivityHandler().handle(message="Show my attendance")
+async def test_bot_service_only_handler_returns_a_safe_reply() -> None:
+    response = await BotServiceOnlyHandler().handle(message="Show my attendance")
     assert "Teams SSO, MCP" in response.text
 
 
@@ -212,7 +212,7 @@ async def test_application_and_reply_failures_emit_the_active_step_lifecycle_eve
     assert events[-1] == (
         "operation_failed",
         {
-            "handler": "AuthenticatedAttendanceTurnHandler",
+            "handler": "SsoOboAttendanceTurnHandler",
             "operation": "authenticated_attendance_turn",
             "step": "attendance_application",
             "duration_ms": events[-1][1]["duration_ms"],

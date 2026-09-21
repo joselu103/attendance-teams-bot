@@ -33,9 +33,9 @@ from attendance_teams_bot.observability import (
 from attendance_teams_bot.settings import TeamsConnectionSettings
 from attendance_teams_bot.teams.authenticated import (
     AttendanceApplication,
-    AuthenticatedAttendanceTurnHandler,
-    AuthenticatedTurnContext,
-    ChannelAuthenticatedMessageHandler,
+    BotServiceAuthenticatedTurnContext,
+    BotServiceOnlyMessageHandler,
+    SsoOboAttendanceTurnHandler,
 )
 
 _LOGGER = structlog.get_logger(__name__)
@@ -56,7 +56,7 @@ class TeamsAuthorizationSsoTokenProvider:
         self._authorization = authorization
         self._auth_handler_id = auth_handler_id
 
-    async def get_token(self, context: AuthenticatedTurnContext) -> SecretStr:
+    async def get_token(self, context: BotServiceAuthenticatedTurnContext) -> SecretStr:
         """Retrieve a non-empty Teams SSO token or raise the neutral runtime error."""
         try:
             response = await self._authorization.get_token(
@@ -134,12 +134,12 @@ def normalize_oauth_invoke_response(
     )
 
 
-async def route_authenticated_turn(
+async def route_bot_service_authenticated_turn(
     *,
-    context: AuthenticatedTurnContext,
-    handler: ChannelAuthenticatedMessageHandler,
+    context: BotServiceAuthenticatedTurnContext,
+    handler: BotServiceOnlyMessageHandler,
 ) -> None:
-    """Forward a non-blank message from an SDK-authenticated turn to a neutral handler."""
+    """Forward a non-blank Bot Service-authenticated turn to a neutral handler."""
     if context.activity.type != "message" or context.activity.text is None:
         return
     message = context.activity.text.strip()
@@ -162,10 +162,10 @@ def _sdk_configuration(connection: TeamsConnectionSettings) -> Any:
     )
 
 
-def create_authenticated_teams_http_app(
-    *, connection: TeamsConnectionSettings, handler: ChannelAuthenticatedMessageHandler
+def create_bot_service_only_http_app(
+    *, connection: TeamsConnectionSettings, handler: BotServiceOnlyMessageHandler
 ) -> FastAPI:
-    """Create a Bot Service-authenticated app that exposes connectivity-only replies."""
+    """Create a Bot Service-only app with fixed, non-attendance replies."""
     sdk_configuration = _sdk_configuration(connection)
     storage = MemoryStorage()
     connection_manager = MsalConnectionManager(**sdk_configuration)
@@ -177,8 +177,8 @@ def create_authenticated_teams_http_app(
 
     @agent_application.activity("message")
     async def on_message(context: TurnContext, _state: TurnState) -> None:
-        await route_authenticated_turn(
-            context=cast(AuthenticatedTurnContext, context), handler=handler
+        await route_bot_service_authenticated_turn(
+            context=cast(BotServiceAuthenticatedTurnContext, context), handler=handler
         )
 
     return _create_http_app(
@@ -216,7 +216,7 @@ def create_attendance_teams_http_app(
         auth_handlers={auth_handler_id: auth_handler},
         **sdk_configuration,
     )
-    attendance_handler = AuthenticatedAttendanceTurnHandler(
+    attendance_handler = SsoOboAttendanceTurnHandler(
         application=attendance_application,
         sso_token_provider=TeamsAuthorizationSsoTokenProvider(
             authorization=authorization,
@@ -233,7 +233,7 @@ def create_attendance_teams_http_app(
 
     @agent_application.activity("message", auth_handlers=[auth_handler_id])
     async def on_message(context: TurnContext, _state: TurnState) -> None:
-        await attendance_handler.handle(cast(AuthenticatedTurnContext, context))
+        await attendance_handler.handle(cast(BotServiceAuthenticatedTurnContext, context))
 
     return _create_http_app(
         connection_manager=connection_manager,
