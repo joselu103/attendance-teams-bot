@@ -12,12 +12,14 @@ from attendance_teams_bot.settings import (
 )
 from attendance_teams_bot.teams.adapter import TeamsActivityAdapter
 from attendance_teams_bot.teams.authenticated import (
-    BotServiceConnectivityHandler,
+    BotServiceOnlyHandler,
 )
 from attendance_teams_bot.teams.http import create_teams_http_app
 from attendance_teams_bot.teams.microsoft_agents import (
     create_attendance_teams_http_app,
-    create_authenticated_teams_http_app,
+)
+from attendance_teams_bot.teams.microsoft_agents import (
+    create_bot_service_only_http_app as create_bot_service_only_callback_http_app,
 )
 
 
@@ -27,7 +29,7 @@ def create_http_app(settings: Settings) -> FastAPI:
         return create_local_http_app()
     if settings.mode is RuntimeMode.TEAMS:
         if settings.attendance_integration is None:
-            return create_connectivity_only_teams_http_app(settings)
+            return create_bot_service_only_app(settings)
         return create_attendance_enabled_teams_http_app(settings)
 
     raise ValueError(f"Unsupported runtime mode: {settings.mode}")
@@ -40,16 +42,16 @@ def create_local_http_app() -> FastAPI:
     return create_teams_http_app(adapter)
 
 
-def create_connectivity_only_teams_http_app(settings: Settings) -> FastAPI:
-    """Compose the authenticated Teams endpoint without attendance integrations."""
-    return create_authenticated_teams_http_app(
+def create_bot_service_only_app(settings: Settings) -> FastAPI:
+    """Compose the Bot Service-only endpoint without attendance integrations."""
+    return create_bot_service_only_callback_http_app(
         connection=_teams_connection(settings),
-        handler=BotServiceConnectivityHandler(),
+        handler=BotServiceOnlyHandler(),
     )
 
 
 def create_attendance_enabled_teams_http_app(settings: Settings) -> FastAPI:
-    """Compose the authenticated Teams endpoint with the attendance flow enabled."""
+    """Compose the Teams SSO/OBO attendance endpoint."""
     integration = _attendance_integration(settings)
     return create_attendance_teams_http_app(
         connection=_teams_connection(settings),
