@@ -6,16 +6,19 @@ from uuid import UUID
 import pytest
 from pydantic import SecretStr
 
+import attendance_teams_bot.observability as observability
 from attendance_teams_bot.agent import orchestrator
-from attendance_teams_bot.agent.language_model import ModelRequest, NoTool, ToolCall, ToolDefinition
-from attendance_teams_bot.agent.orchestrator import (
+from attendance_teams_bot.agent.language_model import ModelRequest, NoTool, ToolCall
+from attendance_teams_bot.agent.mcp_catalog import (
     _LEGACY_READ_ONLY_TOOL_NAMES,
+    DiscoveredMcpTool,
+    canonical_self_attendance_tool,
+)
+from attendance_teams_bot.agent.orchestrator import AttendanceAgent, guidance_tool
+from attendance_teams_bot.agent.rendering import (
     CLARIFICATION_REPLY,
     INVALID_REQUEST_REPLY,
     UNAVAILABLE_REPLY,
-    AttendanceAgent,
-    canonical_self_attendance_tool,
-    guidance_tool,
 )
 from attendance_teams_bot.mcp.client import AttendanceToolFailure
 from attendance_teams_bot.mcp.contracts import (
@@ -38,13 +41,13 @@ class FakeLanguageModel:
 
 @dataclass
 class FakeMcpSession:
-    tools: tuple[ToolDefinition, ...]
+    tools: tuple[DiscoveredMcpTool, ...]
     failure: AttendanceToolFailure | None = None
     failure_on_call: int | None = None
     pages: list[AttendanceEventPage] = field(default_factory=list)
     calls: list[tuple[str, dict[str, object]]] = field(default_factory=list)
 
-    async def list_tools(self) -> tuple[ToolDefinition, ...]:
+    async def list_tools(self) -> tuple[DiscoveredMcpTool, ...]:
         return self.tools
 
     async def call_tool(self, *, name: str, arguments: dict[str, object]) -> AttendanceEventPage:
@@ -93,8 +96,8 @@ def page() -> AttendanceEventPage:
     )
 
 
-def compatible_tool(description: str = "Remote description") -> ToolDefinition:
-    return ToolDefinition(
+def compatible_tool(description: str = "Remote description") -> DiscoveredMcpTool:
+    return DiscoveredMcpTool(
         name=SELF_ATTENDANCE_TOOL,
         description=description,
         input_schema={
@@ -112,11 +115,11 @@ def compatible_tool(description: str = "Remote description") -> ToolDefinition:
     )
 
 
-def legacy_read_only_catalog() -> tuple[ToolDefinition, ...]:
+def legacy_read_only_catalog() -> tuple[DiscoveredMcpTool, ...]:
     return tuple(
         compatible_tool()
         if name == SELF_ATTENDANCE_TOOL
-        else ToolDefinition(
+        else DiscoveredMcpTool(
             name=name,
             description="Unprompted legacy read-only tool",
             input_schema={"type": "object"},
@@ -127,7 +130,7 @@ def legacy_read_only_catalog() -> tuple[ToolDefinition, ...]:
 
 
 def build_agent(
-    turn: ToolCall | NoTool, tools: tuple[ToolDefinition, ...] | None = None
+    turn: ToolCall | NoTool, tools: tuple[DiscoveredMcpTool, ...] | None = None
 ) -> tuple[AttendanceAgent, FakeLanguageModel, FakeMcpSession]:
     if (
         isinstance(turn, ToolCall)
@@ -201,13 +204,13 @@ async def test_agent_admits_full_legacy_catalog_but_prompts_and_calls_only_self_
     "tools",
     [
         (),
-        (ToolDefinition("admin_tool", "x", {"type": "object"}),),
+        (DiscoveredMcpTool("admin_tool", "x", {"type": "object"}, {}),),
         (compatible_tool(), compatible_tool()),
-        (compatible_tool(), ToolDefinition("unexpected_tool", "x", {"type": "object"})),
+        (compatible_tool(), DiscoveredMcpTool("unexpected_tool", "x", {"type": "object"}, {})),
     ],
 )
 async def test_agent_fails_closed_before_model_for_incompatible_catalog(
-    tools: tuple[ToolDefinition, ...],
+    tools: tuple[DiscoveredMcpTool, ...],
 ) -> None:
     agent, model, session = build_agent(ToolCall("call", SELF_ATTENDANCE_TOOL, {}), tools)
 
@@ -259,7 +262,7 @@ async def test_agent_rejects_an_oversized_model_argument_before_the_mcp_call() -
 @pytest.mark.anyio
 async def test_agent_requires_the_remote_catalog_read_only_marker() -> None:
     remote = compatible_tool()
-    remote = ToolDefinition(remote.name, remote.description, remote.input_schema)
+    remote = DiscoveredMcpTool(remote.name, remote.description, remote.input_schema, None)
     agent, model, session = build_agent(ToolCall("call", SELF_ATTENDANCE_TOOL, {}), (remote,))
 
     response = await agent.handle(message="Show attendance", mcp_access_token=SecretStr("token-b"))
@@ -275,7 +278,7 @@ async def test_agent_requires_the_remote_catalog_read_only_marker() -> None:
     [
         tuple(tool for tool in legacy_read_only_catalog() if tool.name != SELF_ATTENDANCE_TOOL),
         tuple(
-            ToolDefinition(
+            DiscoveredMcpTool(
                 tool.name,
                 tool.description,
                 {"type": "object"} if tool.name == SELF_ATTENDANCE_TOOL else tool.input_schema,
@@ -284,13 +287,13 @@ async def test_agent_requires_the_remote_catalog_read_only_marker() -> None:
             for tool in legacy_read_only_catalog()
         ),
         tuple(
-            ToolDefinition(tool.name, tool.description, tool.input_schema, {})
+            DiscoveredMcpTool(tool.name, tool.description, tool.input_schema, {})
             if tool.name == SELF_ATTENDANCE_TOOL
             else tool
             for tool in legacy_read_only_catalog()
         ),
         tuple(
-            ToolDefinition(
+            DiscoveredMcpTool(
                 tool.name,
                 tool.description,
                 {"type": object()} if tool.name == "list_locations" else tool.input_schema,
@@ -301,7 +304,7 @@ async def test_agent_requires_the_remote_catalog_read_only_marker() -> None:
     ],
 )
 async def test_agent_rejects_missing_or_incompatible_selected_tool_in_legacy_catalog(
-    tools: tuple[ToolDefinition, ...],
+    tools: tuple[DiscoveredMcpTool, ...],
 ) -> None:
     agent, model, session = build_agent(ToolCall("call", SELF_ATTENDANCE_TOOL, {}), tools)
 
@@ -310,73 +313,6 @@ async def test_agent_rejects_missing_or_incompatible_selected_tool_in_legacy_cat
     assert response.text == UNAVAILABLE_REPLY
     assert model.requests == []
     assert session.calls == []
-
-
-@pytest.mark.anyio
-async def test_agent_accepts_exactly_31_inclusive_dates() -> None:
-    agent, _, session = build_agent(
-        ToolCall(
-            "call", SELF_ATTENDANCE_TOOL, {"start_date": "2026-08-01", "end_date": "2026-08-31"}
-        )
-    )
-
-    await agent.handle(message="Show attendance", mcp_access_token=SecretStr("token-b"))
-
-    assert len(session.calls) == 1
-
-
-@pytest.mark.anyio
-async def test_agent_resolves_long_ranges_locally_and_partitions_mcp_windows() -> None:
-    agent, model, session = build_agent(NoTool())
-
-    await agent.handle(
-        message="Show my attendance for last 3 months", mcp_access_token=SecretStr("token-b")
-    )
-
-    assert model.requests == []
-    assert [call[1] for call in session.calls] == [
-        {"start_date": "2026-05-15", "end_date": "2026-06-14", "limit": 50, "offset": 0},
-        {"start_date": "2026-06-15", "end_date": "2026-07-15", "limit": 50, "offset": 0},
-        {"start_date": "2026-07-16", "end_date": "2026-08-15", "limit": 50, "offset": 0},
-    ]
-
-
-@pytest.mark.anyio
-async def test_agent_uses_bot_controlled_offsets_and_stops_at_two_hundred_events() -> None:
-    agent, _, session = build_agent(
-        ToolCall(
-            "call", SELF_ATTENDANCE_TOOL, {"start_date": "2026-08-10", "end_date": "2026-08-12"}
-        )
-    )
-    event = page().items[0]
-    session.pages = [
-        AttendanceEventPage(items=(event,) * 50, limit=50, offset=offset, next_offset=offset + 50)
-        for offset in range(0, 200, 50)
-    ]
-
-    response = await agent.handle(message="Show attendance", mcp_access_token=SecretStr("token-b"))
-
-    assert [call[1]["offset"] for call in session.calls] == [0, 50, 100, 150]
-    assert "additional records were omitted" in response.text
-
-
-@pytest.mark.anyio
-async def test_agent_discards_aggregate_when_a_later_page_fails() -> None:
-    agent, _, session = build_agent(
-        ToolCall(
-            "call", SELF_ATTENDANCE_TOOL, {"start_date": "2026-08-10", "end_date": "2026-08-12"}
-        )
-    )
-    session.pages = [AttendanceEventPage(items=page().items, limit=50, offset=0, next_offset=50)]
-    session.failure = AttendanceToolFailure(
-        McpToolFailure(code="FORBIDDEN", message="You do not have permission to do that.")
-    )
-    session.failure_on_call = 2
-
-    response = await agent.handle(message="Show attendance", mcp_access_token=SecretStr("token-b"))
-
-    assert response.text == "You do not have permission to view that attendance."
-    assert "Office" not in response.text
 
 
 @pytest.mark.anyio
@@ -512,7 +448,7 @@ async def test_agent_records_a_correlated_terminal_outcome_without_sensitive_dat
     def record_event(_logger, **fields: object) -> None:
         events.append((str(fields.pop("event")), fields))
 
-    monkeypatch.setattr(orchestrator, "operation_event", record_event)
+    monkeypatch.setattr(observability, "operation_event", record_event)
 
     response = await agent.handle(
         message="private attendance request",

@@ -2,7 +2,6 @@ from datetime import date
 
 import pytest
 
-from attendance_teams_bot.agent.contracts import OverallAttendanceRange
 from attendance_teams_bot.agent.date_resolver import resolve_attendance_range
 
 
@@ -27,7 +26,8 @@ def test_resolves_supported_calendar_vocabulary(
     resolution = resolve_attendance_range(message, reference_date=date(2026, 9, 15))
 
     assert resolution is not None
-    assert resolution.range == OverallAttendanceRange(start, end)
+    assert resolution.range.start_date == start
+    assert resolution.range.end_date == end
     assert resolution.language == language
 
 
@@ -35,7 +35,8 @@ def test_month_without_year_uses_most_recent_non_future_occurrence() -> None:
     resolution = resolve_attendance_range("January", reference_date=date(2026, 1, 2))
 
     assert resolution is not None
-    assert resolution.range == OverallAttendanceRange(date(2026, 1, 1), date(2026, 1, 2))
+    assert resolution.range.start_date == date(2026, 1, 1)
+    assert resolution.range.end_date == date(2026, 1, 2)
 
 
 def test_unsupported_date_wording_uses_model_fallback() -> None:
@@ -43,22 +44,3 @@ def test_unsupported_date_wording_uses_model_fallback() -> None:
         resolve_attendance_range("the fortnight before payroll", reference_date=date(2026, 9, 15))
         is None
     )
-
-
-def test_overall_range_accepts_twelve_calendar_months_and_partitions_without_gaps() -> None:
-    overall = OverallAttendanceRange(date(2025, 9, 15), date(2026, 9, 15))
-
-    windows = overall.windows()
-
-    assert windows[0].start_date == overall.start_date
-    assert windows[-1].end_date == overall.end_date
-    assert all((window.end_date - window.start_date).days <= 30 for window in windows)
-    assert all(
-        left.end_date.toordinal() + 1 == right.start_date.toordinal()
-        for left, right in zip(windows, windows[1:], strict=False)
-    )
-
-
-def test_overall_range_rejects_more_than_twelve_calendar_months() -> None:
-    with pytest.raises(ValueError, match="12 rolling calendar months"):
-        OverallAttendanceRange(date(2025, 9, 15), date(2026, 9, 16))

@@ -10,7 +10,8 @@ import re
 from dataclasses import dataclass
 from datetime import date, timedelta
 
-from attendance_teams_bot.agent.contracts import OverallAttendanceRange, ReplyLanguage
+from attendance_teams_bot.agent.attendance_window import OverallAttendanceRange
+from attendance_teams_bot.agent.contracts import ReplyLanguage
 
 _ISO_DATE = re.compile(r"(?<!\d)(\d{4}-\d{2}-\d{2})(?!\d)")
 _COUNTED_MONTHS = re.compile(r"\b(?:last|past)\s+([1-9]|1[0-2])\s+months?\b", re.IGNORECASE)

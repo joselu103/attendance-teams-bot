@@ -59,7 +59,6 @@ def test_teams_mode_composes_enabled_attendance_integration(monkeypatch) -> None
     from attendance_teams_bot import composition
     from attendance_teams_bot.agent.orchestrator import AttendanceAgent
     from attendance_teams_bot.mcp.session import StreamableHttpAttendanceSessionFactory
-    from attendance_teams_bot.teams.authenticated import AttendanceApplicationHandler
 
     monkeypatch.setenv("BOT_RUNTIME_MODE", "teams")
     monkeypatch.setenv("CONNECTIONS__SERVICE_CONNECTION__SETTINGS__CLIENTID", str(uuid4()))
@@ -97,14 +96,10 @@ def test_teams_mode_composes_enabled_attendance_integration(monkeypatch) -> None
     assert app is expected_app
     assert recorded["oauth_connection_name"] == "attendance-teams-sso"
     assert recorded["delegated_scope"] == "api://attendance-api/attendance.access"
-    assert isinstance(recorded["attendance_handler"], AttendanceApplicationHandler)
-    handler = recorded["attendance_handler"]
-    assert isinstance(handler, AttendanceApplicationHandler)
-    assert isinstance(handler.application, AttendanceAgent)
-    assert handler.application.language_model is expected_model
-    assert isinstance(
-        handler.application.mcp_session_factory, StreamableHttpAttendanceSessionFactory
-    )
+    application = recorded["attendance_application"]
+    assert isinstance(application, AttendanceAgent)
+    assert application.language_model is expected_model
+    assert isinstance(application.mcp_session_factory, StreamableHttpAttendanceSessionFactory)
     assert recorded["openai_model"] == "gpt-5-mini"
 
 

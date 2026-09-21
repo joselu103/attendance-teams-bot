@@ -2,8 +2,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping
-from time import perf_counter
-from typing import Protocol, cast
+from typing import Any, Protocol, cast
 
 from fastapi import FastAPI, Request
 from microsoft_agents.activity import load_configuration_from_env
@@ -25,44 +24,20 @@ from microsoft_agents.hosting.fastapi import (
 from pydantic import SecretStr
 from starlette.responses import JSONResponse, Response
 
-from attendance_teams_bot.agent.contracts import BotResponse
-from attendance_teams_bot.auth.obo import DelegatedAuthenticationUnavailable, MsalOboTokenExchange
+from attendance_teams_bot.auth.obo import MsalOboTokenExchange
 from attendance_teams_bot.observability import (
     authentication_event,
-    current_correlation_id,
     get_logger,
     install_http_request_observability,
     log_event,
-    message_input_metadata,
-    operation_event,
 )
 from attendance_teams_bot.settings import TeamsConnectionSettings
 from attendance_teams_bot.teams.authenticated import (
-    AttendanceMessageHandler,
+    AttendanceApplication,
+    AuthenticatedAttendanceTurnHandler,
+    AuthenticatedTurnContext,
     ChannelAuthenticatedMessageHandler,
 )
-
-
-class _Conversation(Protocol):
-    conversation_type: str | None
-
-
-class _Activity(Protocol):
-    type: str
-    text: str | None
-    conversation: _Conversation | None
-    from_property: _From | None
-
-
-class _From(Protocol):
-    name: str | None
-
-
-class _TurnContext(Protocol):
-    @property
-    def activity(self) -> _Activity: ...
-
-    async def send_activity(self, text: str) -> object: ...
 
 
 class _Authorization(Protocol):
@@ -74,11 +49,13 @@ class _Authorization(Protocol):
 
 
 class TeamsAuthorizationSsoTokenProvider:
+    """Translate Microsoft Agents authorization results into the neutral SSO port."""
+
     def __init__(self, *, authorization: _Authorization, auth_handler_id: str) -> None:
         self._authorization = authorization
         self._auth_handler_id = auth_handler_id
 
-    async def get_token(self, context: _TurnContext) -> SecretStr:
+    async def get_token(self, context: AuthenticatedTurnContext) -> SecretStr:
         try:
             response = await self._authorization.get_token(
                 cast(TurnContext, context), self._auth_handler_id
@@ -102,24 +79,6 @@ class TeamsAuthorizationSsoTokenProvider:
             raise RuntimeError("Teams SSO token is unavailable")
         authentication_event(get_logger("teams.sso"), event="auth_validated", scheme="teams_sso")
         return SecretStr(token)
-
-
-class _AttendanceHandler(Protocol):
-    async def handle(
-        self,
-        *,
-        message: str,
-        mcp_access_token: SecretStr,
-        display_name: str | None = None,
-    ) -> BotResponse: ...
-
-
-class _SsoTokenProvider(Protocol):
-    async def get_token(self, context: _TurnContext) -> SecretStr: ...
-
-
-class _OboTokenExchange(Protocol):
-    async def exchange(self, user_assertion: SecretStr) -> SecretStr: ...
 
 
 def install_teams_callback_observability(app: FastAPI) -> None:
@@ -174,203 +133,23 @@ def normalize_oauth_invoke_response(
     )
 
 
-async def route_attendance_turn(
-    *,
-    context: _TurnContext,
-    handler: _AttendanceHandler,
-    sso_token_provider: _SsoTokenProvider,
-    obo_token_exchange: _OboTokenExchange,
-) -> None:
-    correlation_id = current_correlation_id()
-    logger = get_logger("teams.turn").bind(correlation_id=str(correlation_id))
-    if context.activity.type != "message" or context.activity.text is None:
-        return
-    conversation = context.activity.conversation
-    if conversation is None or conversation.conversation_type != "personal":
-        log_event(
-            logger,
-            logging.INFO,
-            "teams_turn_rejected",
-            correlation_id=str(correlation_id),
-            outcome="nonpersonal_conversation",
-        )
-        await context.send_activity("Attendance is available only in a personal chat.")
-        return
-    message = context.activity.text.strip()
-    if not message:
-        log_event(
-            logger,
-            logging.INFO,
-            "teams_turn_rejected",
-            correlation_id=str(correlation_id),
-            outcome="blank_message",
-        )
-        await context.send_activity("Please send a message so I can help.")
-        return
-    started_at = perf_counter()
-    input_metadata = message_input_metadata(message)
-    operation_event(
-        logger,
-        event="operation_started",
-        handler="route_attendance_turn",
-        operation="authenticated_attendance_turn",
-        step="teams_sso",
-        input_metadata=input_metadata,
-    )
-    try:
-        token_a = await sso_token_provider.get_token(context)
-    except RuntimeError as error:
-        log_event(
-            logger,
-            logging.WARNING,
-            "teams_sso_token_unavailable",
-            correlation_id=str(correlation_id),
-            error_type=type(error).__name__,
-        )
-        operation_event(
-            logger,
-            event="operation_failed",
-            handler="route_attendance_turn",
-            operation="authenticated_attendance_turn",
-            step="teams_sso",
-            duration_ms=_duration_ms(started_at),
-            error_type=type(error).__name__,
-            input_metadata=input_metadata,
-        )
-        await context.send_activity(
-            "Authentication is temporarily unavailable. Please try again later."
-        )
-        return
-    operation_event(
-        logger,
-        event="operation_step_completed",
-        handler="route_attendance_turn",
-        operation="authenticated_attendance_turn",
-        step="teams_sso",
-        duration_ms=_duration_ms(started_at),
-        input_metadata=input_metadata,
-    )
-    try:
-        token = await obo_token_exchange.exchange(token_a)
-    except DelegatedAuthenticationUnavailable as error:
-        log_event(
-            logger,
-            logging.WARNING,
-            "teams_obo_exchange_failed",
-            correlation_id=str(correlation_id),
-            error_type=type(error).__name__,
-        )
-        operation_event(
-            logger,
-            event="operation_failed",
-            handler="route_attendance_turn",
-            operation="authenticated_attendance_turn",
-            step="delegated_obo",
-            duration_ms=_duration_ms(started_at),
-            error_type=type(error).__name__,
-            input_metadata=input_metadata,
-        )
-        await context.send_activity(
-            "Authentication is temporarily unavailable. Please try again later."
-        )
-        return
-    operation_event(
-        logger,
-        event="operation_step_completed",
-        handler="route_attendance_turn",
-        operation="authenticated_attendance_turn",
-        step="delegated_obo",
-        duration_ms=_duration_ms(started_at),
-        input_metadata=input_metadata,
-    )
-    try:
-        sender = getattr(context.activity, "from_property", None)
-        display_name = getattr(sender, "name", None)
-        response = await handler.handle(
-            message=message,
-            mcp_access_token=token,
-            display_name=display_name,
-        )
-    except Exception as error:
-        operation_event(
-            logger,
-            event="operation_failed",
-            handler="route_attendance_turn",
-            operation="authenticated_attendance_turn",
-            step="attendance_handler",
-            duration_ms=_duration_ms(started_at),
-            error_type=type(error).__name__,
-            input_metadata=input_metadata,
-        )
-        raise
-    operation_event(
-        logger,
-        event="operation_step_completed",
-        handler="route_attendance_turn",
-        operation="authenticated_attendance_turn",
-        step="attendance_handler",
-        duration_ms=_duration_ms(started_at),
-        input_metadata=input_metadata,
-    )
-    try:
-        await context.send_activity(response.text)
-    except Exception as error:
-        log_event(
-            logger,
-            logging.ERROR,
-            "teams_reply_send_failed",
-            correlation_id=str(correlation_id),
-            error_type=type(error).__name__,
-        )
-        operation_event(
-            logger,
-            event="operation_failed",
-            handler="route_attendance_turn",
-            operation="authenticated_attendance_turn",
-            step="teams_reply_delivery",
-            duration_ms=_duration_ms(started_at),
-            error_type=type(error).__name__,
-            input_metadata=input_metadata,
-        )
-        raise
-    operation_event(
-        logger,
-        event="operation_succeeded",
-        handler="route_attendance_turn",
-        operation="authenticated_attendance_turn",
-        step="teams_reply_delivery",
-        duration_ms=_duration_ms(started_at),
-        input_metadata=input_metadata,
-    )
-
-
-def _duration_ms(started_at: float) -> int:
-    return max(0, round((perf_counter() - started_at) * 1000))
-
-
 async def route_authenticated_turn(
     *,
-    context: _TurnContext,
+    context: AuthenticatedTurnContext,
     handler: ChannelAuthenticatedMessageHandler,
 ) -> None:
     if context.activity.type != "message" or context.activity.text is None:
         return
-
     message = context.activity.text.strip()
     if not message:
         await context.send_activity("Please send a message so I can help.")
         return
-
     response = await handler.handle(message=message)
     await context.send_activity(response.text)
 
 
-def create_authenticated_teams_http_app(
-    *,
-    connection: TeamsConnectionSettings,
-    handler: ChannelAuthenticatedMessageHandler,
-) -> FastAPI:
-    sdk_configuration = load_configuration_from_env(
+def _sdk_configuration(connection: TeamsConnectionSettings) -> Any:
+    return load_configuration_from_env(
         {
             "CONNECTIONS__SERVICE_CONNECTION__SETTINGS__CLIENTID": str(connection.client_id),
             "CONNECTIONS__SERVICE_CONNECTION__SETTINGS__TENANTID": str(connection.tenant_id),
@@ -379,60 +158,42 @@ def create_authenticated_teams_http_app(
             ),
         }
     )
+
+
+def create_authenticated_teams_http_app(
+    *, connection: TeamsConnectionSettings, handler: ChannelAuthenticatedMessageHandler
+) -> FastAPI:
+    sdk_configuration = _sdk_configuration(connection)
     storage = MemoryStorage()
     connection_manager = MsalConnectionManager(**sdk_configuration)
     adapter = CloudAdapter(connection_manager=connection_manager)
     authorization = Authorization(storage, connection_manager, **sdk_configuration)
     agent_application: AgentApplication[TurnState] = AgentApplication(
-        storage=storage,
-        adapter=adapter,
-        authorization=authorization,
-        **sdk_configuration,
+        storage=storage, adapter=adapter, authorization=authorization, **sdk_configuration
     )
 
     @agent_application.activity("message")
     async def on_message(context: TurnContext, _state: TurnState) -> None:
         await route_authenticated_turn(
-            context=cast(_TurnContext, context),
-            handler=handler,
+            context=cast(AuthenticatedTurnContext, context), handler=handler
         )
 
-    app = FastAPI()
-    install_teams_callback_observability(app)
-    app.state.agent_configuration = connection_manager.get_default_connection_configuration()
-
-    @app.get("/health")
-    async def health() -> dict[str, str]:
-        return {"status": "ok"}
-
-    @app.post("/api/messages", response_model=None)
-    @jwt_authorization_decorator  # type: ignore[untyped-decorator]
-    async def messages_handler(request: Request) -> Response | None:
-        return await start_agent_process(request, agent_application, adapter)
-
-    return app
+    return _create_http_app(
+        connection_manager=connection_manager, agent_application=agent_application, adapter=adapter
+    )
 
 
 def create_attendance_teams_http_app(
     *,
     connection: TeamsConnectionSettings,
-    attendance_handler: AttendanceMessageHandler,
+    attendance_application: AttendanceApplication,
     oauth_connection_name: str,
     delegated_scope: str,
     storage: Storage | None = None,
 ) -> FastAPI:
     if not oauth_connection_name.strip():
         raise ValueError("Teams SSO OAuth connection name is required")
-
-    sdk_configuration = load_configuration_from_env(
-        {
-            "CONNECTIONS__SERVICE_CONNECTION__SETTINGS__CLIENTID": str(connection.client_id),
-            "CONNECTIONS__SERVICE_CONNECTION__SETTINGS__TENANTID": str(connection.tenant_id),
-            "CONNECTIONS__SERVICE_CONNECTION__SETTINGS__CLIENTSECRET": (
-                connection.client_secret.get_secret_value()
-            ),
-        }
-    )
+    sdk_configuration = _sdk_configuration(connection)
     route_storage = storage or MemoryStorage()
     connection_manager = MsalConnectionManager(**sdk_configuration)
     default_connection = connection_manager.get_default_connection()
@@ -451,30 +212,40 @@ def create_attendance_teams_http_app(
         auth_handlers={auth_handler_id: auth_handler},
         **sdk_configuration,
     )
+    attendance_handler = AuthenticatedAttendanceTurnHandler(
+        application=attendance_application,
+        sso_token_provider=TeamsAuthorizationSsoTokenProvider(
+            authorization=authorization,
+            auth_handler_id=auth_handler_id,
+        ),
+        obo_token_exchange=MsalOboTokenExchange(
+            provider=default_connection,
+            delegated_scope=delegated_scope,
+        ),
+    )
     agent_application: AgentApplication[TurnState] = AgentApplication(
-        storage=route_storage,
-        adapter=adapter,
-        authorization=authorization,
-        **sdk_configuration,
-    )
-    sso_token_provider = TeamsAuthorizationSsoTokenProvider(
-        authorization=authorization,
-        auth_handler_id=auth_handler_id,
-    )
-    obo_token_exchange = MsalOboTokenExchange(
-        provider=default_connection,
-        delegated_scope=delegated_scope,
+        storage=route_storage, adapter=adapter, authorization=authorization, **sdk_configuration
     )
 
     @agent_application.activity("message", auth_handlers=[auth_handler_id])
     async def on_message(context: TurnContext, _state: TurnState) -> None:
-        await route_attendance_turn(
-            context=cast(_TurnContext, context),
-            handler=attendance_handler,
-            sso_token_provider=sso_token_provider,
-            obo_token_exchange=obo_token_exchange,
-        )
+        await attendance_handler.handle(cast(AuthenticatedTurnContext, context))
 
+    return _create_http_app(
+        connection_manager=connection_manager,
+        agent_application=agent_application,
+        adapter=adapter,
+        oauth_connection_name=oauth_connection_name,
+    )
+
+
+def _create_http_app(
+    *,
+    connection_manager: MsalConnectionManager,
+    agent_application: AgentApplication[TurnState],
+    adapter: CloudAdapter,
+    oauth_connection_name: str | None = None,
+) -> FastAPI:
     app = FastAPI()
     install_teams_callback_observability(app)
     app.state.agent_configuration = connection_manager.get_default_connection_configuration()
@@ -486,8 +257,10 @@ def create_attendance_teams_http_app(
     @app.post("/api/messages", response_model=None)
     @jwt_authorization_decorator  # type: ignore[untyped-decorator]
     async def messages_handler(request: Request) -> Response | None:
-        activity = await request.json()
+        activity = await request.json() if oauth_connection_name is not None else None
         response = await start_agent_process(request, agent_application, adapter)
+        if oauth_connection_name is None:
+            return response
         return normalize_oauth_invoke_response(
             activity=activity,
             response=response,

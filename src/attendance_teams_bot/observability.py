@@ -157,6 +157,138 @@ def operation_event(
     )
 
 
+_LIFECYCLE_METADATA_KEYS: Final = frozenset(
+    {
+        "message_present",
+        "message_length",
+        "tool_count",
+        "tool_name",
+        "argument_count",
+        "outcome",
+        "error_code",
+    }
+)
+
+
+class OperationLifecycle:
+    """Own one operation's safe telemetry from start through one terminal event."""
+
+    def __init__(
+        self,
+        logger: structlog.BoundLogger,
+        *,
+        handler: str,
+        operation: str,
+        input_metadata: Mapping[str, object] | None = None,
+        clock: Callable[[], float] = perf_counter,
+    ) -> None:
+        self._logger = logger
+        self._handler = handler
+        self._operation = operation
+        self._input_metadata = _lifecycle_metadata(input_metadata)
+        self._clock = clock
+        self._started_at: float | None = None
+        self._step: str | None = None
+        self._terminal = False
+
+    def start(self, *, step: str) -> None:
+        """Start the operation. An operation may be started exactly once."""
+        if self._started_at is not None:
+            raise RuntimeError("operation lifecycle has already started")
+        self._started_at = self._clock()
+        self._step = step
+        self._emit("operation_started")
+
+    def step_completed(
+        self, *, step: str | None = None, input_metadata: Mapping[str, object] | None = None
+    ) -> None:
+        """Record completion of the active step, optionally advancing to ``step``."""
+        self._require_active()
+        if step is not None:
+            self._step = step
+        self._emit("operation_step_completed", input_metadata=input_metadata)
+
+    def succeed(
+        self, *, step: str | None = None, input_metadata: Mapping[str, object] | None = None
+    ) -> None:
+        self._terminal_event("operation_succeeded", step=step, input_metadata=input_metadata)
+
+    def fail(
+        self,
+        error: BaseException | None = None,
+        *,
+        step: str | None = None,
+        input_metadata: Mapping[str, object] | None = None,
+    ) -> None:
+        self._terminal_event(
+            "operation_failed",
+            step=step,
+            error_type=type(error).__name__ if error is not None else None,
+            input_metadata=input_metadata,
+        )
+
+    def cancel(
+        self, *, step: str | None = None, input_metadata: Mapping[str, object] | None = None
+    ) -> None:
+        self._terminal_event("operation_cancelled", step=step, input_metadata=input_metadata)
+
+    @property
+    def terminal(self) -> bool:
+        """Whether this lifecycle has emitted its sole terminal event."""
+        return self._terminal
+
+    def _terminal_event(
+        self,
+        event: str,
+        *,
+        step: str | None,
+        error_type: str | None = None,
+        input_metadata: Mapping[str, object] | None = None,
+    ) -> None:
+        self._require_active()
+        if self._terminal:
+            raise RuntimeError("operation lifecycle has already emitted a terminal event")
+        if step is not None:
+            self._step = step
+        self._terminal = True
+        self._emit(event, error_type=error_type, input_metadata=input_metadata)
+
+    def _require_active(self) -> None:
+        if self._started_at is None or self._step is None:
+            raise RuntimeError("operation lifecycle has not started")
+
+    def _emit(
+        self,
+        event: str,
+        *,
+        error_type: str | None = None,
+        input_metadata: Mapping[str, object] | None = None,
+    ) -> None:
+        assert self._started_at is not None
+        assert self._step is not None
+        self._input_metadata.update(_lifecycle_metadata(input_metadata))
+        operation_event(
+            self._logger,
+            event=event,
+            handler=self._handler,
+            operation=self._operation,
+            step=self._step,
+            duration_ms=None if event == "operation_started" else self._duration_ms(),
+            error_type=error_type,
+            input_metadata=self._input_metadata,
+        )
+
+    def _duration_ms(self) -> int:
+        assert self._started_at is not None
+        return max(0, round((self._clock() - self._started_at) * 1000))
+
+
+def _lifecycle_metadata(metadata: Mapping[str, object] | None) -> dict[str, object]:
+    if metadata is None:
+        return {}
+    return {key: value for key, value in metadata.items() if key in _LIFECYCLE_METADATA_KEYS}
+
+
 def authentication_event(
     logger: structlog.BoundLogger,
     *,
