@@ -12,6 +12,8 @@ class McpContractIncompatible(Exception):
 
 
 class AttendanceToolFailure(Exception):
+    """Preserve a validated MCP tool failure for safe presentation by the caller."""
+
     def __init__(self, failure: McpToolFailure) -> None:
         self.failure = failure
         super().__init__(failure.code)
@@ -22,6 +24,8 @@ class AttendanceMcpUnavailable(Exception):
 
 
 class AttendanceMcpClient(Protocol):
+    """Legacy requester-attendance client port retained for transport-neutral callers."""
+
     async def list_my_attendance_events(
         self,
         *,

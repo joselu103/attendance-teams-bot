@@ -42,9 +42,12 @@ class TeamsTextReply:
 
 @dataclass(frozen=True, slots=True)
 class TeamsActivityAdapter:
+    """Validate legacy local Teams payloads before passing text to a neutral handler."""
+
     handler: TeamsMessageHandler
 
     def handle_payload(self, payload: Mapping[str, Any]) -> TeamsTextReply | None:
+        """Return a safe reply for valid messages and ignore non-message activities."""
         if payload.get("type") != "message":
             return None
 

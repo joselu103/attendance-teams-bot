@@ -33,6 +33,7 @@ class OpenAiLanguageModel:
     model: str
 
     async def complete(self, request: ModelRequest) -> ModelTurn:
+        """Translate one neutral request and reject unusable provider responses."""
         logger = get_logger("agent.openai")
         metadata = {
             **message_input_metadata(request.user_message),
@@ -72,6 +73,7 @@ class OpenAiLanguageModel:
 
 
 def create_openai_language_model(*, api_key: SecretStr, model: str) -> OpenAiLanguageModel:
+    """Create the OpenAI-backed implementation of the neutral language-model port."""
     client = AsyncOpenAI(api_key=api_key.get_secret_value())
     return OpenAiLanguageModel(completion=client.chat.completions.create, model=model)
 

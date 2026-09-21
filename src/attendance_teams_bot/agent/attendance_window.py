@@ -53,6 +53,8 @@ class AttendancePageReader(Protocol):
 
 
 class AuthenticatedMcpToolCaller(Protocol):
+    """Calls an already authenticated MCP tool with bot-controlled arguments."""
+
     async def call_tool(
         self, *, name: str, arguments: Mapping[str, object]
     ) -> AttendanceEventPage: ...
@@ -79,16 +81,20 @@ class McpAttendancePageReader:
 
 @dataclass(frozen=True, slots=True)
 class AttendanceWindowResult:
+    """Aggregate events plus an indication that the bot omitted additional records."""
+
     events: tuple[AttendanceEvent, ...]
     records_omitted: bool
 
 
 @dataclass(frozen=True, slots=True)
 class AttendanceWindowExecutor:
+    """Read bounded MCP pages across an overall range, capping the aggregate at 200 events."""
+
     page_reader: AttendancePageReader
 
     async def execute(self, overall_range: OverallAttendanceRange) -> AttendanceWindowResult:
-        """Aggregate all pages, discarding the entire result if any read is invalid or fails."""
+        """Aggregate pages, failing the request if any page is invalid or unavailable."""
         events: list[AttendanceEvent] = []
         records_omitted = False
         for window in overall_range.windows():

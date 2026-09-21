@@ -29,6 +29,8 @@ class ListMyAttendanceArguments(BaseModel):
 
 
 class AttendanceEvent(BaseModel):
+    """Represent one validated attendance event returned by the MCP authority."""
+
     model_config = ConfigDict(frozen=True)
 
     attendance_event_id: int
@@ -48,6 +50,8 @@ class AttendanceEvent(BaseModel):
 
 
 class AttendanceEventPage(BaseModel):
+    """Represent one offset-based page returned by the requester attendance tool."""
+
     model_config = ConfigDict(frozen=True)
 
     items: tuple[AttendanceEvent, ...]
@@ -85,6 +89,8 @@ MCP_TOOL_ERROR_MESSAGES: dict[McpToolErrorCode, str] = {
 
 
 class McpToolFailure(BaseModel):
+    """Represent an MCP failure only when its code and safe user message agree."""
+
     model_config = ConfigDict(frozen=True)
 
     code: McpToolErrorCode

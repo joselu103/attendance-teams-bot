@@ -17,6 +17,7 @@ from attendance_teams_bot.teams.microsoft_agents import (
 
 
 def create_http_app(settings: Settings) -> FastAPI:
+    """Compose the runtime-selected local, connectivity-only, or authenticated Teams app."""
     if settings.mode is RuntimeMode.LOCAL:
         return create_local_http_app()
     if settings.mode is RuntimeMode.TEAMS:
