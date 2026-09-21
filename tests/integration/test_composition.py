@@ -79,7 +79,9 @@ def test_bot_service_only_composition_uses_its_handler(monkeypatch) -> None:
         fake_connectivity_factory,
     )
 
-    assert create_bot_service_only_app(Settings()) is expected_app
+    settings = Settings()
+    assert settings.teams_connection is not None
+    assert create_bot_service_only_app(settings.teams_connection) is expected_app
     assert isinstance(recorded["handler"], composition.BotServiceOnlyHandler)
 
 
