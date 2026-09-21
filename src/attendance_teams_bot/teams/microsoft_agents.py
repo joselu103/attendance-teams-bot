@@ -39,6 +39,7 @@ from attendance_teams_bot.teams.authenticated import (
 )
 
 _LOGGER = structlog.get_logger(__name__)
+_ATTENDANCE_AUTH_HANDLER_ID = "attendance-teams-sso"
 
 
 class _Authorization(Protocol):
@@ -195,45 +196,34 @@ def create_attendance_teams_http_app(
     storage: Storage | None = None,
 ) -> FastAPI:
     """Create the authenticated Teams app that performs SSO, OBO, and attendance handling."""
-    if not oauth_connection_name.strip():
-        raise ValueError("Teams SSO OAuth connection name is required")
+    _validate_oauth_connection_name(oauth_connection_name)
+
     sdk_configuration = _sdk_configuration(connection)
     route_storage = storage or MemoryStorage()
     connection_manager = MsalConnectionManager(**sdk_configuration)
-    default_connection = connection_manager.get_default_connection()
-    if default_connection is None:
-        raise RuntimeError("Microsoft Agents SDK default connection is unavailable")
-    adapter = CloudAdapter(connection_manager=connection_manager)
-    auth_handler_id = "attendance-teams-sso"
-    auth_handler = AuthHandler(
-        name=auth_handler_id,
-        auth_type="UserAuthorization",
-        abs_oauth_connection_name=oauth_connection_name,
-    )
-    authorization = Authorization(
+    authorization = _create_attendance_authorization(
         storage=route_storage,
         connection_manager=connection_manager,
-        auth_handlers={auth_handler_id: auth_handler},
-        **sdk_configuration,
+        oauth_connection_name=oauth_connection_name,
+        sdk_configuration=sdk_configuration,
     )
-    attendance_handler = SsoOboAttendanceTurnHandler(
-        application=attendance_application,
-        sso_token_provider=TeamsAuthorizationSsoTokenProvider(
-            authorization=authorization,
-            auth_handler_id=auth_handler_id,
-        ),
-        obo_token_exchange=MsalOboTokenExchange(
-            provider=default_connection,
-            delegated_scope=delegated_scope,
-        ),
+
+    default_connection = _require_default_connection(connection_manager)
+    attendance_handler = _create_attendance_turn_handler(
+        attendance_application=attendance_application,
+        authorization=authorization,
+        default_connection=default_connection,
+        delegated_scope=delegated_scope,
     )
+
+    adapter = CloudAdapter(connection_manager=connection_manager)
     agent_application: AgentApplication[TurnState] = AgentApplication(
         storage=route_storage, adapter=adapter, authorization=authorization, **sdk_configuration
     )
-
-    @agent_application.activity("message", auth_handlers=[auth_handler_id])
-    async def on_message(context: TurnContext, _state: TurnState) -> None:
-        await attendance_handler.handle(cast(BotServiceAuthenticatedTurnContext, context))
+    _register_attendance_message_handler(
+        agent_application=agent_application,
+        attendance_handler=attendance_handler,
+    )
 
     return _create_http_app(
         connection_manager=connection_manager,
@@ -241,6 +231,68 @@ def create_attendance_teams_http_app(
         adapter=adapter,
         oauth_connection_name=oauth_connection_name,
     )
+
+
+def _validate_oauth_connection_name(oauth_connection_name: str) -> None:
+    if not oauth_connection_name.strip():
+        raise ValueError("Teams SSO OAuth connection name is required")
+
+
+def _create_attendance_authorization(
+    *,
+    storage: Storage,
+    connection_manager: MsalConnectionManager,
+    oauth_connection_name: str,
+    sdk_configuration: Any,
+) -> Authorization:
+    auth_handler = AuthHandler(
+        name=_ATTENDANCE_AUTH_HANDLER_ID,
+        auth_type="UserAuthorization",
+        abs_oauth_connection_name=oauth_connection_name,
+    )
+    return Authorization(
+        storage=storage,
+        connection_manager=connection_manager,
+        auth_handlers={_ATTENDANCE_AUTH_HANDLER_ID: auth_handler},
+        **sdk_configuration,
+    )
+
+
+def _create_attendance_turn_handler(
+    *,
+    attendance_application: AttendanceApplication,
+    authorization: Authorization,
+    default_connection: Any,
+    delegated_scope: str,
+) -> SsoOboAttendanceTurnHandler:
+    return SsoOboAttendanceTurnHandler(
+        application=attendance_application,
+        sso_token_provider=TeamsAuthorizationSsoTokenProvider(
+            authorization=authorization,
+            auth_handler_id=_ATTENDANCE_AUTH_HANDLER_ID,
+        ),
+        obo_token_exchange=MsalOboTokenExchange(
+            provider=default_connection,
+            delegated_scope=delegated_scope,
+        ),
+    )
+
+
+def _require_default_connection(connection_manager: MsalConnectionManager) -> Any:
+    default_connection = connection_manager.get_default_connection()
+    if default_connection is None:
+        raise RuntimeError("Microsoft Agents SDK default connection is unavailable")
+    return default_connection
+
+
+def _register_attendance_message_handler(
+    *,
+    agent_application: AgentApplication[TurnState],
+    attendance_handler: SsoOboAttendanceTurnHandler,
+) -> None:
+    @agent_application.activity("message", auth_handlers=[_ATTENDANCE_AUTH_HANDLER_ID])
+    async def on_message(context: TurnContext, _state: TurnState) -> None:
+        await attendance_handler.handle(cast(BotServiceAuthenticatedTurnContext, context))
 
 
 def _create_http_app(

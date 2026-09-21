@@ -150,6 +150,42 @@ def test_attendance_factory_configures_sso_and_forwards_callback_to_turn_handler
     assert recorded["route_auth_handlers"] == ["attendance-teams-sso"]
 
 
+def test_attendance_factory_rejects_a_blank_oauth_connection_name() -> None:
+    with pytest.raises(ValueError, match="Teams SSO OAuth connection name is required"):
+        create_attendance_teams_http_app(
+            connection=_teams_connection(),
+            attendance_application=FakeApplication(),
+            oauth_connection_name="  ",
+            delegated_scope="api://attendance-api/attendance.access",
+        )
+
+
+def test_attendance_factory_requires_an_sdk_default_connection(monkeypatch) -> None:
+    class FakeConnectionManager:
+        def __init__(self, **kwargs: object) -> None:
+            del kwargs
+
+        def get_default_connection(self) -> None:
+            return None
+
+    monkeypatch.setattr(microsoft_agents, "MsalConnectionManager", FakeConnectionManager)
+    monkeypatch.setattr(
+        microsoft_agents,
+        "_create_attendance_authorization",
+        lambda **kwargs: object(),
+    )
+
+    with pytest.raises(
+        RuntimeError, match="Microsoft Agents SDK default connection is unavailable"
+    ):
+        create_attendance_teams_http_app(
+            connection=_teams_connection(),
+            attendance_application=FakeApplication(),
+            oauth_connection_name="attendance-teams-sso",
+            delegated_scope="api://attendance-api/attendance.access",
+        )
+
+
 def test_failed_teams_sso_token_exchange_requests_interactive_sign_in() -> None:
     response = normalize_oauth_invoke_response(
         activity={"type": "invoke", "name": "signin/tokenExchange", "value": {"id": "id"}},
