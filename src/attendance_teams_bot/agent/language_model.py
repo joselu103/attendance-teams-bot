@@ -3,12 +3,14 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import date
-from typing import Protocol
+from typing import Literal, Protocol
+
+ReplyLanguage = Literal["en", "sl"]
 
 
 @dataclass(frozen=True, slots=True)
 class ToolDefinition:
-    """Describe a bot-approved tool that may be offered to a language model."""
+    """A bot-owned model tool; provider and MCP metadata never enter this type."""
 
     name: str
     description: str
@@ -18,29 +20,38 @@ class ToolDefinition:
 
 @dataclass(frozen=True, slots=True)
 class ToolCall:
-    """Represent the single tool invocation selected by a language-model turn."""
-
     id: str
     name: str
     arguments: Mapping[str, object]
 
 
 @dataclass(frozen=True, slots=True)
-class NoTool:
-    """The model did not select an approved action."""
+class FinalResponse:
+    """The constrained final Teams Markdown supplied by the model."""
+
+    markdown: str
+    language: ReplyLanguage
+
+
+@dataclass(frozen=True, slots=True)
+class ToolResultView:
+    """Approved, data-only result projection made available in a later model turn."""
+
+    call_id: str
+    tool_name: str
+    result: Mapping[str, object]
 
 
 @dataclass(frozen=True, slots=True)
 class ModelRequest:
-    """Contain the message context and bot-approved tools for one model completion."""
-
     user_message: str
     reference_date: date
     timezone: str
     tools: tuple[ToolDefinition, ...]
+    tool_results: tuple[ToolResultView, ...] = ()
 
 
-ModelTurn = ToolCall | NoTool
+ModelTurn = ToolCall | FinalResponse
 
 
 class LanguageModelUnavailable(Exception):
@@ -48,6 +59,6 @@ class LanguageModelUnavailable(Exception):
 
 
 class LanguageModel(Protocol):
-    """Complete one turn without exposing provider-specific response types."""
+    """Complete one bounded agent-loop turn without provider-specific types."""
 
     async def complete(self, request: ModelRequest) -> ModelTurn: ...

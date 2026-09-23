@@ -1,3 +1,7 @@
 # Bot-controlled attendance windowing
 
-The bot accepts an overall requester range of up to twelve rolling calendar months, then partitions it into contiguous inclusive windows of at most 31 days and uses fixed 50-event offsets. This preserves the Attendance CRMT MCP boundary while enabling longer requests without delegating pagination, source ordering, or range enforcement to the model; a later page or window failure discards the aggregate and returns the established safe failure reply.
+Each model-selected requester range is validated against Attendance CRMT's
+inclusive 31-day contract. The bounded agent loop may issue at most three
+sequential calls, always with bot-owned `limit=50` and `offset=0`; it does not
+delegate pagination, employee targeting, or authority to the model. Any MCP
+failure discards every accumulated projection and returns a safe reply.

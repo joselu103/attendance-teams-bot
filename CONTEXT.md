@@ -27,5 +27,25 @@ request to Attendance CRMT.
 _Avoid_: source query, model range
 
 **Attendance result**:
-The localized, bounded Teams presentation of safely returned attendance events.
+The bounded Markdown Teams presentation authored from approved attendance projections.
 _Avoid_: attendance authority, source ordering
+
+## MCP catalog policy
+
+**Discovery admission**:
+The bot's validation and retention of the intersection between an authenticated
+MCP discovery response and its fourteen-name read-only allowlist. It is not
+permission to expose or execute every admitted tool.
+_Avoid_: legacy catalog, executable catalog
+
+**Model-selectable tool**:
+A discovery-admitted tool with a bot-owned prompt definition, argument policy,
+and safe typed renderer. Only requester-scoped attendance events are currently
+model-selectable.
+_Avoid_: discovered tool, remote schema
+
+**Approved result projection**:
+The small, provider/privacy-approved event view that may be sent to the LLM:
+display date, local times, controlled attendance type, sanitized location, and
+explicit truncation only.
+_Avoid_: raw MCP payload, event ID, employee ID, note

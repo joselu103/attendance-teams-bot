@@ -5,59 +5,44 @@ from collections.abc import Callable, Mapping
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field
 from datetime import date, datetime
-from typing import Protocol, cast
+from typing import Protocol
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
-import structlog
 from pydantic import SecretStr
 
-from attendance_teams_bot.agent.attendance_window import (
-    AttendanceWindowExecutor,
-    McpAttendancePageReader,
-)
-from attendance_teams_bot.agent.contracts import BotResponse, ReplyLanguage
-from attendance_teams_bot.agent.date_resolver import resolve_attendance_range
+from attendance_teams_bot.agent.contracts import BotResponse
+from attendance_teams_bot.agent.date_resolver import has_ambiguous_numeric_date
 from attendance_teams_bot.agent.language_model import (
+    FinalResponse,
     LanguageModel,
     LanguageModelUnavailable,
     ModelRequest,
-    NoTool,
-    ToolDefinition,
+    ReplyLanguage,
+    ToolResultView,
 )
 from attendance_teams_bot.agent.mcp_catalog import DiscoveredMcpTool, admit_mcp_catalog
 from attendance_teams_bot.agent.rendering import (
     AttendanceResultPresenter,
-    CatalogUnavailablePresentation,
     ClarificationPresentation,
-    EventResultPresentation,
-    GuidanceIntent,
-    GuidancePresentation,
     InvalidRequestPresentation,
     ToolFailurePresentation,
     UnavailablePresentation,
+    is_safe_model_markdown,
 )
 from attendance_teams_bot.mcp.client import (
     AttendanceMcpUnavailable,
     AttendanceToolFailure,
     McpContractIncompatible,
 )
-from attendance_teams_bot.mcp.contracts import AttendanceEventPage
-from attendance_teams_bot.observability import (
-    OperationLifecycle,
-    authentication_event,
-    current_correlation_id,
-    message_input_metadata,
-)
+from attendance_teams_bot.mcp.contracts import AttendanceEvent, AttendanceEventPage
+from attendance_teams_bot.observability import current_correlation_id
 
-GUIDANCE_TOOL = "respond_with_guidance"
-_GUIDANCE_INTENTS = frozenset({"unsupported", "date_ambiguous"})
-_LOGGER = structlog.get_logger(__name__)
+MAX_MCP_CALLS = 3
+MAX_PROJECTED_EVENTS = 50
 
 
 class AuthenticatedMcpSession(Protocol):
-    """Expose discovery and tool execution within one authenticated MCP session."""
-
     async def list_tools(self) -> tuple[DiscoveredMcpTool, ...]: ...
 
     async def call_tool(
@@ -66,40 +51,14 @@ class AuthenticatedMcpSession(Protocol):
 
 
 class McpSessionFactory(Protocol):
-    """Open authenticated MCP sessions bound to one correlation identifier."""
-
     def open(
         self, *, access_token: SecretStr, correlation_id: UUID
     ) -> AbstractAsyncContextManager[AuthenticatedMcpSession]: ...
 
 
-def guidance_tool() -> ToolDefinition:
-    """Return the bot-only tool used for deterministic, non-attendance guidance."""
-    return ToolDefinition(
-        name=GUIDANCE_TOOL,
-        description=(
-            "Respond with safe guidance for an unsupported request or ambiguous date range."
-        ),
-        input_schema={
-            "type": "object",
-            "properties": {
-                "intent": {"type": "string", "enum": sorted(_GUIDANCE_INTENTS)},
-                "language": {"type": "string", "enum": ["en", "sl"]},
-            },
-            "required": ["intent", "language"],
-            "additionalProperties": False,
-        },
-        annotations={"readOnlyHint": True},
-    )
-
-
 @dataclass(frozen=True, slots=True)
 class AttendanceAgent:
-    """Coordinate one requester-scoped attendance query across model and MCP boundaries.
-
-    Attendance data is rendered deterministically after MCP execution; it is not sent back to
-    the language model.
-    """
+    """Run at most three validated, sequential MCP calls before a safe model reply."""
 
     language_model: LanguageModel
     mcp_session_factory: McpSessionFactory
@@ -116,171 +75,132 @@ class AttendanceAgent:
         mcp_access_token: SecretStr,
         display_name: str | None = None,
     ) -> BotResponse:
-        """Handle one authenticated message, failing closed on unsafe dependencies or output."""
-        correlation_id = self.correlation_id_factory()
-        logger = _LOGGER.bind(correlation_id=str(correlation_id))
-        input_metadata = message_input_metadata(message)
-        lifecycle = OperationLifecycle(
-            logger,
-            handler="AttendanceAgent.handle",
-            operation="attendance_orchestration",
-            input_metadata=input_metadata,
-        )
-        lifecycle.start(step="mcp_open")
-        stage = "mcp_open"
-        outcome = "success"
-        error_code: str | None = None
-        terminal_error: Exception | None = None
-        cancelled = False
-        reply_language: ReplyLanguage = "en"
+        """Fail closed: only an approved final response can contain attendance data."""
+        language: ReplyLanguage = "en"
+        if has_ambiguous_numeric_date(message):
+            return self.presenter.present(
+                ClarificationPresentation(language=language, display_name=display_name)
+            )
         try:
             async with self.mcp_session_factory.open(
-                access_token=mcp_access_token, correlation_id=correlation_id
+                access_token=mcp_access_token, correlation_id=self.correlation_id_factory()
             ) as session:
-                lifecycle.step_completed()
-                stage = "mcp_catalog"
                 catalog = admit_mcp_catalog(await session.list_tools())
-                lifecycle.step_completed(step=stage)
                 if catalog is None:
-                    outcome = "catalog_incompatible"
-                    return self.presenter.present(
-                        CatalogUnavailablePresentation(language="en", display_name=display_name)
-                    )
+                    return self._unavailable(language, display_name)
+                results: list[ToolResultView] = []
                 reference_date = self.reference_date_factory()
-                resolution = resolve_attendance_range(message, reference_date=reference_date)
-                policy = catalog.requester_attendance_tool
-                if resolution is not None:
-                    arguments, language = resolution.range, resolution.language
-                else:
-                    stage = "model_completion"
+                for calls_made in range(MAX_MCP_CALLS + 1):
                     turn = await self.language_model.complete(
                         ModelRequest(
                             user_message=message,
                             reference_date=reference_date,
                             timezone="Europe/Ljubljana",
-                            tools=catalog.model_tools + (guidance_tool(),),
+                            tools=catalog.model_tools,
+                            tool_results=tuple(results),
                         )
                     )
-                    lifecycle.step_completed(step=stage)
-                    if isinstance(turn, NoTool):
-                        outcome = "clarification"
-                        return self.presenter.present(
-                            ClarificationPresentation(language="en", display_name=display_name)
-                        )
-                    if turn.name == GUIDANCE_TOOL:
-                        guidance = _guidance_intent(turn.arguments)
-                        if guidance is None:
-                            outcome = "tool_rejected"
-                            return self.presenter.present(
-                                UnavailablePresentation(language="en", display_name=display_name)
-                            )
-                        outcome = "guidance"
-                        intent, language = guidance
-                        return self.presenter.present(
-                            GuidancePresentation(
-                                intent=intent, language=language, display_name=display_name
-                            )
-                        )
-                    model_policy = catalog.selected_tool(turn.name)
-                    if model_policy is None:
-                        outcome = "tool_rejected"
-                        return self.presenter.present(
-                            UnavailablePresentation(language="en", display_name=display_name)
-                        )
-                    policy = model_policy
-                    stage = "model_validation"
+                    if isinstance(turn, FinalResponse):
+                        if turn.language not in {"en", "sl"} or not is_safe_model_markdown(
+                            turn.markdown
+                        ):
+                            return self._unavailable(language, display_name)
+                        return BotResponse(text=turn.markdown)
+                    if calls_made == MAX_MCP_CALLS:
+                        return self._unavailable(language, display_name)
+                    policy = catalog.selected_tool(turn.name)
+                    if policy is None:
+                        return self._unavailable(language, display_name)
                     validated = policy.validate_arguments(turn.arguments)
                     if validated is None:
-                        outcome = "invalid_request"
                         return self.presenter.present(
-                            InvalidRequestPresentation(language="en", display_name=display_name)
+                            InvalidRequestPresentation(language=language, display_name=display_name)
                         )
                     arguments, language = validated
-                reply_language = language
-                stage = "mcp_tool_call"
-                result = await AttendanceWindowExecutor(
-                    McpAttendancePageReader(session, policy.definition.name)
-                ).execute(arguments)
-                lifecycle.step_completed(step=stage)
+                    page = await session.call_tool(
+                        name=policy.definition.name,
+                        arguments={
+                            "start_date": arguments.start_date.isoformat(),
+                            "end_date": arguments.end_date.isoformat(),
+                            "limit": MAX_PROJECTED_EVENTS,
+                            "offset": 0,
+                        },
+                    )
+                    results.append(_approved_result_view(turn.id, policy.definition.name, page))
         except asyncio.CancelledError:
-            cancelled = True
-            lifecycle.cancel(step=stage)
             raise
         except AttendanceToolFailure as error:
-            outcome = "tool_failure"
-            error_code = error.failure.code
-            terminal_error = error
-            if error.failure.code in {"FORBIDDEN", "IDENTITY_UNMAPPED", "IDENTITY_AMBIGUOUS"}:
-                authentication_event(
-                    logger,
-                    event="permission_denied",
-                    scheme="attendance_mcp",
-                    failure_reason=error.failure.code,
-                )
-            elif error.failure.code in {"AUTHENTICATION_REQUIRED", "TOKEN_INVALID"}:
-                authentication_event(
-                    logger,
-                    event="auth_failed",
-                    scheme="attendance_mcp",
-                    failure_reason=error.failure.code,
-                )
             return self.presenter.present(
                 ToolFailurePresentation(
-                    code=error.failure.code,
-                    language=reply_language,
-                    display_name=display_name,
+                    code=error.failure.code, language=language, display_name=display_name
                 )
             )
-        except (
-            AttendanceMcpUnavailable,
-            McpContractIncompatible,
-            LanguageModelUnavailable,
-        ) as error:
-            outcome = "dependency_unavailable"
-            terminal_error = error
-            return self.presenter.present(
-                UnavailablePresentation(language=reply_language, display_name=display_name)
-            )
-        except Exception as error:
-            outcome = "unexpected_failure"
-            terminal_error = error
-            return self.presenter.present(
-                UnavailablePresentation(language=reply_language, display_name=display_name)
-            )
-        finally:
-            if not cancelled:
-                terminal_metadata = {"outcome": outcome, "error_code": error_code}
-                if outcome == "success":
-                    lifecycle.succeed(step="rendering", input_metadata=terminal_metadata)
-                else:
-                    lifecycle.fail(
-                        terminal_error,
-                        step=stage,
-                        input_metadata=terminal_metadata,
-                    )
+        except AttendanceMcpUnavailable, McpContractIncompatible, LanguageModelUnavailable:
+            return self._unavailable(language, display_name)
+        except Exception:
+            return self._unavailable(language, display_name)
+        return self._unavailable(language, display_name)
+
+    def _unavailable(self, language: ReplyLanguage, display_name: str | None) -> BotResponse:
         return self.presenter.present(
-            EventResultPresentation(
-                events=result.events,
-                records_omitted=result.records_omitted,
-                language=language,
-                display_name=display_name,
-            )
+            UnavailablePresentation(language=language, display_name=display_name)
         )
 
 
-def _guidance_intent(
-    arguments: Mapping[str, object],
-) -> tuple[GuidanceIntent, ReplyLanguage] | None:
-    if len(arguments) != 2 or set(arguments) != {"intent", "language"}:
-        return None
-    intent = arguments.get("intent")
-    language = _guidance_reply_language(arguments.get("language"))
-    if intent not in _GUIDANCE_INTENTS or language is None:
-        return None
-    return cast(GuidanceIntent, intent), language
+def _approved_result_view(
+    call_id: str, tool_name: str, page: AttendanceEventPage
+) -> ToolResultView:
+    """Project provider-approved fields, never raw MCP objects, IDs, or notes."""
+    if page.limit != MAX_PROJECTED_EVENTS or page.offset != 0:
+        raise McpContractIncompatible
+    events = tuple(page.items[:MAX_PROJECTED_EVENTS])
+    return ToolResultView(
+        call_id=call_id,
+        tool_name=tool_name,
+        result={
+            "events": [_project_event(event) for event in events],
+            "truncated": len(page.items) > MAX_PROJECTED_EVENTS or page.next_offset is not None,
+        },
+    )
 
 
-def _guidance_reply_language(value: object) -> ReplyLanguage | None:
-    if value == "en" or value == "sl":
-        return value
-    return None
+def _project_event(event: AttendanceEvent) -> dict[str, object]:
+    local_start = _local_timestamp(event.checked_in_at)
+    local_end = _local_timestamp(event.checked_out_at)
+    timestamp = local_start or local_end
+    projected: dict[str, object] = {
+        "display_date": timestamp.date().isoformat() if timestamp else "unavailable",
+        "start_time": local_start.strftime("%H:%M") if local_start else None,
+        "end_time": local_end.strftime("%H:%M") if local_end else None,
+        "type": _canonical_type(event.punch_type),
+    }
+    location = _sanitized_location(event.location)
+    if location:
+        projected["location"] = location
+    return projected
+
+
+def _local_timestamp(value: datetime | None) -> datetime | None:
+    return value.astimezone(ZoneInfo("Europe/Ljubljana")) if value else None
+
+
+def _canonical_type(value: str | None) -> str:
+    normalized = " ".join((value or "").split()).casefold()
+    return {
+        "office": "office",
+        "delo na firmi": "office",
+        "work": "work",
+        "remote work": "remote_work",
+        "work from home": "remote_work",
+        "break": "break",
+        "leave": "leave",
+    }.get(normalized, "unspecified")
+
+
+def _sanitized_location(value: str | None) -> str | None:
+    if not value:
+        return None
+    normalized = " ".join(value.split())[:80]
+    if not normalized or any(character in normalized for character in "<>`[]{}"):
+        return None
+    return normalized
