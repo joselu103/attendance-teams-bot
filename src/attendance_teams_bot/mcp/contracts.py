@@ -9,6 +9,9 @@ ATTENDANCE_MCP_CONTRACT_MAJOR = "1"
 ATTENDANCE_MCP_CONTRACT_HEADER = "X-Attendance-MCP-Contract-Version"
 CORRELATION_ID_HEADER = "X-Correlation-ID"
 SELF_ATTENDANCE_TOOL = "list_my_attendance_events"
+RESOLVE_EMPLOYEE_TOOL = "resolve_employee"
+OTHER_ATTENDANCE_TOOL = "list_attendance_events"
+CURRENT_ATTENDANCE_TOOL = "get_current_attendance"
 
 
 class ListMyAttendanceArguments(BaseModel):
@@ -55,6 +58,27 @@ class AttendanceEventPage(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     items: tuple[AttendanceEvent, ...]
+    limit: int
+    offset: int
+    next_offset: int | None
+
+
+class ResolvedEmployee(BaseModel):
+    """Directory-safe employee record used only to make the next MCP call."""
+
+    model_config = ConfigDict(frozen=True)
+
+    employee_id: int
+    username: str | None = None
+    email: str | None = None
+
+
+class CurrentAttendancePage(BaseModel):
+    """An intentionally permissive, typed envelope for current-status results."""
+
+    model_config = ConfigDict(frozen=True, extra="allow")
+
+    items: tuple[dict[str, object], ...]
     limit: int
     offset: int
     next_offset: int | None

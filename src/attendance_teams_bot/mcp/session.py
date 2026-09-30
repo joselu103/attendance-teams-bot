@@ -25,8 +25,12 @@ from attendance_teams_bot.mcp.contracts import (
     ATTENDANCE_MCP_CONTRACT_HEADER,
     ATTENDANCE_MCP_CONTRACT_MAJOR,
     CORRELATION_ID_HEADER,
+    CURRENT_ATTENDANCE_TOOL,
+    RESOLVE_EMPLOYEE_TOOL,
     AttendanceEventPage,
+    CurrentAttendancePage,
     McpToolFailure,
+    ResolvedEmployee,
 )
 from attendance_teams_bot.observability import OperationLifecycle
 
@@ -74,8 +78,8 @@ class StreamableHttpAttendanceSession:
         *,
         name: str,
         arguments: Mapping[str, object],
-    ) -> AttendanceEventPage:
-        """Execute an admitted tool and validate its text result as an attendance page."""
+    ) -> AttendanceEventPage | ResolvedEmployee | CurrentAttendancePage:
+        """Execute an admitted tool and validate its named, typed result."""
         metadata = {"tool_name": name, "argument_count": len(arguments)}
         lifecycle = OperationLifecycle(
             _LOGGER,
@@ -89,7 +93,14 @@ class StreamableHttpAttendanceSession:
             text = _tool_result_text(result.content)
             if result.isError:
                 raise AttendanceToolFailure(McpToolFailure.model_validate_json(text))
-            page = AttendanceEventPage.model_validate(json.loads(text))
+            payload = json.loads(text)
+            page: AttendanceEventPage | ResolvedEmployee | CurrentAttendancePage
+            if name == RESOLVE_EMPLOYEE_TOOL:
+                page = ResolvedEmployee.model_validate(payload)
+            elif name == CURRENT_ATTENDANCE_TOOL:
+                page = CurrentAttendancePage.model_validate(payload)
+            else:
+                page = AttendanceEventPage.model_validate(payload)
         except Exception as error:
             lifecycle.fail(error)
             raise
