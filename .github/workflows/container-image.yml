@@ -1,9 +1,9 @@
 name: Container image
 
 on:
-  pull_request:
-    branches: [main]
-  push:
+  workflow_run:
+    workflows: [Quality]
+    types: [completed]
     branches: [main]
 
 permissions:
@@ -16,18 +16,20 @@ env:
 
 jobs:
   build:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
 
       - id: image
         name: Derive image tag
         run: echo "tag=$(git rev-parse --short=7 "$GITHUB_SHA")" >> "$GITHUB_OUTPUT"
 
-      # Pull requests build the image but do not receive registry credentials.
-      # This keeps forked pull requests from publishing to the shared registry.
       - name: Log in to Azure
-        if: github.event_name == 'push'
         uses: azure/login@v2
         with:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
@@ -35,7 +37,6 @@ jobs:
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
       - name: Log in to Azure Container Registry
-        if: github.event_name == 'push'
         run: az acr login --name attendancecrmtbotdev
 
       - uses: docker/setup-buildx-action@v3
@@ -44,6 +45,6 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          push: ${{ github.event_name == 'push' }}
+          push: true
           tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.image.outputs.tag }}
-          build-args: VCS_REF=${{ github.sha }}
+          build-args: VCS_REF=${{ github.event.workflow_run.head_sha }}
