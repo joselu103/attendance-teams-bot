@@ -70,6 +70,25 @@ az containerapp logs show \
 The callback fallback changes only the empty token-exchange dead end. It does
 not prove OAuth, Entra, OBO, or downstream MCP configuration is correct.
 
+## Interpret A `signin/failure` Category
+
+When a `signin/failure` invoke reaches the fallback, the
+`teams_sso_token_exchange_fallback` event includes `sso_failure_code`. This is
+an allowlisted category only: unrecognized or absent codes are recorded as
+`unknown`; messages, tokens, exchange IDs, and the raw invoke payload are never
+logged.
+
+| `sso_failure_code` | Configuration checks |
+| --- | --- |
+| `resourcematchfailed` | Confirm the Azure Bot OAuth connection token-exchange URL is `api://botid-<BOT_APP_ID>` and that its app ID matches the installed bot. |
+| `installedappnotfound`, `installappfailed` | Confirm the app is installed for the affected user and the Teams manifest bot ID matches the Azure Bot registration. |
+| `authrequestfailed`, `invokeerror` | Confirm the Azure Bot messaging endpoint, OAuth setting name, and service connection are configured for the active revision. |
+| `tokenmissing` | Confirm the OAuth connection uses the documented `access_as_user` scope and retry from a personal chat after the app is installed. |
+| `oauthcardnotvalid` | Confirm `TEAMS_SSO_OAUTH_CONNECTION_NAME` exactly matches the Azure Bot OAuth setting name. |
+| `userconsentrequired` | Confirm delegated consent and Teams client preauthorization for the bot app registration. |
+| `interactionrequired` | Complete interactive sign-in, then check Conditional Access and consent requirements. |
+| `unknown` | Verify the active immutable image and inspect only the safe callback fields; do not enable raw invoke-payload logging. |
+
 ## Verify Microsoft Configuration Without Secret Disclosure
 
 Use the Azure Bot OAuth setting name from `TEAMS_SSO_OAUTH_CONNECTION_NAME`.
