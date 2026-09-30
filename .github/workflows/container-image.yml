@@ -1,10 +1,7 @@
 name: Container image
 
 on:
-  workflow_run:
-    workflows: [Quality]
-    types: [completed]
-    branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -16,14 +13,10 @@ env:
 
 jobs:
   build:
-    if: >-
-      github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.event == 'push'
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-        with:
-          ref: ${{ github.event.workflow_run.head_sha }}
 
       - id: image
         name: Derive image tag
@@ -47,4 +40,4 @@ jobs:
           context: .
           push: true
           tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.image.outputs.tag }}
-          build-args: VCS_REF=${{ github.event.workflow_run.head_sha }}
+          build-args: VCS_REF=${{ github.sha }}
