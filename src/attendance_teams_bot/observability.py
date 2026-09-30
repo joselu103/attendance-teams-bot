@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import re
 import sys
-from collections.abc import Awaitable, Callable, Iterator, Mapping, MutableMapping
+from collections.abc import Awaitable, Callable, Generator, Mapping, MutableMapping
 from contextlib import contextmanager
 from time import perf_counter
 from typing import Any, Final
@@ -300,7 +300,7 @@ def message_input_metadata(message: str) -> dict[str, object]:
 
 
 @contextmanager
-def correlation_scope(correlation_id: UUID | None = None) -> Iterator[UUID]:
+def correlation_scope(correlation_id: UUID | None = None) -> Generator[UUID]:
     """Bind a generated or trusted incoming trace ID to the current async context."""
     active_id = correlation_id or uuid4()
     tokens = bind_contextvars(trace_id=str(active_id), user_or_client_id=_UNAVAILABLE)
@@ -313,7 +313,7 @@ def correlation_scope(correlation_id: UUID | None = None) -> Iterator[UUID]:
 @contextmanager
 def trusted_context_scope(
     *, user_or_client_id: str = _UNAVAILABLE, session_id: str | None = None
-) -> Iterator[None]:
+) -> Generator[None]:
     """Bind context only after a caller has authenticated and validated it."""
     values: dict[str, object] = {"user_or_client_id": user_or_client_id}
     if session_id is not None:

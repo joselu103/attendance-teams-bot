@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from collections.abc import AsyncIterator, Callable, Mapping, Sequence
+from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from uuid import UUID
@@ -120,7 +120,7 @@ class StreamableHttpAttendanceSessionFactory:
         *,
         access_token: SecretStr,
         correlation_id: UUID,
-    ) -> AsyncIterator[StreamableHttpAttendanceSession]:
+    ) -> AsyncGenerator[StreamableHttpAttendanceSession]:
         """Yield an initialized session, translating connection failures to the safe MCP error."""
         lifecycle = OperationLifecycle(
             _LOGGER,
