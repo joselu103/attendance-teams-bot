@@ -215,11 +215,11 @@ secret-safe Container Apps and Teams troubleshooting.
 
 ### Azure Container Registry automation
 
-The `Container image` GitHub Actions workflow runs only after the `Quality`
-workflow succeeds for a push to `main`; it then pushes
+The `Container image` GitHub Actions workflow runs only when manually dispatched
+from `main`; it then pushes
 `attendancecrmtbotdev-gdc8cwfndyatcqfq.azurecr.io/attendance-teams-bot` tagged
-with the first seven characters of the validated commit SHA. Pull requests and
-feature branches never receive Azure credentials and cannot publish an image.
+with the first seven characters of the selected commit SHA. Pull requests and
+feature branches cannot publish an image.
 
 Before the first push, create an Azure workload identity for this repository,
 grant it the `Reader` and `Container Registry Repository Writer` roles scoped to
