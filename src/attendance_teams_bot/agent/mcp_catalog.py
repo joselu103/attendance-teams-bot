@@ -8,13 +8,14 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Literal
 
+from attendance_teams_bot.agent.attendance_window import OverallAttendanceRange
 from attendance_teams_bot.agent.language_model import ReplyLanguage, ToolDefinition
 from attendance_teams_bot.mcp.contracts import (
     CURRENT_ATTENDANCE_TOOL,
     OTHER_ATTENDANCE_TOOL,
     RESOLVE_EMPLOYEE_TOOL,
+    SEARCH_EMPLOYEES_TOOL,
     SELF_ATTENDANCE_TOOL,
-    ListMyAttendanceArguments,
 )
 
 _TOOL_NAME = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
@@ -37,6 +38,7 @@ _ALLOWED_READ_ONLY_TOOL_NAMES = frozenset(
         "list_punch_types",
         "list_locations",
         "resolve_employee",
+        "search_employees",
     }
 )
 
@@ -52,7 +54,7 @@ class DiscoveredMcpTool:
 @dataclass(frozen=True, slots=True)
 class ToolPolicy:
     definition: ToolDefinition
-    kind: Literal["self", "other", "current"]
+    kind: Literal["self", "other", "current", "search"]
 
     def validate_arguments(
         self, arguments: Mapping[str, object]
@@ -109,9 +111,15 @@ class ToolPolicy:
                     },
                     language,
                 )
-            if set(arguments) != {"status", "reply_language"} or values["status"] not in _STATUS:
+            if self.kind == "search":
+                if set(arguments) != {"query", "reply_language"} or not values["query"].strip():
+                    return None
+                return ({"query": values["query"].strip(), "limit": 10}, language)
+            if set(arguments) not in ({"reply_language"}, {"status", "reply_language"}):
                 return None
-            return ({"status": values["status"]}, language)
+            if "status" in values and values["status"] not in _STATUS:
+                return None
+            return ({"status": values["status"]} if "status" in values else {}, language)
         except KeyError, ValueError:
             return None
 
@@ -146,6 +154,8 @@ def admit_mcp_catalog(discovered_tools: Sequence[DiscoveredMcpTool]) -> Admitted
         policies.append(ToolPolicy(canonical_other_attendance_tool(), "other"))
     if _compatible_current(remote.get(CURRENT_ATTENDANCE_TOOL)):
         policies.append(ToolPolicy(canonical_current_attendance_tool(), "current"))
+    if _compatible_search(remote.get(SEARCH_EMPLOYEES_TOOL)):
+        policies.append(ToolPolicy(canonical_employee_search_tool(), "search"))
     return AdmittedMcpCatalog(frozenset(remote), tuple(policies))
 
 
@@ -198,12 +208,26 @@ def canonical_other_attendance_tool() -> ToolDefinition:
 def canonical_current_attendance_tool() -> ToolDefinition:
     return _definition(
         CURRENT_ATTENDANCE_TOOL,
-        "List current workforce attendance for one status; server time is authoritative.",
+        "List current workforce attendance, optionally filtered to one approved status; "
+        "server time is authoritative.",
         {
             "status": {"type": "string", "enum": sorted(_STATUS)},
             "reply_language": {"type": "string", "enum": ["en", "sl"]},
         },
-        ["status", "reply_language"],
+        ["reply_language"],
+    )
+
+
+def canonical_employee_search_tool() -> ToolDefinition:
+    return _definition(
+        SEARCH_EMPLOYEES_TOOL,
+        "Find up to ten directory-safe employee candidates by name. Do not request attendance "
+        "until the user explicitly selects a listed username, email, or ID in a new message.",
+        {
+            "query": {"type": "string"},
+            "reply_language": {"type": "string", "enum": ["en", "sl"]},
+        },
+        ["query", "reply_language"],
     )
 
 
@@ -219,8 +243,8 @@ def _valid_tool(tool: DiscoveredMcpTool) -> bool:
     )
 
 
-def _bounded_dates(values: Mapping[str, str]) -> ListMyAttendanceArguments:
-    return ListMyAttendanceArguments(
+def _bounded_dates(values: Mapping[str, str]) -> OverallAttendanceRange:
+    return OverallAttendanceRange(
         start_date=date.fromisoformat(values["start_date"]),
         end_date=date.fromisoformat(values["end_date"]),
     )
@@ -259,8 +283,9 @@ def _compatible_other(schema: Mapping[str, object] | None) -> bool:
 
 def _compatible_current(schema: Mapping[str, object] | None) -> bool:
     props = _properties(schema)
-    return (
-        props is not None
-        and all(name in props for name in ("status", "limit", "offset"))
-        and "as_of" not in props
-    )
+    return props is not None and all(name in props for name in ("status", "limit", "offset"))
+
+
+def _compatible_search(schema: Mapping[str, object] | None) -> bool:
+    props = _properties(schema)
+    return props is not None and all(name in props for name in ("query", "limit"))

@@ -161,18 +161,21 @@ requester tool must also be present and schema-compatible. Unknown, duplicate,
 missing, malformed, or writable entries fail closed.
 The executable catalog contains `list_my_attendance_events`, a bot-owned
 exact-selector composite that calls `resolve_employee` then
-`list_attendance_events`, and `get_current_attendance` when the required MCP
-schemas are present. The model never receives or chooses a resolved employee ID;
-CRMT remains responsible for authorization. Current status uses server time,
-accepts only `office`, `remote`, `customer_site`, `break`, `absence`, and
-`no_status`, and is fetched through every available page.
+`list_attendance_events`, `get_current_attendance`, and `search_employees` when
+their required MCP schemas are present. A name search renders directory-safe
+candidates and requires the user to send a listed username or email in a new
+message before an attendance read. The model never receives or chooses a
+resolved employee ID; CRMT remains responsible for authorization. Current status
+uses server time, optionally accepts only `office`, `remote`, `customer_site`,
+`break`, `absence`, and `no_status`, and is fetched through every available page.
 Every model call receives only its bot-owned schema, including `reply_language`
 restricted to `en` or `sl`; remote discovery metadata and disabled tools are
 never prompted. The model receives the Ljubljana reference date and resolves
 English ordinal and Slovenian day-month forms. Ambiguous numeric dates are
-rejected locally. Each range is locally validated against the 31-day MCP
-contract; identity, resolved employee IDs, roles, pagination, and authority are
-never model-controlled.
+rejected locally. Each requested range may span up to twelve calendar months;
+the bot partitions it into inclusive 31-day MCP windows and reads every page
+before the model can answer. Identity, resolved employee IDs, roles, pagination,
+and authority are never model-controlled.
 
 The first enabled slice supports only personal one-to-one chats. Group, meeting,
 channel, missing, and unknown conversation scope stop before SSO, OBO, OpenAI,
@@ -184,6 +187,8 @@ instructions. This policy expansion does not permit raw rendering: IDs, notes,
 tokens, stack traces, and raw payloads never enter replies or logs, and `unknown`
 current statuses are withheld. The final reply is structured model-authored Teams
 Markdown and is rejected if oversized, unsafe, or contains returned internal IDs;
+the model cannot make an attendance, location, status, or no-records claim before
+a successful data tool call;
 before a validated language
 decision failures use English, and later failures retain that language. Images,
 cards, files, and durable language preferences are intentionally deferred to

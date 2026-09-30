@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from typing import Protocol
 
@@ -11,7 +11,7 @@ from attendance_teams_bot.mcp.client import McpContractIncompatible
 from attendance_teams_bot.mcp.contracts import AttendanceEvent, AttendanceEventPage
 
 PAGE_SIZE = 50
-MAX_EVENTS = 200
+MAX_PAGES_PER_WINDOW = 200
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,9 +55,7 @@ class AttendancePageReader(Protocol):
 class AuthenticatedMcpToolCaller(Protocol):
     """Calls an already authenticated MCP tool with bot-controlled arguments."""
 
-    async def call_tool(
-        self, *, name: str, arguments: Mapping[str, object]
-    ) -> AttendanceEventPage: ...
+    async def call_tool(self, *, name: str, arguments: Mapping[str, object]) -> object: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,17 +64,22 @@ class McpAttendancePageReader:
 
     session: AuthenticatedMcpToolCaller
     tool_name: str
+    fixed_arguments: Mapping[str, object] = field(default_factory=dict)
 
     async def read_page(self, *, window: AttendanceWindow, offset: int) -> AttendanceEventPage:
-        return await self.session.call_tool(
+        page = await self.session.call_tool(
             name=self.tool_name,
             arguments={
+                **self.fixed_arguments,
                 "start_date": window.start_date.isoformat(),
                 "end_date": window.end_date.isoformat(),
                 "limit": PAGE_SIZE,
                 "offset": offset,
             },
         )
+        if not isinstance(page, AttendanceEventPage):
+            raise McpContractIncompatible
+        return page
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,33 +92,28 @@ class AttendanceWindowResult:
 
 @dataclass(frozen=True, slots=True)
 class AttendanceWindowExecutor:
-    """Read bounded MCP pages across an overall range, capping the aggregate at 200 events."""
+    """Read every bounded MCP page across an overall range before returning it."""
 
     page_reader: AttendancePageReader
 
     async def execute(self, overall_range: OverallAttendanceRange) -> AttendanceWindowResult:
         """Aggregate pages, failing the request if any page is invalid or unavailable."""
         events: list[AttendanceEvent] = []
-        records_omitted = False
         for window in overall_range.windows():
             offset = 0
-            while True:
+            for _ in range(MAX_PAGES_PER_WINDOW):
                 page = await self.page_reader.read_page(window=window, offset=offset)
                 if page.limit != PAGE_SIZE or page.offset != offset or len(page.items) > PAGE_SIZE:
                     raise McpContractIncompatible
-                remaining = MAX_EVENTS - len(events)
-                events.extend(page.items[:remaining])
-                if len(page.items) > remaining:
-                    records_omitted = True
-                if len(events) == MAX_EVENTS:
-                    return AttendanceWindowResult(
-                        events=tuple(events),
-                        records_omitted=records_omitted or page.next_offset is not None,
-                    )
+                events.extend(page.items)
                 if page.next_offset is None:
                     break
-                offset += PAGE_SIZE
-        return AttendanceWindowResult(events=tuple(events), records_omitted=records_omitted)
+                if page.next_offset <= offset:
+                    raise McpContractIncompatible
+                offset = page.next_offset
+            else:
+                raise McpContractIncompatible
+        return AttendanceWindowResult(events=tuple(events), records_omitted=False)
 
 
 def _add_calendar_months(value: date, months: int) -> date:

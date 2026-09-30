@@ -12,6 +12,7 @@ SELF_ATTENDANCE_TOOL = "list_my_attendance_events"
 RESOLVE_EMPLOYEE_TOOL = "resolve_employee"
 OTHER_ATTENDANCE_TOOL = "list_attendance_events"
 CURRENT_ATTENDANCE_TOOL = "get_current_attendance"
+SEARCH_EMPLOYEES_TOOL = "search_employees"
 
 
 class ListMyAttendanceArguments(BaseModel):
@@ -84,6 +85,24 @@ class CurrentAttendancePage(BaseModel):
     next_offset: int | None
 
 
+class EmployeeSuggestion(BaseModel):
+    """A directory-safe candidate that must be explicitly selected in a later message."""
+
+    model_config = ConfigDict(frozen=True)
+
+    display_name: str
+    username: str | None = None
+    email: str | None = None
+
+
+class EmployeeSuggestionPage(BaseModel):
+    """Bounded directory-safe suggestions returned for a name query."""
+
+    model_config = ConfigDict(frozen=True)
+
+    items: tuple[EmployeeSuggestion, ...]
+
+
 McpToolErrorCode = Literal[
     "AUTHENTICATION_REQUIRED",
     "TOKEN_INVALID",
@@ -94,6 +113,7 @@ McpToolErrorCode = Literal[
     "FORBIDDEN",
     "BACKEND_UNAVAILABLE",
     "INTERNAL_ERROR",
+    "NOT_FOUND",
 ]
 
 MCP_TOOL_ERROR_MESSAGES: dict[McpToolErrorCode, str] = {
@@ -109,6 +129,7 @@ MCP_TOOL_ERROR_MESSAGES: dict[McpToolErrorCode, str] = {
     "FORBIDDEN": "You do not have permission to do that.",
     "BACKEND_UNAVAILABLE": "Attendance is temporarily unavailable. Please try again shortly.",
     "INTERNAL_ERROR": "Attendance could not complete that request.",
+    "NOT_FOUND": "No matching employee was found.",
 }
 
 
