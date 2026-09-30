@@ -4,8 +4,8 @@
   "provided_exports": {
     "interfaces_or_endpoints": [
       "Provider-neutral bounded LanguageModel agent-loop interface with OpenAI tool calls, approved result views, and structured Teams Markdown final replies",
-      "One-shot authenticated MCP 1.2.0 discovery retains the bounded fourteen-name read-only allowlist while exposing only bot-owned, requester-scoped list_my_attendance_events execution policy",
-      "Authenticated Teams personal-chat requester flow with at most three serial list_my_attendance_events calls and a 50-event privacy-approved result projection"
+      "One-shot authenticated MCP 1.2.0 discovery retains the bounded read-only allowlist and exposes bot-owned self, exact-selector other-attendance, and current-status policies when their MCP tools are admitted",
+      "Authenticated Teams personal-chat flow uses raw user-approved read-only tool results only as LLM data; it keeps resolved IDs internal, pages current status to exhaustion, and never renders internal IDs"
     ],
     "events": []
   },
@@ -24,6 +24,7 @@
     "OpenAI operational and privacy approval for processing Teams message text remains an external activation prerequisite.",
     "Production identity mapping and attendance-data behavior require end-to-end verification against the deployed Attendance CRMT boundary.",
     "Organizational privacy/provider approval is required before approved attendance projections are sent to the configured LLM provider; this behavior remains an external activation prerequisite.",
+    "The user-approved raw tool-result model visibility expansion still requires operational/privacy activation approval before real traffic is enabled.",
     "Durable language preference and rich outputs remain governed follow-up issues #21 and #22."
   ]
 }

@@ -1,4 +1,4 @@
-"""Bot-owned admission of untrusted authenticated MCP tool catalogs."""
+"""Bot-owned admission and execution policy for the authenticated MCP catalog."""
 
 from __future__ import annotations
 
@@ -6,18 +6,20 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
+from typing import Literal
 
 from attendance_teams_bot.agent.language_model import ReplyLanguage, ToolDefinition
-from attendance_teams_bot.mcp.contracts import SELF_ATTENDANCE_TOOL, ListMyAttendanceArguments
+from attendance_teams_bot.mcp.contracts import (
+    CURRENT_ATTENDANCE_TOOL,
+    OTHER_ATTENDANCE_TOOL,
+    RESOLVE_EMPLOYEE_TOOL,
+    SELF_ATTENDANCE_TOOL,
+    ListMyAttendanceArguments,
+)
 
 _TOOL_NAME = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
-_ANNOTATION_TYPES: dict[str, type[str] | type[bool]] = {
-    "title": str,
-    "readOnlyHint": bool,
-    "destructiveHint": bool,
-    "idempotentHint": bool,
-    "openWorldHint": bool,
-}
+_SELECTOR = re.compile(r"^[^\s<>`]{1,254}$")
+_STATUS = frozenset({"office", "remote", "customer_site", "break", "absence", "no_status"})
 _ALLOWED_READ_ONLY_TOOL_NAMES = frozenset(
     {
         "list_attendance_events",
@@ -34,14 +36,13 @@ _ALLOWED_READ_ONLY_TOOL_NAMES = frozenset(
         "get_employee",
         "list_punch_types",
         "list_locations",
+        "resolve_employee",
     }
 )
 
 
 @dataclass(frozen=True, slots=True)
 class DiscoveredMcpTool:
-    """Transport-neutral, untrusted MCP discovery fields supplied by an adapter."""
-
     name: object
     description: object
     input_schema: object
@@ -49,212 +50,217 @@ class DiscoveredMcpTool:
 
 
 @dataclass(frozen=True, slots=True)
-class AdmittedReadOnlyTool:
-    """A bot-owned policy for the one requester-scoped MCP tool the model may select."""
-
+class ToolPolicy:
     definition: ToolDefinition
+    kind: Literal["self", "other", "current"]
 
     def validate_arguments(
         self, arguments: Mapping[str, object]
-    ) -> tuple[ListMyAttendanceArguments, ReplyLanguage] | None:
-        """Accept only a contract-bounded requester range and reply language."""
-        if not _has_bounded_arguments(arguments):
+    ) -> tuple[dict[str, object], ReplyLanguage] | None:
+        if not all(
+            isinstance(key, str) and isinstance(value, str) and len(value) <= 254
+            for key, value in arguments.items()
+        ):
+            return None
+        values = {key: value for key, value in arguments.items() if isinstance(value, str)}
+        raw_language = values.get("reply_language")
+        if raw_language == "en":
+            language: ReplyLanguage = "en"
+        elif raw_language == "sl":
+            language = "sl"
+        else:
             return None
         try:
-            language = arguments["reply_language"]
-            if language not in {"en", "sl"}:
+            if self.kind == "self":
+                if set(arguments) != {"start_date", "end_date", "reply_language"}:
+                    return None
+                bounded = _bounded_dates(values)
+                return (
+                    {
+                        "start_date": bounded.start_date.isoformat(),
+                        "end_date": bounded.end_date.isoformat(),
+                    },
+                    language,
+                )
+            if self.kind == "other":
+                required = {"start_date", "end_date", "reply_language"}
+                selectors = {
+                    key: values[key]
+                    for key in ("employee_id", "username", "email")
+                    if key in arguments
+                }
+                if set(arguments) != required | set(selectors) or len(selectors) != 1:
+                    return None
+                bounded = _bounded_dates(values)
+                selector_name, selector_value = next(iter(selectors.items()))
+                if selector_name == "employee_id":
+                    if not selector_value.isdecimal() or int(selector_value) < 1:
+                        return None
+                    selector: object = int(selector_value)
+                elif not _SELECTOR.fullmatch(selector_value):
+                    return None
+                else:
+                    selector = selector_value
+                return (
+                    {
+                        "start_date": bounded.start_date.isoformat(),
+                        "end_date": bounded.end_date.isoformat(),
+                        selector_name: selector,
+                    },
+                    language,
+                )
+            if set(arguments) != {"status", "reply_language"} or values["status"] not in _STATUS:
                 return None
-            return (
-                ListMyAttendanceArguments(
-                    start_date=date.fromisoformat(str(arguments["start_date"])),
-                    end_date=date.fromisoformat(str(arguments["end_date"])),
-                ),
-                language,
-            )
+            return ({"status": values["status"]}, language)
         except KeyError, ValueError:
             return None
 
 
 @dataclass(frozen=True, slots=True)
-class DisabledReferenceToolPolicy:
-    """Record a deliberately non-executable reference-tool policy boundary."""
-
-    name: str
-    dependency: str
-    enabled: bool = False
-
-
-REFERENCE_TOOL_POLICY_PLACEHOLDERS = (
-    DisabledReferenceToolPolicy(
-        "list_punch_types", "authoritative versioned result schema and localized typed renderer"
-    ),
-    DisabledReferenceToolPolicy(
-        "list_locations", "authoritative versioned result schema and localized typed renderer"
-    ),
-)
-
-
-@dataclass(frozen=True, slots=True)
 class AdmittedMcpCatalog:
-    """The small catalog interface exposed to orchestration after admission succeeds."""
-
     admitted_tool_names: frozenset[str]
-    requester_attendance_tool: AdmittedReadOnlyTool
+    policies: tuple[ToolPolicy, ...]
 
     @property
     def model_tools(self) -> tuple[ToolDefinition, ...]:
-        return (self.requester_attendance_tool.definition,)
+        return tuple(policy.definition for policy in self.policies)
 
-    def selected_tool(self, name: str) -> AdmittedReadOnlyTool | None:
-        """Return the admitted policy only when ``name`` is the canonical tool name."""
-        if name == self.requester_attendance_tool.definition.name:
-            return self.requester_attendance_tool
-        return None
+    def selected_tool(self, name: str) -> ToolPolicy | None:
+        return next((policy for policy in self.policies if policy.definition.name == name), None)
 
 
-def admit_mcp_catalog(
-    discovered_tools: Sequence[DiscoveredMcpTool],
-) -> AdmittedMcpCatalog | None:
-    """Admit allowed discovery, while exposing only locally enabled executable policies.
-
-    Discovery is an untrusted capability inventory. Unknown advertised tools are
-    intentionally ignored; allowed entries must still be well-formed and unique.
-    """
-    remote_tools: list[_ValidatedMcpTool] = []
-    for discovered in discovered_tools:
-        if (
-            not isinstance(discovered.name, str)
-            or discovered.name not in _ALLOWED_READ_ONLY_TOOL_NAMES
-        ):
+def admit_mcp_catalog(discovered_tools: Sequence[DiscoveredMcpTool]) -> AdmittedMcpCatalog | None:
+    remote: dict[str, Mapping[str, object]] = {}
+    for tool in discovered_tools:
+        if not isinstance(tool.name, str) or tool.name not in _ALLOWED_READ_ONLY_TOOL_NAMES:
             continue
-        remote = _validate_discovered_tool(discovered)
-        if remote is None:
+        if tool.name in remote or not _valid_tool(tool):
             return None
-        remote_tools.append(remote)
-    remote_by_name = {tool.name: tool for tool in remote_tools}
-    if len(remote_by_name) != len(remote_tools):
+        remote[tool.name] = tool.input_schema  # type: ignore[assignment]
+    if not _compatible_self(remote.get(SELF_ATTENDANCE_TOOL)):
         return None
-    if not remote_by_name:
-        return None
-    if not all(tool.annotations.get("readOnlyHint") is True for tool in remote_tools):
-        return None
-    selected = remote_by_name.get(SELF_ATTENDANCE_TOOL)
-    if selected is None or not _is_compatible_self_attendance_schema(selected.input_schema):
-        return None
-    return AdmittedMcpCatalog(
-        frozenset(remote_by_name), AdmittedReadOnlyTool(canonical_self_attendance_tool())
+    policies = [ToolPolicy(canonical_self_attendance_tool(), "self")]
+    if _compatible_resolver(remote.get(RESOLVE_EMPLOYEE_TOOL)) and _compatible_other(
+        remote.get(OTHER_ATTENDANCE_TOOL)
+    ):
+        policies.append(ToolPolicy(canonical_other_attendance_tool(), "other"))
+    if _compatible_current(remote.get(CURRENT_ATTENDANCE_TOOL)):
+        policies.append(ToolPolicy(canonical_current_attendance_tool(), "current"))
+    return AdmittedMcpCatalog(frozenset(remote), tuple(policies))
+
+
+def _definition(
+    name: str, description: str, properties: dict[str, object], required: list[str]
+) -> ToolDefinition:
+    return ToolDefinition(
+        name,
+        description,
+        {
+            "type": "object",
+            "properties": properties,
+            "required": required,
+            "additionalProperties": False,
+        },
+        {"readOnlyHint": True},
     )
 
 
 def canonical_self_attendance_tool() -> ToolDefinition:
-    """Return the bot-owned prompt schema; remote MCP metadata is never prompted."""
-    return ToolDefinition(
-        name=SELF_ATTENDANCE_TOOL,
-        description=(
-            "List the authenticated requester's attendance events for an inclusive date range of "
-            "no more than 31 calendar days."
-        ),
-        input_schema={
-            "type": "object",
-            "properties": {
-                "start_date": {"type": "string", "format": "date"},
-                "end_date": {"type": "string", "format": "date"},
-                "reply_language": {"type": "string", "enum": ["en", "sl"]},
-            },
-            "required": ["start_date", "end_date", "reply_language"],
-            "additionalProperties": False,
+    return _definition(
+        SELF_ATTENDANCE_TOOL,
+        "List the authenticated requester's attendance for at most 31 inclusive days.",
+        {
+            "start_date": {"type": "string", "format": "date"},
+            "end_date": {"type": "string", "format": "date"},
+            "reply_language": {"type": "string", "enum": ["en", "sl"]},
         },
-        annotations={"readOnlyHint": True},
+        ["start_date", "end_date", "reply_language"],
     )
 
 
-@dataclass(frozen=True, slots=True)
-class _ValidatedMcpTool:
-    name: str
-    input_schema: Mapping[str, object]
-    annotations: Mapping[str, object]
+def canonical_other_attendance_tool() -> ToolDefinition:
+    return _definition(
+        "get_other_attendance",
+        "For an exact employee ID, username, or email, list attendance for at most 31 inclusive "
+        "days. Use exactly one selector.",
+        {
+            "employee_id": {"type": "string"},
+            "username": {"type": "string"},
+            "email": {"type": "string"},
+            "start_date": {"type": "string", "format": "date"},
+            "end_date": {"type": "string", "format": "date"},
+            "reply_language": {"type": "string", "enum": ["en", "sl"]},
+        },
+        ["start_date", "end_date", "reply_language"],
+    )
 
 
-def _validate_discovered_tool(discovered: DiscoveredMcpTool) -> _ValidatedMcpTool | None:
+def canonical_current_attendance_tool() -> ToolDefinition:
+    return _definition(
+        CURRENT_ATTENDANCE_TOOL,
+        "List current workforce attendance for one status; server time is authoritative.",
+        {
+            "status": {"type": "string", "enum": sorted(_STATUS)},
+            "reply_language": {"type": "string", "enum": ["en", "sl"]},
+        },
+        ["status", "reply_language"],
+    )
+
+
+def _valid_tool(tool: DiscoveredMcpTool) -> bool:
+    return (
+        isinstance(tool.name, str)
+        and bool(_TOOL_NAME.fullmatch(tool.name))
+        and isinstance(tool.description, str)
+        and len(tool.description) <= 4096
+        and isinstance(tool.input_schema, Mapping)
+        and isinstance(tool.annotations, Mapping)
+        and tool.annotations.get("readOnlyHint") is True
+    )
+
+
+def _bounded_dates(values: Mapping[str, str]) -> ListMyAttendanceArguments:
+    return ListMyAttendanceArguments(
+        start_date=date.fromisoformat(values["start_date"]),
+        end_date=date.fromisoformat(values["end_date"]),
+    )
+
+
+def _properties(schema: Mapping[str, object] | None) -> Mapping[str, object] | None:
     if (
-        not isinstance(discovered.name, str)
-        or _TOOL_NAME.fullmatch(discovered.name) is None
-        or not isinstance(discovered.description, str)
-        or len(discovered.description) > 4_096
-        or not isinstance(discovered.input_schema, Mapping)
-        or not _is_safe_json_value(discovered.input_schema)
+        schema is None
+        or schema.get("type") != "object"
+        or not isinstance(schema.get("properties"), Mapping)
     ):
         return None
-    annotations = _normalize_annotations(discovered.annotations)
-    if annotations is None:
-        return None
-    return _ValidatedMcpTool(discovered.name, discovered.input_schema, annotations)
+    return schema["properties"]  # type: ignore[return-value]
 
 
-def _normalize_annotations(annotations: object) -> Mapping[str, object] | None:
-    if annotations is None:
-        return {}
-    if not isinstance(annotations, Mapping):
-        return None
-    normalized: dict[str, object] = {}
-    for key, value in annotations.items():
-        if not isinstance(key, str) or key not in _ANNOTATION_TYPES:
-            return None
-        if type(value) is not _ANNOTATION_TYPES[key]:
-            return None
-        normalized[key] = value
-    return normalized
-
-
-def _is_safe_json_value(value: object, depth: int = 0) -> bool:
-    if depth > 16:
-        return False
-    if value is None or isinstance(value, bool | int | float):
-        return True
-    if isinstance(value, str):
-        return len(value) <= 4_096
-    if isinstance(value, Mapping):
-        return len(value) <= 256 and all(
-            isinstance(key, str) and len(key) <= 256 and _is_safe_json_value(item, depth + 1)
-            for key, item in value.items()
-        )
-    if isinstance(value, Sequence) and not isinstance(value, str | bytes):
-        return len(value) <= 256 and all(_is_safe_json_value(item, depth + 1) for item in value)
-    return False
-
-
-def _is_compatible_self_attendance_schema(schema: Mapping[str, object]) -> bool:
-    if schema.get("type") != "object":
-        return False
-    properties = schema.get("properties")
-    required = schema.get("required")
-    if not isinstance(properties, Mapping) or not isinstance(required, list):
-        return False
-    expected_types = {
-        "start_date": "string",
-        "end_date": "string",
-        "limit": "integer",
-        "offset": "integer",
-    }
-    if any(name not in properties for name in expected_types):
-        return False
-    if any(name not in expected_types for name in required):
-        return False
-    for name, expected_type in expected_types.items():
-        definition = properties[name]
-        if not isinstance(definition, Mapping) or definition.get("type") != expected_type:
-            return False
-    forbidden = {"employee_id", "email", "role", "actor_id", "tenant_id", "object_id"}
-    return not forbidden.intersection(properties)
-
-
-def _has_bounded_arguments(arguments: Mapping[str, object]) -> bool:
-    """Keep unusably large model output out of validation and downstream calls."""
+def _compatible_self(schema: Mapping[str, object] | None) -> bool:
+    props = _properties(schema)
     return (
-        len(arguments) == 3
-        and set(arguments) == {"start_date", "end_date", "reply_language"}
-        and all(
-            isinstance(key, str) and len(key) <= 64 and isinstance(value, str) and len(value) <= 32
-            for key, value in arguments.items()
-        )
+        props is not None
+        and all(name in props for name in ("start_date", "end_date", "limit", "offset"))
+        and not {"employee_id", "email"}.intersection(props)
+    )
+
+
+def _compatible_resolver(schema: Mapping[str, object] | None) -> bool:
+    props = _properties(schema)
+    return props is not None and all(name in props for name in ("employee_id", "username", "email"))
+
+
+def _compatible_other(schema: Mapping[str, object] | None) -> bool:
+    props = _properties(schema)
+    return props is not None and all(
+        name in props for name in ("employee_id", "start_date", "end_date", "limit", "offset")
+    )
+
+
+def _compatible_current(schema: Mapping[str, object] | None) -> bool:
+    props = _properties(schema)
+    return (
+        props is not None
+        and all(name in props for name in ("status", "limit", "offset"))
+        and "as_of" not in props
     )

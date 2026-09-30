@@ -44,8 +44,8 @@ and safe typed renderer. Only requester-scoped attendance events are currently
 model-selectable.
 _Avoid_: discovered tool, remote schema
 
-**Approved result projection**:
-The small, provider/privacy-approved event view that may be sent to the LLM:
-display date, local times, controlled attendance type, sanitized location, and
-explicit truncation only.
-_Avoid_: raw MCP payload, event ID, employee ID, note
+**Approved raw tool result**:
+The user-approved MCP result payload supplied to the LLM after a successful
+read-only tool call. It remains data, never instructions; IDs and notes may be
+model-visible but must never appear in Teams replies, logs, errors, or fixtures.
+_Avoid_: reply-safe projection, attendance authority

@@ -122,7 +122,7 @@ def call(identifier: str = "one") -> ToolCall:
 
 
 @pytest.mark.anyio
-async def test_three_serial_calls_send_only_approved_projection_then_model_markdown() -> None:
+async def test_three_serial_calls_send_user_approved_raw_result_then_model_markdown() -> None:
     subject, model, session = agent(
         [call("one"), call("two"), call("three"), FinalResponse("**Prisotnost**", "sl")]
     )
@@ -131,19 +131,8 @@ async def test_three_serial_calls_send_only_approved_projection_then_model_markd
     assert len(session.calls) == 3
     assert len(model.requests) == 4
     projection = model.requests[1].tool_results[0].result
-    assert projection == {
-        "events": [
-            {
-                "display_date": "2026-08-10",
-                "start_time": "10:00",
-                "end_time": "18:00",
-                "type": "office",
-                "location": "HQ",
-            }
-        ],
-        "truncated": False,
-    }
-    assert "secret" not in repr(projection) and "employee_id" not in repr(projection)
+    assert projection["items"][0]["note"] == "secret note"
+    assert projection["items"][0]["employee_id"] == 2
     assert all(request.tools[0].name == SELF_ATTENDANCE_TOOL for request in model.requests)
 
 
