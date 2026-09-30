@@ -36,7 +36,7 @@ jobs:
 
       - name: Log in to Azure Container Registry
         if: github.event_name == 'push'
-        run: az acr login --name attendancecrmtbotdev
+        run: az acr login --name "${REGISTRY%.azurecr.io}"
 
       - uses: docker/setup-buildx-action@v3
 
