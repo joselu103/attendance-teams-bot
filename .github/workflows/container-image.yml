@@ -22,7 +22,7 @@ jobs:
 
       - id: image
         name: Derive image tag
-        run: echo "tag=$(git rev-parse --short=7 \"$GITHUB_SHA\")" >> "$GITHUB_OUTPUT"
+        run: echo "tag=$(git rev-parse --short=7 "$GITHUB_SHA")" >> "$GITHUB_OUTPUT"
 
       # Pull requests build the image but do not receive registry credentials.
       # This keeps forked pull requests from publishing to the shared registry.
