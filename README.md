@@ -215,15 +215,15 @@ secret-safe Container Apps and Teams troubleshooting.
 
 ### Azure Container Registry automation
 
-The `Container image` GitHub Actions workflow builds the Docker image for pull
-requests targeting `main`. A push to `main` also pushes
+The `Container image` GitHub Actions workflow runs only after the `Quality`
+workflow succeeds for a push to `main`; it then pushes
 `attendancecrmtbotdev-gdc8cwfndyatcqfq.azurecr.io/attendance-teams-bot` tagged
-with the first seven characters of the commit SHA. Pull requests never receive
-Azure credentials and therefore cannot publish an image.
+with the first seven characters of the validated commit SHA. Pull requests and
+feature branches never receive Azure credentials and cannot publish an image.
 
 Before the first push, create an Azure workload identity for this repository,
-grant it the `AcrPush` role scoped to the `attendancecrmtbotdev` registry, and
-add a federated credential restricted to
+grant it the `Reader` and `Container Registry Repository Writer` roles scoped to
+the `attendancecrmtbotdev` registry, and add a federated credential restricted to
 `repo:joselu103/attendance-teams-bot:ref:refs/heads/main`. In the repository's
 GitHub Actions variables, set its `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, and
 `AZURE_SUBSCRIPTION_ID`. This uses GitHub OIDC, so no Azure password or service
