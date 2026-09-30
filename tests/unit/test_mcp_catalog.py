@@ -1,7 +1,7 @@
 import pytest
 
 from attendance_teams_bot.agent.mcp_catalog import (
-    _LEGACY_READ_ONLY_TOOL_NAMES,
+    _ALLOWED_READ_ONLY_TOOL_NAMES,
     DiscoveredMcpTool,
     admit_mcp_catalog,
     canonical_self_attendance_tool,
@@ -28,7 +28,7 @@ def compatible_tool(*, description: str = "Remote description") -> DiscoveredMcp
     )
 
 
-def legacy_catalog() -> tuple[DiscoveredMcpTool, ...]:
+def allowed_catalog() -> tuple[DiscoveredMcpTool, ...]:
     return tuple(
         compatible_tool()
         if name == SELF_ATTENDANCE_TOOL
@@ -38,12 +38,12 @@ def legacy_catalog() -> tuple[DiscoveredMcpTool, ...]:
             input_schema={"type": "object"},
             annotations={"readOnlyHint": True},
         )
-        for name in sorted(_LEGACY_READ_ONLY_TOOL_NAMES)
+        for name in sorted(_ALLOWED_READ_ONLY_TOOL_NAMES)
     )
 
 
 def test_admission_exposes_only_the_canonical_requester_tool() -> None:
-    catalog = admit_mcp_catalog(legacy_catalog())
+    catalog = admit_mcp_catalog(allowed_catalog())
 
     assert catalog is not None
     assert catalog.model_tools == (canonical_self_attendance_tool(),)
@@ -57,7 +57,6 @@ def test_admission_exposes_only_the_canonical_requester_tool() -> None:
     [
         (),
         (compatible_tool(), compatible_tool()),
-        (DiscoveredMcpTool("admin_tool", "x", {"type": "object"}, {}),),
         (DiscoveredMcpTool(SELF_ATTENDANCE_TOOL, "x", {"type": "object"}, {"readOnlyHint": True}),),
         (
             DiscoveredMcpTool(
@@ -87,6 +86,26 @@ def test_admission_rejects_untrusted_or_incompatible_catalogs(
     tools: tuple[DiscoveredMcpTool, ...],
 ) -> None:
     assert admit_mcp_catalog(tools) is None
+
+
+def test_admission_ignores_unknown_discovery_entries_but_retains_allowed_entries() -> None:
+    catalog = admit_mcp_catalog(
+        (DiscoveredMcpTool("admin_tool", object(), object(), object()), compatible_tool())
+    )
+
+    assert catalog is not None
+    assert catalog.admitted_tool_names == frozenset({SELF_ATTENDANCE_TOOL})
+    assert catalog.model_tools == (canonical_self_attendance_tool(),)
+
+
+def test_admission_rejects_duplicate_or_invalid_allowed_entries() -> None:
+    duplicate = (compatible_tool(), compatible_tool())
+    invalid = (
+        DiscoveredMcpTool(SELF_ATTENDANCE_TOOL, "x", {"type": "object"}, {"readOnlyHint": True}),
+    )
+
+    assert admit_mcp_catalog(duplicate) is None
+    assert admit_mcp_catalog(invalid) is None
 
 
 def test_admission_rejects_oversized_nested_schema() -> None:

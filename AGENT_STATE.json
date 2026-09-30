@@ -3,9 +3,9 @@
   "status": "ready",
   "provided_exports": {
     "interfaces_or_endpoints": [
-      "Provider-neutral async LanguageModel interface with the OpenAI OPENAI_API_KEY and OPENAI_MODEL adapter contract",
-      "One-shot authenticated MCP 1.2.0 discovery admits the bounded fourteen-tool legacy read-only catalog while exposing only the frozen requester-scoped list_my_attendance_events entry",
-      "Authenticated Teams personal-chat requester flow with deterministic local attendance rendering and no model result re-entry"
+      "Provider-neutral bounded LanguageModel agent-loop interface with OpenAI tool calls, approved result views, and structured Teams Markdown final replies",
+      "One-shot authenticated MCP 1.2.0 discovery retains the bounded fourteen-name read-only allowlist while exposing only bot-owned, requester-scoped list_my_attendance_events execution policy",
+      "Authenticated Teams personal-chat requester flow with at most three serial list_my_attendance_events calls and a 50-event privacy-approved result projection"
     ],
     "events": []
   },
@@ -14,11 +14,16 @@
       "Deployed non-production HTTPS /mcp endpoint implementing contract 1.2.0",
       "Microsoft Entra API registration exposing attendance.access",
       "Approved delegated OBO consent and production certificate configuration"
+    ],
+    "attendance-mcp-result-schemas": [
+      "Authoritative versioned result schemas for list_punch_types and list_locations before their disabled policy placeholders can be enabled with localized typed renderers"
     ]
   },
   "open_issues_or_blockers": [
     "Real Teams attendance traffic remains disabled until the Entra API registration, delegated OBO consent, certificate, and deployed HTTPS MCP prerequisites are configured and verified end to end.",
     "OpenAI operational and privacy approval for processing Teams message text remains an external activation prerequisite.",
-    "Production identity mapping and attendance-data behavior require end-to-end verification against the deployed Attendance CRMT boundary."
+    "Production identity mapping and attendance-data behavior require end-to-end verification against the deployed Attendance CRMT boundary.",
+    "Organizational privacy/provider approval is required before approved attendance projections are sent to the configured LLM provider; this behavior remains an external activation prerequisite.",
+    "Durable language preference and rich outputs remain governed follow-up issues #21 and #22."
   ]
 }

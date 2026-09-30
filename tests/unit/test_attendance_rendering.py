@@ -96,6 +96,12 @@ def test_presentation_localizes_types_active_and_escaped_values() -> None:
     assert "- Začetni čas ni na voljo–16:00: \\*Other\\* (\\[x\\])" in result
 
 
+def test_presentation_translates_only_controlled_attendance_type_aliases() -> None:
+    result = _present_events(_event(1, punch_type="Delo na firmi", location="Lokacija"))
+
+    assert "Office (Lokacija)" in result
+
+
 def test_presentation_separates_date_blocks_and_keeps_same_day_events_contiguous() -> None:
     result = _present_events(
         _event(1, checked_in_at=datetime(2026, 8, 10, 8, tzinfo=UTC)),
@@ -190,3 +196,11 @@ def test_presentation_greets_only_regular_reply_variants_and_escapes_display_nam
 
     assert greeted.text.startswith("Hello, Ana \\*Example\\*!")
     assert catalog.text == "Attendance data is temporarily unavailable. Please try again later."
+
+
+def test_catalog_unavailable_reply_is_localized() -> None:
+    response = AttendanceResultPresenter().present(
+        CatalogUnavailablePresentation(language="sl", display_name=None)
+    )
+
+    assert response.text == "Podatki o prisotnosti trenutno niso na voljo. Poskusite znova pozneje."

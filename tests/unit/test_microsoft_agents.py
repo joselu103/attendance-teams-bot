@@ -4,6 +4,7 @@ from uuid import uuid4
 import pytest
 from pydantic import SecretStr
 from starlette.responses import Response
+from structlog.testing import capture_logs
 
 from attendance_teams_bot.agent.contracts import BotResponse
 from attendance_teams_bot.settings import TeamsConnectionSettings
@@ -204,3 +205,63 @@ def test_unmatched_teams_sso_token_exchange_501_is_preserved() -> None:
         oauth_connection_name="attendance-teams-sso",
     )
     assert normalized is response
+
+
+def test_signin_failure_logs_allowlisted_sso_failure_code_and_preserves_501() -> None:
+    response = Response(status_code=501)
+
+    with capture_logs() as events:
+        normalized = normalize_oauth_invoke_response(
+            activity={
+                "type": "invoke",
+                "name": "signin/failure",
+                "value": {"code": "resourcematchfailed"},
+            },
+            response=response,
+            oauth_connection_name="attendance-teams-sso",
+        )
+
+    assert normalized is response
+    assert events == [
+        {
+            "activity_type": "invoke",
+            "activity_name": "signin/failure",
+            "has_exchange_id": False,
+            "upstream_status_code": 501,
+            "outcome": "response_preserved",
+            "reason": "unrelated_invoke",
+            "sso_failure_code": "resourcematchfailed",
+            "event": "teams_sso_token_exchange_fallback",
+            "log_level": "warning",
+        }
+    ]
+
+
+def test_signin_failure_does_not_log_unrecognized_or_sensitive_value_fields() -> None:
+    response = Response(status_code=501)
+    unknown_code = "unrecognized-internal-failure"
+    sensitive_message = "secret message"
+    sensitive_token = "eyJhbGciOiJIUzI1NiJ9.payload.signature"
+
+    with capture_logs() as events:
+        normalized = normalize_oauth_invoke_response(
+            activity={
+                "type": "invoke",
+                "name": "signin/failure",
+                "value": {
+                    "code": unknown_code,
+                    "message": sensitive_message,
+                    "token": sensitive_token,
+                },
+            },
+            response=response,
+            oauth_connection_name="attendance-teams-sso",
+        )
+
+    assert normalized is response
+    assert events[0]["sso_failure_code"] == "unknown"
+    assert all(
+        sensitive_value not in str(event)
+        for sensitive_value in (unknown_code, sensitive_message, sensitive_token)
+        for event in events
+    )

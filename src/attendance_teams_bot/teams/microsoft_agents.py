@@ -40,6 +40,19 @@ from attendance_teams_bot.teams.authenticated import (
 
 _LOGGER = structlog.get_logger(__name__)
 _ATTENDANCE_AUTH_HANDLER_ID = "attendance-teams-sso"
+_KNOWN_SSO_FAILURE_CODES = frozenset(
+    {
+        "resourcematchfailed",
+        "installedappnotfound",
+        "authrequestfailed",
+        "tokenmissing",
+        "oauthcardnotvalid",
+        "installappfailed",
+        "invokeerror",
+        "userconsentrequired",
+        "interactionrequired",
+    }
+)
 
 
 class _Authorization(Protocol):
@@ -89,6 +102,19 @@ def install_teams_callback_observability(app: FastAPI) -> None:
     install_http_request_observability(app)
 
 
+def _sso_failure_code(activity: object) -> str:
+    """Return an allowlisted Teams SSO failure category without retaining raw values."""
+    if not isinstance(activity, Mapping):
+        return "unknown"
+    if activity.get("type") != "invoke" or activity.get("name") != "signin/failure":
+        return "unknown"
+
+    value = activity.get("value")
+    code = value.get("code") if isinstance(value, Mapping) else None
+    normalized_code = code.casefold() if isinstance(code, str) else ""
+    return normalized_code if normalized_code in _KNOWN_SSO_FAILURE_CODES else "unknown"
+
+
 def normalize_oauth_invoke_response(
     *,
     activity: object,
@@ -122,6 +148,7 @@ def normalize_oauth_invoke_response(
         upstream_status_code=501,
         outcome="interactive_sign_in_requested" if matches else "response_preserved",
         reason=reason,
+        sso_failure_code=_sso_failure_code(activity),
     )
     if not matches:
         return response

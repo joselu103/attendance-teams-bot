@@ -146,12 +146,12 @@ local `.env` only for development and a deployment secret manager for the key.
 Teams, MCP, and OpenAI value is present. When enabled, incomplete Teams, MCP, or
 OpenAI configuration fails startup rather than falling back to an attendance route.
 
-### Constrained language-model and MCP policy
+### Bounded language-model and MCP policy
 
-The provider-neutral asynchronous `LanguageModel` boundary selects an action;
-OpenAI is the first adapter. Replacing OpenAI means implementing `LanguageModel`
-and changing provider composition only—not Teams handling, OBO, MCP transport,
-or the attendance application policy.
+The provider-neutral asynchronous `LanguageModel` boundary runs a turn-local,
+bounded agent loop; OpenAI is the first adapter. Replacing OpenAI means
+implementing `LanguageModel` and changing provider composition only—not Teams
+handling, OBO, MCP transport, or attendance policy.
 
 For each accepted personal-chat turn, the bot opens one requester-authenticated
 MCP session with token B and discovers the catalog once. It admits only the
@@ -159,28 +159,28 @@ fourteen established version-1 read-only CRMT tool names; every advertised entry
 must be unique, safely formed, and marked `readOnlyHint=true`. The selected
 requester tool must also be present and schema-compatible. Unknown, duplicate,
 missing, malformed, or writable entries fail closed.
-The current frozen MCP catalog contains only `list_my_attendance_events`.
-Before invoking a model, the bot deterministically resolves explicit ISO dates,
-English and Slovene named months, this/last month, this/last week, and last/past
-one through twelve months using Europe/Ljubljana calendar semantics. It uses the
-model only for unsupported wording. The bot accepts an overall inclusive range
-of up to twelve rolling calendar months, then partitions it into chronological,
-contiguous 31-day MCP windows and fixed `limit=50` pages with bot-controlled
-offsets. Identity, employee targets, roles, pagination, and MCP windowing are
+The current executable catalog contains only `list_my_attendance_events`.
+Every model call receives only its bot-owned schema, including `reply_language`
+restricted to `en` or `sl`; remote discovery metadata and disabled tools are
+never prompted. The model receives the Ljubljana reference date and resolves
+English ordinal and Slovenian day-month forms. Ambiguous numeric dates are
+rejected locally. Each range is locally validated against the 31-day MCP
+contract; identity, employee targets, roles, pagination, and authority are
 never model-controlled.
 
 The first enabled slice supports only personal one-to-one chats. Group, meeting,
 channel, missing, and unknown conversation scope stop before SSO, OBO, OpenAI,
 or MCP. The bot calls Attendance CRMT MCP contract
 [`1.2.0`](../attendance-crmt/docs/integrations/teams-bot-mcp-auth-contract.md)
-and renders validated attendance locally and deterministically. Attendance
-records are deliberately **not** sent to OpenAI, avoiding a second model/tool
-loop and reducing employee-data exposure. A reply contains at most 200 safely
-returned events and 12,000 characters; a localized disclosure notes omitted
-records without claiming that the source is ordered by recency. Tokens, employee
-authority, arbitrary tools, provider or MCP diagnostics, internal identifiers,
-and notes do not enter model prompts or Teams replies. Stable tool failures map
-to fixed safe replies.
+through at most three sequential, non-parallel calls. After each successful
+call, the next model turn receives only a provider/privacy-approved projection:
+at most 50 events with display date, Ljubljana local times, controlled type,
+sanitized location, and explicit truncation. IDs, notes, tokens, and raw MCP
+payloads never enter prompts. The final reply is structured model-authored Teams
+Markdown and is rejected if oversized or unsafe; before a validated language
+decision failures use English, and later failures retain that language. Images,
+cards, files, and durable language preferences are intentionally deferred to
+issues #22 and #21.
 
 This verified client-side behavior does not establish a real integration. Real
 attendance traffic remains disabled by default pending the Attendance CRMT
