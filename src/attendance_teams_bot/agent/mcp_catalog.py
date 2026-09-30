@@ -7,10 +7,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
 
-from attendance_teams_bot.agent.attendance_window import OverallAttendanceRange
-from attendance_teams_bot.agent.contracts import ReplyLanguage
-from attendance_teams_bot.agent.language_model import ToolDefinition
-from attendance_teams_bot.mcp.contracts import SELF_ATTENDANCE_TOOL
+from attendance_teams_bot.agent.language_model import ReplyLanguage, ToolDefinition
+from attendance_teams_bot.mcp.contracts import SELF_ATTENDANCE_TOOL, ListMyAttendanceArguments
 
 _TOOL_NAME = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 _ANNOTATION_TYPES: dict[str, type[str] | type[bool]] = {
@@ -20,7 +18,7 @@ _ANNOTATION_TYPES: dict[str, type[str] | type[bool]] = {
     "idempotentHint": bool,
     "openWorldHint": bool,
 }
-_LEGACY_READ_ONLY_TOOL_NAMES = frozenset(
+_ALLOWED_READ_ONLY_TOOL_NAMES = frozenset(
     {
         "list_attendance_events",
         "list_my_attendance_events",
@@ -58,29 +56,49 @@ class AdmittedReadOnlyTool:
 
     def validate_arguments(
         self, arguments: Mapping[str, object]
-    ) -> tuple[OverallAttendanceRange, ReplyLanguage] | None:
-        """Accept only a bounded, requester-scoped range and supported reply language."""
+    ) -> tuple[ListMyAttendanceArguments, ReplyLanguage] | None:
+        """Accept only a contract-bounded requester range and reply language."""
         if not _has_bounded_arguments(arguments):
             return None
-        language = _reply_language(arguments.get("reply_language"))
-        if language is None:
-            return None
         try:
-            request_arguments = {
-                key: value for key, value in arguments.items() if key != "reply_language"
-            }
-            return OverallAttendanceRange(
-                date.fromisoformat(str(request_arguments["start_date"])),
-                date.fromisoformat(str(request_arguments["end_date"])),
-            ), language
+            language = arguments["reply_language"]
+            if language not in {"en", "sl"}:
+                return None
+            return (
+                ListMyAttendanceArguments(
+                    start_date=date.fromisoformat(str(arguments["start_date"])),
+                    end_date=date.fromisoformat(str(arguments["end_date"])),
+                ),
+                language,
+            )
         except KeyError, ValueError:
             return None
+
+
+@dataclass(frozen=True, slots=True)
+class DisabledReferenceToolPolicy:
+    """Record a deliberately non-executable reference-tool policy boundary."""
+
+    name: str
+    dependency: str
+    enabled: bool = False
+
+
+REFERENCE_TOOL_POLICY_PLACEHOLDERS = (
+    DisabledReferenceToolPolicy(
+        "list_punch_types", "authoritative versioned result schema and localized typed renderer"
+    ),
+    DisabledReferenceToolPolicy(
+        "list_locations", "authoritative versioned result schema and localized typed renderer"
+    ),
+)
 
 
 @dataclass(frozen=True, slots=True)
 class AdmittedMcpCatalog:
     """The small catalog interface exposed to orchestration after admission succeeds."""
 
+    admitted_tool_names: frozenset[str]
     requester_attendance_tool: AdmittedReadOnlyTool
 
     @property
@@ -97,9 +115,18 @@ class AdmittedMcpCatalog:
 def admit_mcp_catalog(
     discovered_tools: Sequence[DiscoveredMcpTool],
 ) -> AdmittedMcpCatalog | None:
-    """Admit only compatible read-only discovery and replace remote metadata with local policy."""
+    """Admit allowed discovery, while exposing only locally enabled executable policies.
+
+    Discovery is an untrusted capability inventory. Unknown advertised tools are
+    intentionally ignored; allowed entries must still be well-formed and unique.
+    """
     remote_tools: list[_ValidatedMcpTool] = []
     for discovered in discovered_tools:
+        if (
+            not isinstance(discovered.name, str)
+            or discovered.name not in _ALLOWED_READ_ONLY_TOOL_NAMES
+        ):
+            continue
         remote = _validate_discovered_tool(discovered)
         if remote is None:
             return None
@@ -107,14 +134,16 @@ def admit_mcp_catalog(
     remote_by_name = {tool.name: tool for tool in remote_tools}
     if len(remote_by_name) != len(remote_tools):
         return None
-    if not remote_by_name or not remote_by_name.keys() <= _LEGACY_READ_ONLY_TOOL_NAMES:
+    if not remote_by_name:
         return None
     if not all(tool.annotations.get("readOnlyHint") is True for tool in remote_tools):
         return None
     selected = remote_by_name.get(SELF_ATTENDANCE_TOOL)
     if selected is None or not _is_compatible_self_attendance_schema(selected.input_schema):
         return None
-    return AdmittedMcpCatalog(AdmittedReadOnlyTool(canonical_self_attendance_tool()))
+    return AdmittedMcpCatalog(
+        frozenset(remote_by_name), AdmittedReadOnlyTool(canonical_self_attendance_tool())
+    )
 
 
 def canonical_self_attendance_tool() -> ToolDefinition:
@@ -123,7 +152,7 @@ def canonical_self_attendance_tool() -> ToolDefinition:
         name=SELF_ATTENDANCE_TOOL,
         description=(
             "List the authenticated requester's attendance events for an inclusive date range of "
-            "no more than 12 rolling calendar months."
+            "no more than 31 calendar days."
         ),
         input_schema={
             "type": "object",
@@ -221,13 +250,11 @@ def _is_compatible_self_attendance_schema(schema: Mapping[str, object]) -> bool:
 
 def _has_bounded_arguments(arguments: Mapping[str, object]) -> bool:
     """Keep unusably large model output out of validation and downstream calls."""
-    return len(arguments) <= 3 and all(
-        isinstance(key, str) and len(key) <= 64 and isinstance(value, str) and len(value) <= 32
-        for key, value in arguments.items()
+    return (
+        len(arguments) == 3
+        and set(arguments) == {"start_date", "end_date", "reply_language"}
+        and all(
+            isinstance(key, str) and len(key) <= 64 and isinstance(value, str) and len(value) <= 32
+            for key, value in arguments.items()
+        )
     )
-
-
-def _reply_language(value: object) -> ReplyLanguage | None:
-    if value == "en" or value == "sl":
-        return value
-    return None

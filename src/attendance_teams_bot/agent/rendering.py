@@ -10,6 +10,21 @@ from attendance_teams_bot.mcp.contracts import AttendanceEvent, McpToolErrorCode
 
 MAX_REPLY_CHARACTERS = 12_000
 
+
+def is_safe_model_markdown(markdown: object) -> bool:
+    """Accept a small Teams Markdown subset and reject links, HTML, and control data."""
+    if (
+        not isinstance(markdown, str)
+        or not markdown.strip()
+        or len(markdown) > MAX_REPLY_CHARACTERS
+    ):
+        return False
+    if any(ord(character) < 32 and character not in "\n\r\t" for character in markdown):
+        return False
+    forbidden = ("<", ">", "`", "![", "](", "http://", "https://")
+    return not any(value in markdown.casefold() for value in forbidden)
+
+
 UNAVAILABLE_REPLY = "Attendance data is temporarily unavailable. Please try again later."
 INVALID_REQUEST_REPLY = "Please provide a date range of no more than 12 calendar months."
 CLARIFICATION_REPLY = "Please clarify the attendance date range you want to view."
@@ -112,7 +127,7 @@ class AttendanceResultPresenter:
         elif isinstance(presentation, UnavailablePresentation):
             text = _localized_safe_reply(UNAVAILABLE_REPLY, presentation.language)
         else:
-            return BotResponse(text=UNAVAILABLE_REPLY)
+            return BotResponse(text=_localized_safe_reply(UNAVAILABLE_REPLY, presentation.language))
         return _response(text, presentation.language, presentation.display_name)
 
 
@@ -153,6 +168,7 @@ _WEEKDAYS: dict[ReplyLanguage, tuple[str, ...]] = {
 _TYPE_LABELS: dict[ReplyLanguage, dict[str, str]] = {
     "en": {
         "office": "Office",
+        "delo na firmi": "Office",
         "work": "Work",
         "remote work": "Remote work",
         "work from home": "Remote work",
@@ -161,6 +177,7 @@ _TYPE_LABELS: dict[ReplyLanguage, dict[str, str]] = {
     },
     "sl": {
         "office": "Pisarna",
+        "delo na firmi": "Pisarna",
         "work": "Delo",
         "remote work": "Delo na daljavo",
         "work from home": "Delo na daljavo",
