@@ -6,7 +6,7 @@ from datetime import date, datetime
 from typing import Literal
 
 from attendance_teams_bot.agent.contracts import BotResponse, ReplyLanguage
-from attendance_teams_bot.mcp.contracts import AttendanceEvent, McpToolErrorCode
+from attendance_teams_bot.mcp.contracts import AttendanceEvent, EmployeeSuggestion, McpToolErrorCode
 
 MAX_REPLY_CHARACTERS = 12_000
 
@@ -26,7 +26,7 @@ def is_safe_model_markdown(markdown: object) -> bool:
 
 
 UNAVAILABLE_REPLY = "Attendance data is temporarily unavailable. Please try again later."
-INVALID_REQUEST_REPLY = "Please provide a date range of no more than 12 calendar months."
+INVALID_REQUEST_REPLY = "Please provide a valid attendance request."
 CLARIFICATION_REPLY = "Please clarify the attendance date range you want to view."
 TOOL_FAILURE_REPLIES = {
     "INVALID_ARGUMENT": "Check the attendance date range and try again.",
@@ -41,6 +41,7 @@ TOOL_FAILURE_REPLIES = {
     "TOKEN_INVALID": "Please sign in and try again.",
     "INTERNAL_ERROR": UNAVAILABLE_REPLY,
     "CORRELATION_ID_INVALID": UNAVAILABLE_REPLY,
+    "NOT_FOUND": "No matching employee was found.",
 }
 
 GuidanceIntent = Literal["unsupported", "date_ambiguous"]
@@ -81,6 +82,13 @@ class ToolFailurePresentation:
 
 
 @dataclass(frozen=True, slots=True)
+class EmployeeCandidatesPresentation:
+    candidates: tuple[EmployeeSuggestion, ...]
+    language: ReplyLanguage
+    display_name: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class UnavailablePresentation:
     language: ReplyLanguage
     display_name: str | None
@@ -98,6 +106,7 @@ AttendancePresentation = (
     | GuidancePresentation
     | InvalidRequestPresentation
     | ToolFailurePresentation
+    | EmployeeCandidatesPresentation
     | UnavailablePresentation
     | CatalogUnavailablePresentation
 )
@@ -124,11 +133,45 @@ class AttendanceResultPresenter:
                 TOOL_FAILURE_REPLIES.get(presentation.code, UNAVAILABLE_REPLY),
                 presentation.language,
             )
+        elif isinstance(presentation, EmployeeCandidatesPresentation):
+            text = _employee_candidates(presentation.candidates, presentation.language)
         elif isinstance(presentation, UnavailablePresentation):
             text = _localized_safe_reply(UNAVAILABLE_REPLY, presentation.language)
         else:
             return BotResponse(text=_localized_safe_reply(UNAVAILABLE_REPLY, presentation.language))
         return _response(text, presentation.language, presentation.display_name)
+
+
+def _employee_candidates(
+    candidates: tuple[EmployeeSuggestion, ...], language: ReplyLanguage
+) -> str:
+    if not candidates:
+        return _copy(
+            language,
+            "No matching employee was found.",
+            "Ujemajočega zaposlenega ni bilo mogoče najti.",
+        )
+    lines = [
+        _copy(
+            language,
+            "Select one employee in a new message:",
+            "V novem sporočilu izberite enega zaposlenega:",
+        )
+    ]
+    for candidate in candidates:
+        selector = candidate.username or candidate.email
+        if selector:
+            lines.append(f"- {candidate.display_name} — {selector}")
+        else:
+            lines.append(f"- {candidate.display_name}")
+    lines.append(
+        _copy(
+            language,
+            "Reply with the listed username or email.",
+            "Odgovorite z navedenim uporabniškim imenom ali e-pošto.",
+        )
+    )
+    return "\n".join(lines)
 
 
 _MONTHS: dict[ReplyLanguage, tuple[str, ...]] = {

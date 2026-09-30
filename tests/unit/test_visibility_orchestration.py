@@ -14,6 +14,8 @@ from attendance_teams_bot.mcp.contracts import (
     AttendanceEvent,
     AttendanceEventPage,
     CurrentAttendancePage,
+    EmployeeSuggestion,
+    EmployeeSuggestionPage,
     McpToolFailure,
     ResolvedEmployee,
 )
@@ -36,7 +38,8 @@ def catalog() -> tuple[DiscoveredMcpTool, ...]:
             "list_attendance_events",
             {"employee_id": {}, "start_date": {}, "end_date": {}, "limit": {}, "offset": {}},
         ),
-        tool("get_current_attendance", {"status": {}, "limit": {}, "offset": {}}),
+        tool("get_current_attendance", {"as_of": {}, "status": {}, "limit": {}, "offset": {}}),
+        tool("search_employees", {"query": {}, "limit": {}}),
     )
 
 
@@ -93,6 +96,10 @@ class Session:
                 limit=50,
                 offset=50,
                 next_offset=None,
+            )
+        if name == "search_employees":
+            return EmployeeSuggestionPage(
+                items=(EmployeeSuggestion(display_name="Tinkara Novak", username="tinkara"),)
             )
         return events()
 
@@ -172,6 +179,25 @@ async def test_current_status_fetches_all_pages_and_hides_unknown_before_model()
         {"display_name": "Ada", "status": "office", "employee_id": 99}
     ]
     assert "as_of" not in repr(session.calls)
+
+
+@pytest.mark.anyio
+async def test_current_status_without_a_filter_omits_status_and_fetches_every_page() -> None:
+    agent, model, session = subject(
+        [
+            ToolCall("x", "get_current_attendance", {"reply_language": "en"}),
+            FinalResponse("Ada is in the office", "en"),
+        ]
+    )
+
+    assert (
+        await agent.handle(message="Who is working?", mcp_access_token=SecretStr("token"))
+    ).text == ("Ada is in the office")
+    assert [call[1] for call in session.calls] == [
+        {"limit": 50, "offset": 0},
+        {"limit": 50, "offset": 50},
+    ]
+    assert "status" not in model.requests[1].tool_results[0].result
 
 
 @pytest.mark.anyio
@@ -259,3 +285,32 @@ async def test_authority_denial_from_resolution_is_rendered_safely() -> None:
     )
     response = await agent.handle(message="Alice", mcp_access_token=SecretStr("token"))
     assert response.text == "You do not have permission to view that attendance."
+
+
+@pytest.mark.anyio
+async def test_model_cannot_make_an_attendance_claim_before_a_tool_succeeds() -> None:
+    agent, _, session = subject([FinalResponse("No records; Ada is remote.", "en")])
+
+    response = await agent.handle(message="Where is Ada?", mcp_access_token=SecretStr("token"))
+
+    assert "temporarily unavailable" in response.text
+    assert not session.calls
+
+
+@pytest.mark.anyio
+async def test_name_search_renders_candidates_and_requires_a_later_selection() -> None:
+    agent, model, session = subject(
+        [ToolCall("x", "search_employees", {"query": "Tinkara", "reply_language": "en"})]
+    )
+
+    response = await agent.handle(
+        message="Show Tinkara's attendance", mcp_access_token=SecretStr("token")
+    )
+
+    assert response.text == (
+        "Select one employee in a new message:\n"
+        "- Tinkara Novak — tinkara\n"
+        "Reply with the listed username or email."
+    )
+    assert session.calls == [("search_employees", {"query": "Tinkara", "limit": 10})]
+    assert len(model.requests) == 1

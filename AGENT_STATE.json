@@ -4,8 +4,9 @@
   "provided_exports": {
     "interfaces_or_endpoints": [
       "Provider-neutral bounded LanguageModel agent-loop interface with OpenAI tool calls, approved result views, and structured Teams Markdown final replies",
-      "One-shot authenticated MCP 1.2.0 discovery retains the bounded read-only allowlist and exposes bot-owned self, exact-selector other-attendance, and current-status policies when their MCP tools are admitted",
-      "Authenticated Teams personal-chat flow uses raw user-approved read-only tool results only as LLM data; it keeps resolved IDs internal, pages current status to exhaustion, and never renders internal IDs"
+      "One-shot authenticated MCP 1.2.0 discovery retains the bounded read-only allowlist and exposes bot-owned self, exact-selector other-attendance, optional-filter current-status, and directory-safe employee-search policies when their MCP tools are admitted",
+      "Authenticated Teams personal-chat flow accepts optional current-status as_of discovery without exposing or forwarding it, splits self and other history up to twelve calendar months into inclusive 31-day windows, pages each window and current status to exhaustion, and prevents model attendance claims before successful tool data",
+      "Name search renders deterministic directory-safe candidates and requires a newly messaged listed username or email before a later exact-selector attendance read; resolved IDs remain internal"
     ],
     "events": []
   },
@@ -16,7 +17,8 @@
       "Approved delegated OBO consent and production certificate configuration"
     ],
     "attendance-mcp-result-schemas": [
-      "Authoritative versioned result schemas for list_punch_types and list_locations before their disabled policy placeholders can be enabled with localized typed renderers"
+      "Authoritative versioned result schemas for list_punch_types and list_locations before their disabled policy placeholders can be enabled with localized typed renderers",
+      "The planned read-only search_employees(query, limit=10) catalog entry and directory-safe result schema before name-candidate search can operate against a deployed adapter"
     ]
   },
   "open_issues_or_blockers": [

@@ -117,3 +117,31 @@ def test_admission_rejects_oversized_nested_schema() -> None:
     )
 
     assert admit_mcp_catalog((oversized,)) is None
+
+
+def test_current_status_admits_optional_as_of_without_exposing_or_sending_it() -> None:
+    catalog = admit_mcp_catalog(
+        (
+            compatible_tool(),
+            DiscoveredMcpTool(
+                "get_current_attendance",
+                "current",
+                {
+                    "type": "object",
+                    "properties": {
+                        "as_of": {"type": "string"},
+                        "status": {"type": "string"},
+                        "limit": {"type": "integer"},
+                        "offset": {"type": "integer"},
+                    },
+                },
+                {"readOnlyHint": True},
+            ),
+        )
+    )
+
+    assert catalog is not None
+    policy = catalog.selected_tool("get_current_attendance")
+    assert policy is not None
+    assert "as_of" not in policy.definition.input_schema["properties"]
+    assert policy.validate_arguments({"reply_language": "en"}) == ({}, "en")

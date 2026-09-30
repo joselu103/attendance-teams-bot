@@ -121,12 +121,15 @@ async def test_executor_rejects_malformed_page_metadata(
 
 
 @pytest.mark.anyio
-async def test_executor_caps_at_two_hundred_events_and_discloses_omission() -> None:
+async def test_executor_reads_every_page_before_returning() -> None:
     event = attendance_event()
     reader = FakePageReader(
         pages=[
-            attendance_page(items=(event,) * 50, offset=offset, next_offset=offset + 50)
-            for offset in range(0, 200, 50)
+            *[
+                attendance_page(items=(event,) * 50, offset=offset, next_offset=offset + 50)
+                for offset in range(0, 200, 50)
+            ],
+            attendance_page(items=(event,), offset=200),
         ]
     )
 
@@ -134,9 +137,32 @@ async def test_executor_caps_at_two_hundred_events_and_discloses_omission() -> N
         OverallAttendanceRange(date(2026, 8, 10), date(2026, 8, 12))
     )
 
-    assert [offset for _, offset in reader.calls] == [0, 50, 100, 150]
-    assert len(result.events) == 200
-    assert result.records_omitted is True
+    assert [offset for _, offset in reader.calls] == [0, 50, 100, 150, 200]
+    assert len(result.events) == 201
+    assert result.records_omitted is False
+
+
+@pytest.mark.anyio
+async def test_executor_combines_every_page_of_each_31_day_window() -> None:
+    event = attendance_event()
+    reader = FakePageReader(
+        pages=[
+            attendance_page(items=(event,), offset=0, next_offset=50),
+            attendance_page(items=(event,), offset=50),
+            attendance_page(items=(event,), offset=0),
+        ]
+    )
+
+    result = await AttendanceWindowExecutor(reader).execute(
+        OverallAttendanceRange(date(2026, 7, 1), date(2026, 8, 1))
+    )
+
+    assert [(window.start_date, window.end_date, offset) for window, offset in reader.calls] == [
+        (date(2026, 7, 1), date(2026, 7, 31), 0),
+        (date(2026, 7, 1), date(2026, 7, 31), 50),
+        (date(2026, 8, 1), date(2026, 8, 1), 0),
+    ]
+    assert len(result.events) == 3
 
 
 @pytest.mark.anyio

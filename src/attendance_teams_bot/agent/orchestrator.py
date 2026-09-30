@@ -11,6 +11,11 @@ from zoneinfo import ZoneInfo
 
 from pydantic import SecretStr
 
+from attendance_teams_bot.agent.attendance_window import (
+    AttendanceWindowExecutor,
+    McpAttendancePageReader,
+    OverallAttendanceRange,
+)
 from attendance_teams_bot.agent.contracts import BotResponse
 from attendance_teams_bot.agent.date_resolver import has_ambiguous_numeric_date
 from attendance_teams_bot.agent.language_model import (
@@ -25,6 +30,7 @@ from attendance_teams_bot.agent.mcp_catalog import DiscoveredMcpTool, ToolPolicy
 from attendance_teams_bot.agent.rendering import (
     AttendanceResultPresenter,
     ClarificationPresentation,
+    EmployeeCandidatesPresentation,
     InvalidRequestPresentation,
     ToolFailurePresentation,
     UnavailablePresentation,
@@ -39,9 +45,11 @@ from attendance_teams_bot.mcp.contracts import (
     CURRENT_ATTENDANCE_TOOL,
     OTHER_ATTENDANCE_TOOL,
     RESOLVE_EMPLOYEE_TOOL,
+    SEARCH_EMPLOYEES_TOOL,
     SELF_ATTENDANCE_TOOL,
     AttendanceEventPage,
     CurrentAttendancePage,
+    EmployeeSuggestionPage,
     ResolvedEmployee,
 )
 from attendance_teams_bot.observability import current_correlation_id
@@ -55,7 +63,9 @@ class AuthenticatedMcpSession(Protocol):
     async def list_tools(self) -> tuple[DiscoveredMcpTool, ...]: ...
     async def call_tool(
         self, *, name: str, arguments: Mapping[str, object]
-    ) -> AttendanceEventPage | ResolvedEmployee | CurrentAttendancePage: ...
+    ) -> (
+        AttendanceEventPage | ResolvedEmployee | CurrentAttendancePage | EmployeeSuggestionPage
+    ): ...
 
 
 class McpSessionFactory(Protocol):
@@ -103,7 +113,8 @@ class AttendanceAgent:
                     )
                     if isinstance(turn, FinalResponse):
                         if (
-                            turn.language not in {"en", "sl"}
+                            not results
+                            or turn.language not in {"en", "sl"}
                             or not is_safe_model_markdown(turn.markdown)
                             or _mentions_sensitive(turn.markdown, sensitive)
                         ):
@@ -121,6 +132,10 @@ class AttendanceAgent:
                         )
                     arguments, language = validated
                     result = await self._execute(session, policy, arguments)
+                    if isinstance(result, EmployeeSuggestionPage):
+                        return self.presenter.present(
+                            EmployeeCandidatesPresentation(result.items, language, display_name)
+                        )
                     sensitive.update(_internal_values(result))
                     results.append(ToolResultView(turn.id, policy.definition.name, result))
         except asyncio.CancelledError:
@@ -137,12 +152,9 @@ class AttendanceAgent:
 
     async def _execute(
         self, session: AuthenticatedMcpSession, policy: ToolPolicy, arguments: Mapping[str, object]
-    ) -> dict[str, object]:
+    ) -> dict[str, object] | EmployeeSuggestionPage:
         if policy.kind == "self":
-            page = await session.call_tool(
-                name=SELF_ATTENDANCE_TOOL, arguments={**arguments, "limit": PAGE_SIZE, "offset": 0}
-            )
-            return _raw_page(page)
+            return await _all_attendance_pages(session, SELF_ATTENDANCE_TOOL, arguments)
         if policy.kind == "other":
             selector = {
                 key: value
@@ -152,37 +164,57 @@ class AttendanceAgent:
             resolved = await session.call_tool(name=RESOLVE_EMPLOYEE_TOOL, arguments=selector)
             if not isinstance(resolved, ResolvedEmployee):
                 raise McpContractIncompatible
-            page = await session.call_tool(
-                name=OTHER_ATTENDANCE_TOOL,
-                arguments={
+            return await _all_attendance_pages(
+                session,
+                OTHER_ATTENDANCE_TOOL,
+                {
                     "employee_id": resolved.employee_id,
                     "start_date": arguments["start_date"],
                     "end_date": arguments["end_date"],
-                    "limit": PAGE_SIZE,
-                    "offset": 0,
                 },
             )
-            return _raw_page(page)
-        return await _all_current_pages(session, str(arguments["status"]))
+        if policy.kind == "search":
+            result = await session.call_tool(name=SEARCH_EMPLOYEES_TOOL, arguments=arguments)
+            if not isinstance(result, EmployeeSuggestionPage):
+                raise McpContractIncompatible
+            return result
+        status = arguments.get("status")
+        return await _all_current_pages(session, str(status) if status is not None else None)
 
     def _unavailable(self, language: ReplyLanguage, display_name: str | None) -> BotResponse:
         return self.presenter.present(UnavailablePresentation(language, display_name))
 
 
-def _raw_page(page: object) -> dict[str, object]:
-    if not isinstance(page, AttendanceEventPage) or page.limit != PAGE_SIZE or page.offset != 0:
-        raise McpContractIncompatible
-    return page.model_dump(mode="json")
+async def _all_attendance_pages(
+    session: AuthenticatedMcpSession, tool_name: str, arguments: Mapping[str, object]
+) -> dict[str, object]:
+    overall_range = OverallAttendanceRange(
+        date.fromisoformat(str(arguments["start_date"])),
+        date.fromisoformat(str(arguments["end_date"])),
+    )
+    result = await AttendanceWindowExecutor(
+        McpAttendancePageReader(
+            session,
+            tool_name,
+            {key: value for key, value in arguments.items() if key == "employee_id"},
+        )
+    ).execute(overall_range)
+    return {
+        "items": [event.model_dump(mode="json") for event in result.events],
+        "complete": True,
+    }
 
 
-async def _all_current_pages(session: AuthenticatedMcpSession, status: str) -> dict[str, object]:
+async def _all_current_pages(
+    session: AuthenticatedMcpSession, status: str | None
+) -> dict[str, object]:
     items: list[dict[str, object]] = []
     offset = 0
     for _ in range(MAX_CURRENT_PAGES):
-        page = await session.call_tool(
-            name=CURRENT_ATTENDANCE_TOOL,
-            arguments={"status": status, "limit": PAGE_SIZE, "offset": offset},
-        )
+        arguments: dict[str, object] = {"limit": PAGE_SIZE, "offset": offset}
+        if status is not None:
+            arguments["status"] = status
+        page = await session.call_tool(name=CURRENT_ATTENDANCE_TOOL, arguments=arguments)
         if (
             not isinstance(page, CurrentAttendancePage)
             or page.limit != PAGE_SIZE
@@ -194,7 +226,10 @@ async def _all_current_pages(session: AuthenticatedMcpSession, status: str) -> d
             item for item in page.items if str(item.get("status", "")).casefold() != "unknown"
         )
         if page.next_offset is None:
-            return {"items": items, "status": status, "complete": True}
+            result: dict[str, object] = {"items": items, "complete": True}
+            if status is not None:
+                result["status"] = status
+            return result
         if page.next_offset <= offset:
             raise McpContractIncompatible
         offset = page.next_offset
