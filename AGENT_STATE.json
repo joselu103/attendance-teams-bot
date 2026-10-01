@@ -11,9 +11,9 @@
     "events": []
   },
   "dependencies_needed": {
-    "attendance-crmt": [
-      "Deployed non-production HTTPS /mcp endpoint implementing contract 1.2.0",
-      "Microsoft Entra API registration exposing attendance.access",
+    "attendance-mcp": [
+      "Deployed non-production HTTPS /mcp endpoint implementing contract 1.2.0; initialization is MCP-only and makes no REST admission call",
+      "Attendance REST API Microsoft Entra registration exposing attendance.access",
       "Approved delegated OBO consent and production certificate configuration"
     ],
     "attendance-mcp-result-schemas": [
@@ -24,7 +24,7 @@
   "open_issues_or_blockers": [
     "Real Teams attendance traffic remains disabled until the Entra API registration, delegated OBO consent, certificate, and deployed HTTPS MCP prerequisites are configured and verified end to end.",
     "OpenAI operational and privacy approval for processing Teams message text remains an external activation prerequisite.",
-    "Production identity mapping and attendance-data behavior require end-to-end verification against the deployed Attendance CRMT boundary.",
+    "Production identity mapping and attendance-data behavior require end-to-end verification against the deployed attendance-mcp boundary and Attendance REST API.",
     "Organizational privacy/provider approval is required before approved attendance projections are sent to the configured LLM provider; this behavior remains an external activation prerequisite.",
     "The user-approved raw tool-result model visibility expansion still requires operational/privacy activation approval before real traffic is enabled.",
     "Durable language preference and rich outputs remain governed follow-up issues #21 and #22."

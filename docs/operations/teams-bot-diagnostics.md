@@ -63,7 +63,7 @@ az containerapp logs show \
 | Fallback outcome `response_preserved` | The SDK returned `501`, but the activity did not match the narrow token-exchange fallback | Active image provenance and safe fallback fields |
 | Fallback outcome `interactive_sign_in_requested` | The bot returned `412`; Teams should continue interactive sign-in | Azure Bot OAuth/Entra SSO configuration |
 | `teams_sso_token_unavailable` or `teams_obo_exchange_failed` | Authentication stopped before OpenAI/MCP | OAuth connection, consent, scope, and Entra API configuration |
-| `attendance_turn_completed` at `mcp_open`/`mcp_catalog` | MCP transport or contract is unavailable | Attendance CRMT HTTPS endpoint and contract header |
+| `attendance_turn_completed` at `mcp_open`/`mcp_catalog` | MCP transport or contract is unavailable | attendance-mcp HTTPS endpoint and contract header |
 | `attendance_turn_completed` at `model_completion` | Model adapter failed safely | Approved OpenAI model and platform secret reference |
 | `teams_reply_send_failed` | Bot processing completed but outgoing delivery failed | Bot Service connector/outbound delivery |
 

@@ -95,7 +95,7 @@ def test_teams_mode_composes_enabled_attendance_integration(monkeypatch) -> None
     monkeypatch.setenv("CONNECTIONS__SERVICE_CONNECTION__SETTINGS__TENANTID", str(uuid4()))
     monkeypatch.setenv("CONNECTIONS__SERVICE_CONNECTION__SETTINGS__CLIENTSECRET", token_urlsafe())
     monkeypatch.setenv("ATTENDANCE_INTEGRATION_ENABLED", "true")
-    monkeypatch.setenv("MCP_ENDPOINT", "https://attendance.example.test/mcp")
+    monkeypatch.setenv("MCP_ENDPOINT", "https://attendance-mcp.example.test/mcp")
     monkeypatch.setenv("MCP_SCOPE", "api://attendance-api/attendance.access")
     monkeypatch.setenv("TEAMS_SSO_OAUTH_CONNECTION_NAME", "attendance-teams-sso")
     monkeypatch.setenv("OPENAI_API_KEY", "test-only-openai-key")

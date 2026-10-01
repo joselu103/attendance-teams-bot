@@ -25,14 +25,13 @@ Teams → Bot Service-only callback → connectivity reply
 
 Integration enabled:
 Teams → Azure Bot OAuth connection → token A → OBO → token B
-→ Attendance CRMT /mcp → requester-scoped response
+→ attendance-mcp /mcp → requester-scoped response
 ```
 
 The default is integration disabled. A valid Bot Service request proves the
 channel path; it does **not** prove the sender is an authorized Attendance CRMT
 employee. The enabled path must not be activated until the separately deployed
-Attendance CRMT service exposes its Entra API, delegated scope, and HTTPS MCP
-contract.
+attendance-mcp endpoint and Attendance REST API Entra configuration are ready.
 
 ## Quick start
 
@@ -125,8 +124,8 @@ addition to the Teams connection settings:
 
 ```bash
 ATTENDANCE_INTEGRATION_ENABLED=true
-MCP_ENDPOINT=https://<attendance-crmt-host>/mcp
-MCP_SCOPE=api://<attendance-crmt-api-app-id>/attendance.access
+MCP_ENDPOINT=https://<attendance-mcp-host>/mcp
+MCP_SCOPE=api://<attendance-rest-api-app-id>/attendance.access
 MCP_TIMEOUT_SECONDS=10
 TEAMS_SSO_OAUTH_CONNECTION_NAME=<azure-bot-oauth-connection-name>
 OPENAI_API_KEY=<secret-openai-api-key>
@@ -135,7 +134,7 @@ OPENAI_MODEL=<explicit-approved-model-name>
 
 `TEAMS_SSO_OAUTH_CONNECTION_NAME` obtains the Teams token (token A). The bot
 exchanges it only through the configured Microsoft Agents SDK service connection
-to obtain the downstream Attendance CRMT token (token B); only token B reaches
+to obtain the downstream Attendance REST API token (token B); only token B reaches
 the MCP client. Do not configure a downstream Attendance CRMT scope on the Azure
 Bot OAuth connection.
 
@@ -179,7 +178,7 @@ and authority are never model-controlled.
 
 The first enabled slice supports only personal one-to-one chats. Group, meeting,
 channel, missing, and unknown conversation scope stop before SSO, OBO, OpenAI,
-or MCP. The bot calls Attendance CRMT MCP contract
+or MCP. The bot calls the public attendance-mcp MCP contract
 [`1.2.0`](../attendance-crmt/docs/integrations/teams-bot-mcp-auth-contract.md)
 through bounded sequential, non-parallel model calls. By explicit user approval,
 the next model turn receives raw successful read-only MCP results as data, never
@@ -195,8 +194,8 @@ cards, files, and durable language preferences are intentionally deferred to
 issues #22 and #21.
 
 This verified client-side behavior does not establish a real integration. Real
-attendance traffic remains disabled by default pending the Attendance CRMT
-non-production HTTPS `/mcp` deployment, Entra `attendance.access` API
+attendance traffic remains disabled by default pending the attendance-mcp
+non-production HTTPS `/mcp` deployment, Attendance REST API Entra `attendance.access` API
 registration, delegated OBO consent, certificate configuration, end-to-end
 identity/data verification, and the required organizational privacy/provider and
 development-notice approvals.
