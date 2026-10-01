@@ -6,7 +6,13 @@ from uuid import UUID
 import pytest
 from pydantic import SecretStr
 
-from attendance_teams_bot.agent.language_model import FinalResponse, ModelRequest, ToolCall
+import attendance_teams_bot.agent.orchestrator as orchestrator
+from attendance_teams_bot.agent.language_model import (
+    FinalResponse,
+    LanguageModelUnavailable,
+    ModelRequest,
+    ToolCall,
+)
 from attendance_teams_bot.agent.mcp_catalog import DiscoveredMcpTool
 from attendance_teams_bot.agent.orchestrator import AttendanceAgent
 from attendance_teams_bot.agent.rendering import CLARIFICATION_REPLY, UNAVAILABLE_REPLY
@@ -162,3 +168,70 @@ async def test_ambiguous_numeric_date_never_reaches_model_or_mcp() -> None:
     response = await subject.handle(message="show 6/8", mcp_access_token=SecretStr("token"))
     assert response.text == CLARIFICATION_REPLY
     assert not model.requests and not session.calls
+
+
+@pytest.mark.anyio
+async def test_unavailable_greeting_failure_outcomes_are_classified_without_sensitive_values(
+    monkeypatch,
+) -> None:
+    events: list[tuple[str, dict[str, object]]] = []
+
+    class Logger:
+        def warning(self, event: str, **fields: object) -> None:
+            events.append((event, fields))
+
+    monkeypatch.setattr(orchestrator, "_LOGGER", Logger(), raising=False)
+
+    @dataclass
+    class RejectedCatalogSession(FakeSession):
+        async def list_tools(self) -> tuple[DiscoveredMcpTool, ...]:
+            return ()
+
+    @dataclass
+    class UnavailableModel:
+        async def complete(self, request: ModelRequest) -> FinalResponse:
+            del request
+            raise LanguageModelUnavailable
+
+    for model, session in (
+        (FakeModel([FinalResponse("Hello!", "en")]), FakeSession()),
+        (FakeModel([FinalResponse("ignored", "en")]), RejectedCatalogSession()),
+        (UnavailableModel(), FakeSession()),
+        (FakeModel([]), FakeSession()),
+    ):
+        response = await AttendanceAgent(
+            model,
+            Factory(session),
+            correlation_id_factory=lambda: UUID(int=1),
+            reference_date_factory=lambda: date(2026, 8, 15),
+        ).handle(message="hello token=must-not-log", mcp_access_token=SecretStr("token-b"))
+        assert response.text == UNAVAILABLE_REPLY
+
+    assert events == [
+        (
+            "attendance_agent_unavailable",
+            {"correlation_id": str(UUID(int=1)), "outcome": "malformed_final"},
+        ),
+        (
+            "attendance_agent_unavailable",
+            {"correlation_id": str(UUID(int=1)), "outcome": "catalog_rejected"},
+        ),
+        (
+            "attendance_agent_unavailable",
+            {
+                "correlation_id": str(UUID(int=1)),
+                "outcome": "model_unavailable",
+                "error_type": "LanguageModelUnavailable",
+            },
+        ),
+        (
+            "attendance_agent_unavailable",
+            {
+                "correlation_id": str(UUID(int=1)),
+                "outcome": "unexpected_exception",
+                "error_type": "IndexError",
+            },
+        ),
+    ]
+    assert "must-not-log" not in repr(events)
+    assert "token-b" not in repr(events)
