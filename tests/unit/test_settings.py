@@ -58,7 +58,7 @@ def test_settings_loads_complete_teams_configuration_from_one_dotenv(tmp_path, m
     environment_file.write_text(
         "\n".join(
             [
-                "MCP_ENDPOINT=https://attendance-crmt.example.test/mcp",
+                "MCP_ENDPOINT=https://attendance-mcp.example.test/mcp",
                 "BOT_RUNTIME_MODE=teams",
                 f"CONNECTIONS__SERVICE_CONNECTION__SETTINGS__CLIENTID={client_id}",
                 f"CONNECTIONS__SERVICE_CONNECTION__SETTINGS__TENANTID={tenant_id}",
@@ -79,17 +79,17 @@ def test_settings_loads_complete_teams_configuration_from_one_dotenv(tmp_path, m
 
 
 def test_settings_reads_the_mcp_endpoint_from_the_environment(monkeypatch) -> None:
-    monkeypatch.setenv("MCP_ENDPOINT", "https://attendance-crmt.example.test/mcp")
+    monkeypatch.setenv("MCP_ENDPOINT", "https://attendance-mcp.example.test/mcp")
 
     settings = Settings(_env_file=None)
 
-    assert str(settings.mcp_endpoint) == "https://attendance-crmt.example.test/mcp"
+    assert str(settings.mcp_endpoint) == "https://attendance-mcp.example.test/mcp"
 
 
 def test_disabled_flag_suppresses_complete_attendance_configuration(monkeypatch) -> None:
     monkeypatch.setenv("BOT_RUNTIME_MODE", "teams")
     monkeypatch.setenv("ATTENDANCE_INTEGRATION_ENABLED", "false")
-    monkeypatch.setenv("MCP_ENDPOINT", "https://attendance-crmt.example.test/mcp")
+    monkeypatch.setenv("MCP_ENDPOINT", "https://attendance-mcp.example.test/mcp")
     monkeypatch.setenv("MCP_SCOPE", "api://11111111-1111-1111-1111-111111111111/attendance.access")
     monkeypatch.setenv("TEAMS_SSO_OAUTH_CONNECTION_NAME", "AttendanceTeamsSso")
     monkeypatch.setenv("CONNECTIONS__SERVICE_CONNECTION__SETTINGS__CLIENTID", str(uuid4()))
@@ -102,7 +102,7 @@ def test_disabled_flag_suppresses_complete_attendance_configuration(monkeypatch)
 def test_enabled_attendance_integration_requires_teams_runtime(monkeypatch) -> None:
     monkeypatch.setenv("BOT_RUNTIME_MODE", "local")
     monkeypatch.setenv("ATTENDANCE_INTEGRATION_ENABLED", "true")
-    monkeypatch.setenv("MCP_ENDPOINT", "https://attendance-crmt.example.test/mcp")
+    monkeypatch.setenv("MCP_ENDPOINT", "https://attendance-mcp.example.test/mcp")
     monkeypatch.setenv("MCP_SCOPE", "api://11111111-1111-1111-1111-111111111111/attendance.access")
     monkeypatch.setenv("TEAMS_SSO_OAUTH_CONNECTION_NAME", "AttendanceTeamsSso")
 
@@ -116,7 +116,7 @@ def test_enabled_attendance_integration_requires_openai_configuration(monkeypatc
     monkeypatch.setenv("CONNECTIONS__SERVICE_CONNECTION__SETTINGS__CLIENTID", str(uuid4()))
     monkeypatch.setenv("CONNECTIONS__SERVICE_CONNECTION__SETTINGS__TENANTID", str(uuid4()))
     monkeypatch.setenv("CONNECTIONS__SERVICE_CONNECTION__SETTINGS__CLIENTSECRET", "test-only-value")
-    monkeypatch.setenv("MCP_ENDPOINT", "https://attendance-crmt.example.test/mcp")
+    monkeypatch.setenv("MCP_ENDPOINT", "https://attendance-mcp.example.test/mcp")
     monkeypatch.setenv("MCP_SCOPE", "api://11111111-1111-1111-1111-111111111111/attendance.access")
     monkeypatch.setenv("TEAMS_SSO_OAUTH_CONNECTION_NAME", "AttendanceTeamsSso")
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
@@ -132,7 +132,7 @@ def test_settings_build_complete_attendance_integration(monkeypatch) -> None:
     monkeypatch.setenv("CONNECTIONS__SERVICE_CONNECTION__SETTINGS__CLIENTID", str(uuid4()))
     monkeypatch.setenv("CONNECTIONS__SERVICE_CONNECTION__SETTINGS__TENANTID", str(uuid4()))
     monkeypatch.setenv("CONNECTIONS__SERVICE_CONNECTION__SETTINGS__CLIENTSECRET", "test-only-value")
-    monkeypatch.setenv("MCP_ENDPOINT", "https://attendance-crmt.example.test/mcp")
+    monkeypatch.setenv("MCP_ENDPOINT", "https://attendance-mcp.example.test/mcp")
     monkeypatch.setenv("MCP_SCOPE", "api://11111111-1111-1111-1111-111111111111/attendance.access")
     monkeypatch.setenv("TEAMS_SSO_OAUTH_CONNECTION_NAME", "AttendanceTeamsSso")
     monkeypatch.setenv("OPENAI_API_KEY", "test-only-openai-key")
@@ -142,7 +142,7 @@ def test_settings_build_complete_attendance_integration(monkeypatch) -> None:
 
     assert settings.attendance_integration is not None
     assert (
-        str(settings.attendance_integration.endpoint) == "https://attendance-crmt.example.test/mcp"
+        str(settings.attendance_integration.endpoint) == "https://attendance-mcp.example.test/mcp"
     )
     assert (
         settings.attendance_integration.delegated_scope

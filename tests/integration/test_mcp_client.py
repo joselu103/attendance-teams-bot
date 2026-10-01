@@ -24,6 +24,7 @@ class ContractHeaderApp:
             self.requests.append(
                 {
                     ":method": scope["method"],
+                    ":path": scope["path"],
                     **{name.decode(): value.decode() for name, value in scope["headers"]},
                 }
             )
@@ -121,3 +122,4 @@ async def test_authenticated_session_discovers_and_calls_with_contract_headers(
     assert {request[ATTENDANCE_MCP_CONTRACT_HEADER.lower()] for request in requests} == {
         ATTENDANCE_MCP_CONTRACT_MAJOR
     }
+    assert {request[":path"] for request in requests} == {"/mcp"}
