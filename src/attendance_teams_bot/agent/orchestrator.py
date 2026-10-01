@@ -9,6 +9,7 @@ from typing import Protocol
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
+import structlog
 from pydantic import SecretStr
 
 from attendance_teams_bot.agent.attendance_window import (
@@ -57,6 +58,7 @@ from attendance_teams_bot.observability import current_correlation_id
 MAX_MODEL_CALLS = 3
 PAGE_SIZE = 50
 MAX_CURRENT_PAGES = 200
+_LOGGER = structlog.get_logger(__name__)
 
 
 class AuthenticatedMcpSession(Protocol):
@@ -92,13 +94,16 @@ class AttendanceAgent:
         language: ReplyLanguage = "en"
         if has_ambiguous_numeric_date(message):
             return self.presenter.present(ClarificationPresentation(language, display_name))
+        correlation_id = self.correlation_id_factory()
         try:
             async with self.mcp_session_factory.open(
-                access_token=mcp_access_token, correlation_id=self.correlation_id_factory()
+                access_token=mcp_access_token, correlation_id=correlation_id
             ) as session:
                 catalog = admit_mcp_catalog(await session.list_tools())
                 if catalog is None:
-                    return self._unavailable(language, display_name)
+                    return self._unavailable_with_outcome(
+                        language, display_name, correlation_id, "catalog_rejected"
+                    )
                 results: list[ToolResultView] = []
                 sensitive: set[str] = set()
                 for call_count in range(MAX_MODEL_CALLS + 1):
@@ -118,7 +123,9 @@ class AttendanceAgent:
                             or not is_safe_model_markdown(turn.markdown)
                             or _mentions_sensitive(turn.markdown, sensitive)
                         ):
-                            return self._unavailable(language, display_name)
+                            return self._unavailable_with_outcome(
+                                language, display_name, correlation_id, "malformed_final"
+                            )
                         return BotResponse(text=turn.markdown)
                     if call_count == MAX_MODEL_CALLS:
                         return self._unavailable(language, display_name)
@@ -144,10 +151,24 @@ class AttendanceAgent:
             return self.presenter.present(
                 ToolFailurePresentation(error.failure.code, language, display_name)
             )
-        except AttendanceMcpUnavailable, McpContractIncompatible, LanguageModelUnavailable:
+        except LanguageModelUnavailable as error:
+            return self._unavailable_with_outcome(
+                language,
+                display_name,
+                correlation_id,
+                "model_unavailable",
+                error,
+            )
+        except AttendanceMcpUnavailable, McpContractIncompatible:
             return self._unavailable(language, display_name)
-        except Exception:
-            return self._unavailable(language, display_name)
+        except Exception as error:
+            return self._unavailable_with_outcome(
+                language,
+                display_name,
+                correlation_id,
+                "unexpected_exception",
+                error,
+            )
         return self._unavailable(language, display_name)
 
     async def _execute(
@@ -183,6 +204,23 @@ class AttendanceAgent:
 
     def _unavailable(self, language: ReplyLanguage, display_name: str | None) -> BotResponse:
         return self.presenter.present(UnavailablePresentation(language, display_name))
+
+    def _unavailable_with_outcome(
+        self,
+        language: ReplyLanguage,
+        display_name: str | None,
+        correlation_id: UUID,
+        outcome: str,
+        error: BaseException | None = None,
+    ) -> BotResponse:
+        fields: dict[str, str] = {
+            "correlation_id": str(correlation_id),
+            "outcome": outcome,
+        }
+        if error is not None:
+            fields["error_type"] = type(error).__name__
+        _LOGGER.warning("attendance_agent_unavailable", **fields)
+        return self._unavailable(language, display_name)
 
 
 async def _all_attendance_pages(
