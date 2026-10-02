@@ -11,6 +11,7 @@ from attendance_teams_bot.agent.language_model import (
     FinalResponse,
     LanguageModelUnavailable,
     ModelRequest,
+    PresentationPlan,
     ToolCall,
 )
 from attendance_teams_bot.agent.mcp_catalog import DiscoveredMcpTool
@@ -128,17 +129,21 @@ def call(identifier: str = "one") -> ToolCall:
 
 
 @pytest.mark.anyio
-async def test_three_serial_calls_send_user_approved_raw_result_then_model_markdown() -> None:
+async def test_three_serial_calls_send_reply_safe_projection_then_immutable_rendering() -> None:
     subject, model, session = agent(
-        [call("one"), call("two"), call("three"), FinalResponse("**Prisotnost**", "sl")]
+        [
+            call("one"),
+            call("two"),
+            call("three"),
+            FinalResponse("ignored", "sl", presentation=PresentationPlan("Prisotnost", None)),
+        ]
     )
     response = await subject.handle(message="Pokaži", mcp_access_token=SecretStr("token"))
-    assert response.text == "**Prisotnost**"
+    assert "**Prisotnost**" in response.text and "secret note" not in response.text
     assert len(session.calls) == 3
     assert len(model.requests) == 4
     projection = model.requests[1].tool_results[0].result
-    assert projection["items"][0]["note"] == "secret note"
-    assert projection["items"][0]["employee_id"] == 2
+    assert "note" not in repr(projection) and "employee_id" not in repr(projection)
     assert all(request.tools[0].name == SELF_ATTENDANCE_TOOL for request in model.requests)
 
 

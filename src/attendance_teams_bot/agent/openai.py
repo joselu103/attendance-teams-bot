@@ -13,6 +13,7 @@ from attendance_teams_bot.agent.language_model import (
     LanguageModelUnavailable,
     ModelRequest,
     ModelTurn,
+    PresentationPlan,
     ToolCall,
     ToolDefinition,
 )
@@ -34,9 +35,13 @@ class OpenAiLanguageModel:
                 messages=_messages(request),
                 tools=[_as_openai_tool(tool) for tool in request.tools],
                 parallel_tool_calls=False,
-                response_format=_response_format(request.pre_auth_guidance),
+                response_format=_response_format(
+                    request.pre_auth_guidance, bool(request.tool_results)
+                ),
             )
-            return _parse_completion(completion, request.pre_auth_guidance)
+            return _parse_completion(
+                completion, request.pre_auth_guidance, bool(request.tool_results)
+            )
         except LanguageModelUnavailable:
             raise
         except asyncio.CancelledError:
@@ -94,6 +99,12 @@ def _system_prompt(request: ModelRequest) -> str:
             "attendance_scope_guidance). Do not answer unrelated knowledge questions; guide them "
             "back to this bot's attendance-only scope."
         )
+    elif request.tool_results:
+        prompt += (
+            " After a tool result, return a presentation plan with a short non-factual title and "
+            "optional concise context. Code renders immutable attendance facts; do not repeat, "
+            "summarize, infer, reorder, or modify them."
+        )
     return prompt
 
 
@@ -108,7 +119,7 @@ def _as_openai_tool(tool: ToolDefinition) -> dict[str, object]:
     }
 
 
-def _response_format(pre_auth_guidance: bool) -> dict[str, object]:
+def _response_format(pre_auth_guidance: bool, has_results: bool) -> dict[str, object]:
     properties: dict[str, object] = {
         "markdown": {"type": "string"},
         "language": {"type": "string", "enum": ["en", "sl"]},
@@ -120,6 +131,14 @@ def _response_format(pre_auth_guidance: bool) -> dict[str, object]:
             "enum": ["greeting", "attendance_clarification", "attendance_scope_guidance"],
         }
         required.append("guidance_kind")
+    elif has_results:
+        properties["presentation"] = {
+            "type": "object",
+            "properties": {"title": {"type": "string"}, "context": {"type": ["string", "null"]}},
+            "required": ["title", "context"],
+            "additionalProperties": False,
+        }
+        required.append("presentation")
     return {
         "type": "json_schema",
         "json_schema": {
@@ -135,7 +154,7 @@ def _response_format(pre_auth_guidance: bool) -> dict[str, object]:
     }
 
 
-def _parse_completion(completion: object, pre_auth_guidance: bool) -> ModelTurn:
+def _parse_completion(completion: object, pre_auth_guidance: bool, has_results: bool) -> ModelTurn:
     choices = getattr(completion, "choices", None)
     if not isinstance(choices, Sequence) or isinstance(choices, (str, bytes)) or len(choices) != 1:
         raise LanguageModelUnavailable
@@ -151,7 +170,7 @@ def _parse_completion(completion: object, pre_auth_guidance: bool) -> ModelTurn:
         ):
             raise LanguageModelUnavailable
         return _parse_tool_call(tool_calls[0])
-    return _parse_final_response(getattr(message, "content", None), pre_auth_guidance)
+    return _parse_final_response(getattr(message, "content", None), pre_auth_guidance, has_results)
 
 
 def _parse_tool_call(tool_call: object) -> ToolCall:
@@ -175,7 +194,9 @@ def _parse_tool_call(tool_call: object) -> ToolCall:
     return ToolCall(id=call_id, name=name, arguments=dict(arguments))
 
 
-def _parse_final_response(content: object, pre_auth_guidance: bool) -> FinalResponse:
+def _parse_final_response(
+    content: object, pre_auth_guidance: bool, has_results: bool
+) -> FinalResponse:
     if not isinstance(content, str):
         raise LanguageModelUnavailable
     try:
@@ -188,7 +209,11 @@ def _parse_final_response(content: object, pre_auth_guidance: bool) -> FinalResp
         != (
             {"markdown", "language", "guidance_kind"}
             if pre_auth_guidance
-            else {"markdown", "language"}
+            else (
+                {"markdown", "language", "presentation"}
+                if has_results
+                else {"markdown", "language"}
+            )
         )
         or not isinstance(value.get("markdown"), str)
         or value.get("language") not in {"en", "sl"}
@@ -201,6 +226,26 @@ def _parse_final_response(content: object, pre_auth_guidance: bool) -> FinalResp
         "attendance_scope_guidance",
     }:
         raise LanguageModelUnavailable
+    plan_value = value.get("presentation")
+    if has_results and (
+        not isinstance(plan_value, Mapping)
+        or set(plan_value) != {"title", "context"}
+        or not isinstance(plan_value.get("title"), str)
+        or (
+            plan_value.get("context") is not None and not isinstance(plan_value.get("context"), str)
+        )
+    ):
+        raise LanguageModelUnavailable
+    if has_results:
+        assert isinstance(plan_value, Mapping)
+        title, context = plan_value.get("title"), plan_value.get("context")
+        assert isinstance(title, str) and (context is None or isinstance(context, str))
+        plan = PresentationPlan(title, context)
+    else:
+        plan = None
     return FinalResponse(
-        markdown=value["markdown"], language=value["language"], guidance_kind=guidance_kind
+        markdown=value["markdown"],
+        language=value["language"],
+        guidance_kind=guidance_kind,
+        presentation=plan,
     )

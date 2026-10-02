@@ -2,16 +2,20 @@ from datetime import UTC, datetime
 
 import pytest
 
+import attendance_teams_bot.agent.rendering as rendering
 from attendance_teams_bot.agent.contracts import ReplyLanguage
+from attendance_teams_bot.agent.language_model import PresentationPlan
 from attendance_teams_bot.agent.rendering import (
     MAX_REPLY_CHARACTERS,
     TOOL_FAILURE_REPLIES,
     AttendanceResultPresenter,
     CatalogUnavailablePresentation,
     ClarificationPresentation,
+    CurrentAttendancePresentation,
     EventResultPresentation,
     GuidancePresentation,
     InvalidRequestPresentation,
+    SafeHistoryPresentation,
     ToolFailurePresentation,
     UnavailablePresentation,
 )
@@ -74,9 +78,9 @@ def test_presentation_groups_dates_orders_events_and_hides_sensitive_fields() ->
         (
             "**Attendance: August 10, 2026–August 11, 2026**",
             "**Monday, August 10, 2026**",
-            "- 08:00–16:00: Office (Company)",
+            "- 10:00–18:00: Office",
             "**Tuesday, August 11, 2026**",
-            "- 09:00–16:00: Office (Company)",
+            "- 11:00–18:00: Office",
         )
     )
     assert "+00:00" not in result
@@ -92,14 +96,14 @@ def test_presentation_localizes_types_active_and_escaped_values() -> None:
     )
 
     assert "**Prisotnost: 10 avgust 2026–10 avgust 2026**" in result
-    assert "- 08:00–Prisoten (v teku): Delo na daljavo (Dom) *(Aktivno)*" in result
-    assert "- Začetni čas ni na voljo–16:00: \\*Other\\* (\\[x\\])" in result
+    assert "- 10:00–Prisoten (v teku): Delo na daljavo *(Aktivno)*" in result
+    assert "- Začetni čas ni na voljo–18:00: \\*Other\\*" in result
 
 
 def test_presentation_translates_only_controlled_attendance_type_aliases() -> None:
     result = _present_events(_event(1, punch_type="Delo na firmi", location="Lokacija"))
 
-    assert "Office (Lokacija)" in result
+    assert "Office" in result and "Lokacija" not in result
 
 
 def test_presentation_separates_date_blocks_and_keeps_same_day_events_contiguous() -> None:
@@ -112,10 +116,10 @@ def test_presentation_separates_date_blocks_and_keeps_same_day_events_contiguous
     assert result == (
         "**Attendance: August 10, 2026–August 11, 2026**\n\n"
         "**Monday, August 10, 2026**\n\n"
-        "- 08:00–16:00: Office (Company)\n"
-        "- 09:00–16:00: Office (Company)\n\n"
+        "- 10:00–18:00: Office\n"
+        "- 11:00–18:00: Office\n\n"
         "**Tuesday, August 11, 2026**\n\n"
-        "- 08:00–16:00: Office (Company)"
+        "- 10:00–18:00: Office"
     )
 
 
@@ -125,7 +129,7 @@ def test_presentation_reports_no_data_and_character_budget_omissions() -> None:
     no_data = presenter.present(
         EventResultPresentation(events=(), records_omitted=False, language="sl", display_name=None)
     )
-    events = tuple(_event(index, location="x" * 160) for index in range(200))
+    events = tuple(_event(index, location="x" * 160) for index in range(2_000))
     omitted = presenter.present(
         EventResultPresentation(
             events=events, records_omitted=False, language="en", display_name=None
@@ -204,3 +208,41 @@ def test_catalog_unavailable_reply_is_localized() -> None:
     )
 
     assert response.text == "Podatki o prisotnosti trenutno niso na voljo. Poskusite znova pozneje."
+
+
+def test_safe_history_batches_only_at_complete_chronological_date_groups(monkeypatch) -> None:
+    monkeypatch.setattr(rendering, "MAX_REPLY_CHARACTERS", 120)
+    response = AttendanceResultPresenter().present(
+        SafeHistoryPresentation(
+            events=(
+                _event(1, checked_in_at=datetime(2026, 8, 10, 8, tzinfo=UTC)),
+                _event(2, checked_in_at=datetime(2026, 8, 11, 8, tzinfo=UTC)),
+            ),
+            language="en",
+            display_name=None,
+            plan=PresentationPlan("Attendance", "Returned records"),
+        )
+    )
+
+    assert len(response.messages) == 2
+    assert "Monday, August 10, 2026" in response.messages[0]
+    assert "Tuesday, August 11, 2026" in response.messages[1]
+    assert all(
+        "Company" not in message and "Internal" not in message for message in response.messages
+    )
+
+
+def test_current_attendance_exposes_only_status_grouped_names() -> None:
+    response = AttendanceResultPresenter().present(
+        CurrentAttendancePresentation(
+            status_names=(("office", ("Ada Example",)), ("remote", ("Blaž Example",))),
+            language="sl",
+            display_name=None,
+            plan=PresentationPlan("Trenutna prisotnost", None),
+        )
+    )
+
+    assert (
+        response.text == "**Trenutna prisotnost**\n\n**Pisarna**\n- Ada Example\n\n"
+        "**Delo na daljavo**\n- Blaž Example"
+    )

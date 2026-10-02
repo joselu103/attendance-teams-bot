@@ -11,7 +11,20 @@ ReplyLanguage = Literal["en", "sl"]
 @dataclass(frozen=True, slots=True)
 class BotResponse:
     text: str
+    messages: tuple[str, ...] = ()
     request: None = None
+
+    def __post_init__(self) -> None:
+        messages = self.messages or (self.text,)
+        if not messages or any(not isinstance(message, str) or not message for message in messages):
+            raise ValueError("a response requires a non-empty ordered message batch")
+        if self.text != messages[0]:
+            raise ValueError("response text must remain the first message for legacy callers")
+        object.__setattr__(self, "messages", messages)
+
+    @classmethod
+    def batch(cls, messages: tuple[str, ...]) -> BotResponse:
+        return cls(text=messages[0], messages=messages)
 
 
 @dataclass(frozen=True, slots=True)

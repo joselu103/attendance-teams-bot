@@ -169,6 +169,19 @@ async def test_safe_pre_auth_scope_guidance_skips_sso_and_obo() -> None:
 
 
 @pytest.mark.anyio
+async def test_reply_batches_are_delivered_in_order_without_retry() -> None:
+    class BatchApplication(Application):
+        async def handle_selected(self, **kwargs: object) -> BotResponse:
+            del kwargs
+            return BotResponse.batch(("first date group", "second date group"))
+
+    context = Context(Activity())
+    await handler(BatchApplication()).handle(context)
+
+    assert context.sent == ["first date group", "second date group"]
+
+
+@pytest.mark.anyio
 async def test_sso_and_obo_failures_send_safe_replies_without_calling_the_application() -> None:
     class FailingSso(Sso):
         async def get_token(self, context: Context) -> SecretStr:

@@ -4,11 +4,15 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Literal
+from zoneinfo import ZoneInfo
 
 from attendance_teams_bot.agent.contracts import BotResponse, ReplyLanguage
+from attendance_teams_bot.agent.language_model import PresentationPlan
 from attendance_teams_bot.mcp.contracts import AttendanceEvent, EmployeeSuggestion, McpToolErrorCode
 
 MAX_REPLY_CHARACTERS = 12_000
+MAX_REPLY_BATCH = 12
+_REPLY_TIMEZONE = ZoneInfo("Europe/Ljubljana")
 
 
 def is_safe_model_markdown(markdown: object) -> bool:
@@ -53,6 +57,22 @@ class EventResultPresentation:
     records_omitted: bool
     language: ReplyLanguage
     display_name: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class CurrentAttendancePresentation:
+    status_names: tuple[tuple[str, tuple[str, ...]], ...]
+    language: ReplyLanguage
+    display_name: str | None
+    plan: PresentationPlan | None
+
+
+@dataclass(frozen=True, slots=True)
+class SafeHistoryPresentation:
+    events: tuple[AttendanceEvent, ...]
+    language: ReplyLanguage
+    display_name: str | None
+    plan: PresentationPlan | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,6 +122,8 @@ class CatalogUnavailablePresentation:
 
 AttendancePresentation = (
     EventResultPresentation
+    | CurrentAttendancePresentation
+    | SafeHistoryPresentation
     | ClarificationPresentation
     | GuidancePresentation
     | InvalidRequestPresentation
@@ -122,6 +144,10 @@ class AttendanceResultPresenter:
                 language=presentation.language,
                 records_omitted=presentation.records_omitted,
             )
+        elif isinstance(presentation, SafeHistoryPresentation):
+            return _history_batch(presentation)
+        elif isinstance(presentation, CurrentAttendancePresentation):
+            return _current_batch(presentation)
         elif isinstance(presentation, ClarificationPresentation):
             text = CLARIFICATION_REPLY
         elif isinstance(presentation, GuidancePresentation):
@@ -310,18 +336,117 @@ def _render_attendance_event(event: AttendanceEvent, language: ReplyLanguage) ->
     else:
         time_range = f"{_time(event.checked_in_at)}–{_time(event.checked_out_at)}"
     attendance_type = _attendance_type(event.punch_type, language)
-    location = _safe_text(event.location)
     result = f"- {time_range}: {attendance_type}"
-    if location:
-        result += f" ({location})"
     if event.checked_in_at is not None and event.checked_out_at is None:
         result += " *(Active)*" if language == "en" else " *(Aktivno)*"
     return result
 
 
+def valid_presentation_plan(plan: PresentationPlan) -> bool:
+    return _safe_plan_text(plan.title, 120) and (
+        plan.context is None or _safe_plan_text(plan.context, 240)
+    )
+
+
+def _safe_plan_text(value: str, limit: int) -> bool:
+    return (
+        isinstance(value, str)
+        and bool(value.strip())
+        and len(value) <= limit
+        and is_safe_model_markdown(value)
+    )
+
+
+def _history_batch(presentation: SafeHistoryPresentation) -> BotResponse:
+    if presentation.plan is None or not valid_presentation_plan(presentation.plan):
+        return BotResponse(_localized_safe_reply(UNAVAILABLE_REPLY, presentation.language))
+    if not presentation.events:
+        return _response(
+            _copy(
+                presentation.language,
+                "No attendance events were found for that date range.",
+                "Za to obdobje ni evidentiranih dogodkov prisotnosti.",
+            ),
+            presentation.language,
+            presentation.display_name,
+        )
+    groups: defaultdict[date | None, list[AttendanceEvent]] = defaultdict(list)
+    for event in presentation.events:
+        groups[_event_date(event)].append(event)
+    blocks = [
+        f"**{_format_date(day, presentation.language, weekday=True)}**\n\n"
+        + "\n".join(
+            _render_attendance_event(event, presentation.language)
+            for event in _sort_events(groups[day])
+        )
+        for day in sorted(day for day in groups if day is not None)
+    ]
+    if None in groups:
+        blocks.append(
+            f"**{_copy(presentation.language, 'Date unavailable', 'Datum ni na voljo')}**\n\n"
+            + "\n".join(
+                _render_attendance_event(event, presentation.language)
+                for event in _sort_events(groups[None])
+            )
+        )
+    prefix = f"**{_safe_text(presentation.plan.title)}**"
+    if presentation.plan.context:
+        prefix += "\n\n" + _safe_text(presentation.plan.context)
+    messages: list[str] = []
+    current = prefix
+    for block in blocks:
+        candidate = current + "\n\n" + block
+        if len(candidate) > MAX_REPLY_CHARACTERS:
+            if current == prefix or len(messages) >= MAX_REPLY_BATCH - 1:
+                return BotResponse(_localized_safe_reply(UNAVAILABLE_REPLY, presentation.language))
+            messages.append(current)
+            current = block
+        else:
+            current = candidate
+    messages.append(current)
+    return _response_batch(tuple(messages), presentation.language, presentation.display_name)
+
+
+def _current_batch(presentation: CurrentAttendancePresentation) -> BotResponse:
+    if presentation.plan is None or not valid_presentation_plan(presentation.plan):
+        return BotResponse(_localized_safe_reply(UNAVAILABLE_REPLY, presentation.language))
+    if not presentation.status_names:
+        return _response(
+            _copy(
+                presentation.language,
+                "No current attendance records were found.",
+                "Trenutnih evidenc prisotnosti ni.",
+            ),
+            presentation.language,
+            presentation.display_name,
+        )
+    lines = [f"**{_safe_text(presentation.plan.title)}**"]
+    if presentation.plan.context:
+        lines.extend(("", _safe_text(presentation.plan.context)))
+    for status, names in presentation.status_names:
+        lines.extend(("", f"**{_current_status(status, presentation.language)}**"))
+        lines.extend(f"- {_safe_text(name)}" for name in names)
+    text = "\n".join(lines)
+    if len(text) > MAX_REPLY_CHARACTERS:
+        return BotResponse(_localized_safe_reply(UNAVAILABLE_REPLY, presentation.language))
+    return _response(text, presentation.language, presentation.display_name)
+
+
+def _current_status(value: str, language: ReplyLanguage) -> str:
+    labels = {
+        "office": ("Office", "Pisarna"),
+        "remote": ("Remote work", "Delo na daljavo"),
+        "customer_site": ("Customer site", "Pri stranki"),
+        "break": ("Break", "Odmor"),
+        "absence": ("Absent", "Odsotnost"),
+        "no_status": ("No status", "Brez stanja"),
+    }
+    return labels.get(value.casefold(), (value, value))[1 if language == "sl" else 0]
+
+
 def _event_date(event: AttendanceEvent) -> date | None:
     timestamp = event.checked_in_at or event.checked_out_at
-    return timestamp.date() if timestamp is not None else None
+    return timestamp.astimezone(_REPLY_TIMEZONE).date() if timestamp is not None else None
 
 
 def _sort_events(events: list[AttendanceEvent]) -> list[AttendanceEvent]:
@@ -352,7 +477,7 @@ def _format_date(value: date, language: ReplyLanguage, *, weekday: bool = False)
 
 def _time(value: datetime | None) -> str:
     assert value is not None
-    return value.strftime("%H:%M")
+    return value.astimezone(_REPLY_TIMEZONE).strftime("%H:%M")
 
 
 def _attendance_type(value: str | None, language: ReplyLanguage) -> str:
@@ -394,6 +519,16 @@ def _response(text: str, language: ReplyLanguage, display_name: str | None) -> B
         greeting = "Pozdravljeni" if language == "sl" else "Hello"
         text = f"{greeting}, {name}!\n\n{text}"
     return BotResponse(text=text)
+
+
+def _response_batch(
+    messages: tuple[str, ...], language: ReplyLanguage, display_name: str | None
+) -> BotResponse:
+    name = _safe_display_name(display_name)
+    if name:
+        greeting = "Pozdravljeni" if language == "sl" else "Hello"
+        messages = (f"{greeting}, {name}!\n\n{messages[0]}", *messages[1:])
+    return BotResponse.batch(messages)
 
 
 def _safe_display_name(value: str | None) -> str | None:

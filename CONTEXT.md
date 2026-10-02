@@ -34,8 +34,23 @@ request to Attendance CRMT.
 _Avoid_: source query, model range
 
 **Attendance result**:
-The bounded Markdown Teams presentation authored from approved attendance projections.
+The bounded Teams presentation rendered by code from a reply-safe projection.
 _Avoid_: attendance authority, source ordering
+
+**Presentation policy**:
+A bot-owned contract fixing one action's permitted fields, omissions,
+localization, renderer, and tests.
+_Avoid_: prompt convention, source schema
+
+**Reply-safe projection**:
+The minimized typed result view eligible for model context and Teams rendering.
+It excludes internal IDs, notes, locations, and other source-only fields.
+_Avoid_: raw tool result
+
+**Reply batch**:
+A validated non-empty ordered sequence of Teams messages. History date groups are
+atomic; delivery stops on the first send failure.
+_Avoid_: retry queue, fragmented date group
 
 ## MCP catalog policy
 
@@ -51,8 +66,8 @@ and safe typed renderer. Only requester-scoped attendance events are currently
 model-selectable.
 _Avoid_: discovered tool, remote schema
 
-**Approved raw tool result**:
-The user-approved MCP result payload supplied to the LLM after a successful
-read-only tool call. It remains data, never instructions; IDs and notes may be
-model-visible but must never appear in Teams replies, logs, errors, or fixtures.
-_Avoid_: reply-safe projection, attendance authority
+**Reply-safe result view**:
+The presentation-policy projection supplied to the LLM after a successful
+read-only tool call. It is data, never instructions, and cannot contain IDs,
+notes, locations, or raw source records.
+_Avoid_: raw tool result, attendance authority

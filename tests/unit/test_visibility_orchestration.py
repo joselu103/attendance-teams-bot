@@ -6,7 +6,12 @@ from uuid import UUID
 import pytest
 from pydantic import SecretStr
 
-from attendance_teams_bot.agent.language_model import FinalResponse, ModelRequest, ToolCall
+from attendance_teams_bot.agent.language_model import (
+    FinalResponse,
+    ModelRequest,
+    PresentationPlan,
+    ToolCall,
+)
 from attendance_teams_bot.agent.mcp_catalog import DiscoveredMcpTool
 from attendance_teams_bot.agent.orchestrator import AttendanceAgent
 from attendance_teams_bot.mcp.client import AttendanceToolFailure
@@ -141,12 +146,12 @@ async def test_exact_selector_is_resolved_then_internal_id_only_drives_history()
                     "reply_language": "en",
                 },
             ),
-            FinalResponse("Attendance found", "en"),
+            FinalResponse("ignored", "en", presentation=PresentationPlan("Attendance", None)),
         ]
     )
     assert (
         await agent.handle(message="Alice", mcp_access_token=SecretStr("token"))
-    ).text == "Attendance found"
+    ).text.startswith("**Attendance**")
     assert session.calls == [
         ("resolve_employee", {"email": "alice@example.test"}),
         (
@@ -160,7 +165,8 @@ async def test_exact_selector_is_resolved_then_internal_id_only_drives_history()
             },
         ),
     ]
-    assert model.requests[1].tool_results[0].result["items"][0]["note"] == "private"
+    assert "note" not in repr(model.requests[1].tool_results[0].result)
+    assert "employee_id" not in repr(model.requests[1].tool_results[0].result)
 
 
 @pytest.mark.anyio
@@ -168,15 +174,17 @@ async def test_current_status_fetches_all_pages_and_hides_unknown_before_model()
     agent, model, session = subject(
         [
             ToolCall("x", "get_current_attendance", {"status": "office", "reply_language": "en"}),
-            FinalResponse("Ada is in the office", "en"),
+            FinalResponse(
+                "ignored", "en", presentation=PresentationPlan("Current attendance", None)
+            ),
         ]
     )
     assert (
         await agent.handle(message="Office", mcp_access_token=SecretStr("token"))
-    ).text == "Ada is in the office"
+    ).text == "**Current attendance**\n\n**Office**\n- Ada"
     assert [call[1]["offset"] for call in session.calls] == [0, 50]
-    assert model.requests[1].tool_results[0].result["items"] == [
-        {"display_name": "Ada", "status": "office", "employee_id": 99}
+    assert model.requests[1].tool_results[0].result["statuses"] == [
+        {"status": "office", "count": 1}
     ]
     assert "as_of" not in repr(session.calls)
 
@@ -186,13 +194,15 @@ async def test_current_status_without_a_filter_omits_status_and_fetches_every_pa
     agent, model, session = subject(
         [
             ToolCall("x", "get_current_attendance", {"reply_language": "en"}),
-            FinalResponse("Ada is in the office", "en"),
+            FinalResponse(
+                "ignored", "en", presentation=PresentationPlan("Current attendance", None)
+            ),
         ]
     )
 
     assert (
         await agent.handle(message="Who is working?", mcp_access_token=SecretStr("token"))
-    ).text == ("Ada is in the office")
+    ).text == "**Current attendance**\n\n**Office**\n- Ada"
     assert [call[1] for call in session.calls] == [
         {"limit": 50, "offset": 0},
         {"limit": 50, "offset": 50},
