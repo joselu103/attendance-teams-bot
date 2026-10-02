@@ -33,6 +33,15 @@ class FinalResponse:
     markdown: str
     language: ReplyLanguage
     guidance_kind: GuidanceKind | None = None
+    presentation: PresentationPlan | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class PresentationPlan:
+    """Model-authored non-factual framing for an immutable safe projection."""
+
+    title: str
+    context: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

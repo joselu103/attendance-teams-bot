@@ -11,14 +11,28 @@ bot-owned composite other-employee attendance action only when both
 `resolve_employee` and `list_attendance_events` are admitted, and exposes
 `get_current_attendance` only when its server-current-time schema is admitted.
 The bot resolves exactly one model-provided selector and keeps the resolved ID
-internal; CRMT makes every authorization decision. Current status accepts only
-the six contract statuses, has no `as_of`, and is paged to exhaustion.
+internal; CRMT makes every authorization decision. Current status accepts an
+optional non-empty `statuses` array of the six contract statuses, has no
+`as_of`, and is paged to exhaustion through one MCP request. Omitted `statuses`
+requests the whole office; status grouping is code-owned in the fixed product
+order.
 
-Every policy has a bot-owned `reply_language` enum (`en` or `sl`). By explicit
-user-approved privacy expansion, successful raw MCP tool results are supplied to
-the LLM as data, but never rendered directly or disclosed in logs/errors; final
-replies are rejected if they contain returned internal IDs. Remote descriptions
-and schemas remain outside the prompt.
+Every policy has a bot-owned `reply_language` enum (`en` or `sl`); unsupported
+languages fail closed. Successful MCP results are converted to typed reply-safe
+projections before entering model context. History exposes localized date/time
+and controlled translated punch labels, preserving unmapped labels safely; it
+omits IDs, notes, and locations. Current attendance exposes only names under
+translated non-empty status groups, with no timestamps, locations, or event data.
+Search remains deterministic and directory-safe.
+
+After a result, the model returns a validated presentation plan containing only
+a short title and optional context. Code owns factual blocks, chronology,
+completeness, status membership, translations, empty states, errors, and employee
+selection. A new model-admitted tool needs an explicit presentation policy and
+tests before successful results may be exposed. Long history replies form a
+validated non-empty ordered batch only at complete date-group boundaries; Teams
+delivery is sequential and stops without blind retry on a send failure. Remote
+descriptions and schemas remain outside the prompt.
 
 Before authentication, the configured LLM receives only bot-owned definitions of
 all currently supported read-only actions, the message, and an unverified Teams

@@ -59,6 +59,8 @@ class ToolPolicy:
     def validate_arguments(
         self, arguments: Mapping[str, object]
     ) -> tuple[dict[str, object], ReplyLanguage] | None:
+        if self.kind == "current":
+            return self._validate_current_arguments(arguments)
         if not all(
             isinstance(key, str) and isinstance(value, str) and len(value) <= 254
             for key, value in arguments.items()
@@ -115,13 +117,30 @@ class ToolPolicy:
                 if set(arguments) != {"query", "reply_language"} or not values["query"].strip():
                     return None
                 return ({"query": values["query"].strip(), "limit": 10}, language)
-            if set(arguments) not in ({"reply_language"}, {"status", "reply_language"}):
-                return None
-            if "status" in values and values["status"] not in _STATUS:
-                return None
-            return ({"status": values["status"]} if "status" in values else {}, language)
         except KeyError, ValueError:
             return None
+
+    @staticmethod
+    def _validate_current_arguments(
+        arguments: Mapping[str, object],
+    ) -> tuple[dict[str, object], ReplyLanguage] | None:
+        language = arguments.get("reply_language")
+        if language not in {"en", "sl"}:
+            return None
+        if set(arguments) == {"reply_language"}:
+            return {}, language
+        if set(arguments) != {"statuses", "reply_language"}:
+            return None
+        statuses = arguments["statuses"]
+        if (
+            not isinstance(statuses, list | tuple)
+            or not statuses
+            or len(statuses) > len(_STATUS)
+            or not all(isinstance(status, str) and status in _STATUS for status in statuses)
+            or len(set(statuses)) != len(statuses)
+        ):
+            return None
+        return {"statuses": tuple(statuses)}, language
 
 
 @dataclass(frozen=True, slots=True)
@@ -218,10 +237,16 @@ def canonical_other_attendance_tool() -> ToolDefinition:
 def canonical_current_attendance_tool() -> ToolDefinition:
     return _definition(
         CURRENT_ATTENDANCE_TOOL,
-        "List current workforce attendance, optionally filtered to one approved status; "
+        "List current workforce attendance, optionally filtered to one or more approved statuses; "
         "server time is authoritative.",
         {
-            "status": {"type": "string", "enum": sorted(_STATUS)},
+            "statuses": {
+                "type": "array",
+                "items": {"type": "string", "enum": sorted(_STATUS)},
+                "minItems": 1,
+                "maxItems": len(_STATUS),
+                "uniqueItems": True,
+            },
             "reply_language": {"type": "string", "enum": ["en", "sl"]},
         },
         ["reply_language"],
@@ -293,7 +318,7 @@ def _compatible_other(schema: Mapping[str, object] | None) -> bool:
 
 def _compatible_current(schema: Mapping[str, object] | None) -> bool:
     props = _properties(schema)
-    return props is not None and all(name in props for name in ("status", "limit", "offset"))
+    return props is not None and all(name in props for name in ("statuses", "limit", "offset"))
 
 
 def _compatible_search(schema: Mapping[str, object] | None) -> bool:

@@ -35,11 +35,14 @@ from attendance_teams_bot.agent.mcp_catalog import (
 )
 from attendance_teams_bot.agent.rendering import (
     AttendanceResultPresenter,
+    CurrentAttendancePresentation,
     EmployeeCandidatesPresentation,
     InvalidRequestPresentation,
+    SafeHistoryPresentation,
     ToolFailurePresentation,
     UnavailablePresentation,
     is_safe_model_markdown,
+    valid_presentation_plan,
 )
 from attendance_teams_bot.mcp.client import (
     AttendanceMcpUnavailable,
@@ -52,6 +55,7 @@ from attendance_teams_bot.mcp.contracts import (
     RESOLVE_EMPLOYEE_TOOL,
     SEARCH_EMPLOYEES_TOOL,
     SELF_ATTENDANCE_TOOL,
+    AttendanceEvent,
     AttendanceEventPage,
     CurrentAttendancePage,
     EmployeeSuggestionPage,
@@ -62,6 +66,7 @@ from attendance_teams_bot.observability import current_correlation_id
 MAX_MODEL_CALLS = 3
 PAGE_SIZE = 50
 MAX_CURRENT_PAGES = 200
+_CURRENT_STATUS_ORDER = ("office", "remote", "customer_site", "break", "absence", "no_status")
 _LOGGER = structlog.get_logger(__name__)
 
 
@@ -194,7 +199,7 @@ class AttendanceAgent:
                         language, display_name, correlation_id, "catalog_rejected"
                     )
                 results: list[ToolResultView] = []
-                sensitive: set[str] = set()
+                rendering: SafeHistoryPresentation | CurrentAttendancePresentation | None = None
                 pending_turn: ToolCall | None = ToolCall(
                     "pre-auth-selection", selection.name, selection.arguments
                 )
@@ -219,12 +224,23 @@ class AttendanceAgent:
                             or turn.guidance_kind is not None
                             or turn.language not in {"en", "sl"}
                             or not is_safe_model_markdown(turn.markdown)
-                            or _mentions_sensitive(turn.markdown, sensitive)
+                            or turn.language != language
+                            or rendering is None
+                            or turn.presentation is None
+                            or not valid_presentation_plan(turn.presentation)
                         ):
                             return self._unavailable_with_outcome(
                                 language, display_name, correlation_id, "malformed_final"
                             )
-                        return BotResponse(text=turn.markdown)
+                        if isinstance(rendering, SafeHistoryPresentation):
+                            rendering = SafeHistoryPresentation(
+                                rendering.events, language, display_name, turn.presentation
+                            )
+                        else:
+                            rendering = CurrentAttendancePresentation(
+                                rendering.status_names, language, display_name, turn.presentation
+                            )
+                        return self.presenter.present(rendering)
                     if call_count == MAX_MODEL_CALLS:
                         return self._unavailable(language, display_name)
                     policy = catalog.selected_tool(turn.name)
@@ -241,8 +257,20 @@ class AttendanceAgent:
                         return self.presenter.present(
                             EmployeeCandidatesPresentation(result.items, language, display_name)
                         )
-                    sensitive.update(_internal_values(result))
-                    results.append(ToolResultView(turn.id, policy.definition.name, result))
+                    if policy.kind in {"self", "other"}:
+                        raw_items = result.get("items")
+                        if not isinstance(raw_items, list):
+                            raise McpContractIncompatible
+                        events = tuple(AttendanceEvent.model_validate(item) for item in raw_items)
+                        rendering = SafeHistoryPresentation(events, language, display_name, None)
+                        projection = _history_projection(events, language)
+                    else:
+                        status_names = _current_status_names(result)
+                        rendering = CurrentAttendancePresentation(
+                            status_names, language, display_name, None
+                        )
+                        projection = _current_projection(status_names, language)
+                    results.append(ToolResultView(turn.id, policy.definition.name, projection))
         except asyncio.CancelledError:
             raise
         except AttendanceToolFailure as error:
@@ -297,8 +325,12 @@ class AttendanceAgent:
             if not isinstance(result, EmployeeSuggestionPage):
                 raise McpContractIncompatible
             return result
-        status = arguments.get("status")
-        return await _all_current_pages(session, str(status) if status is not None else None)
+        statuses = arguments.get("statuses")
+        if not isinstance(statuses, tuple) or not all(
+            isinstance(status, str) for status in statuses
+        ):
+            return await _all_current_pages(session, None)
+        return await _all_current_pages(session, statuses)
 
     def _unavailable(self, language: ReplyLanguage, display_name: str | None) -> BotResponse:
         return self.presenter.present(UnavailablePresentation(language, display_name))
@@ -342,14 +374,14 @@ async def _all_attendance_pages(
 
 
 async def _all_current_pages(
-    session: AuthenticatedMcpSession, status: str | None
+    session: AuthenticatedMcpSession, statuses: tuple[str, ...] | None
 ) -> dict[str, object]:
     items: list[dict[str, object]] = []
     offset = 0
     for _ in range(MAX_CURRENT_PAGES):
         arguments: dict[str, object] = {"limit": PAGE_SIZE, "offset": offset}
-        if status is not None:
-            arguments["status"] = status
+        if statuses is not None:
+            arguments["statuses"] = list(statuses)
         page = await session.call_tool(name=CURRENT_ATTENDANCE_TOOL, arguments=arguments)
         if (
             not isinstance(page, CurrentAttendancePage)
@@ -363,13 +395,64 @@ async def _all_current_pages(
         )
         if page.next_offset is None:
             result: dict[str, object] = {"items": items, "complete": True}
-            if status is not None:
-                result["status"] = status
             return result
         if page.next_offset <= offset:
             raise McpContractIncompatible
         offset = page.next_offset
     raise McpContractIncompatible
+
+
+def _history_projection(
+    events: tuple[AttendanceEvent, ...], language: ReplyLanguage
+) -> dict[str, object]:
+    """Send the model only non-sensitive shape metadata, never source records."""
+    dates: set[str] = set()
+    for event in events:
+        timestamp = event.checked_in_at or event.checked_out_at
+        if timestamp is not None:
+            dates.add(timestamp.date().isoformat())
+    return {
+        "kind": "attendance_history",
+        "language": language,
+        "date_groups": sorted(dates),
+        "has_records": bool(events),
+    }
+
+
+def _current_status_names(result: Mapping[str, object]) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    groups: dict[str, list[str]] = {}
+    items = result.get("items")
+    if not isinstance(items, list):
+        return ()
+    for item in items:
+        if not isinstance(item, Mapping):
+            continue
+        status = item.get("status")
+        name = item.get("display_name", item.get("employee_name", item.get("name")))
+        if not isinstance(name, str):
+            first_name, last_name = item.get("first_name"), item.get("last_name")
+            if isinstance(first_name, str) and isinstance(last_name, str):
+                name = f"{first_name} {last_name}"
+        if not isinstance(status, str) or not isinstance(name, str):
+            continue
+        normalized_name = " ".join(name.split())
+        if normalized_name and len(normalized_name) <= 160:
+            groups.setdefault(status, []).append(normalized_name)
+    return tuple(
+        (status, tuple(sorted(set(groups[status]), key=str.casefold)))
+        for status in _CURRENT_STATUS_ORDER
+        if groups.get(status)
+    )
+
+
+def _current_projection(
+    status_names: tuple[tuple[str, tuple[str, ...]], ...], language: ReplyLanguage
+) -> dict[str, object]:
+    return {
+        "kind": "current_attendance",
+        "language": language,
+        "statuses": [{"status": status, "count": len(names)} for status, names in status_names],
+    }
 
 
 def _internal_values(value: object, key: str = "") -> set[str]:

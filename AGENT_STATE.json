@@ -4,17 +4,18 @@
   "provided_exports": {
     "interfaces_or_endpoints": [
       "Provider-neutral bounded LanguageModel agent-loop interface with OpenAI tool calls, approved result views, and structured Teams Markdown final replies",
-      "One-shot authenticated MCP 1.2.0 discovery retains the bounded read-only allowlist and exposes bot-owned self, exact-selector other-attendance, optional-filter current-status, and directory-safe employee-search policies when their MCP tools are admitted",
+      "One-shot authenticated MCP 1.3.0 discovery retains the bounded read-only allowlist and exposes bot-owned self, exact-selector other-attendance, optional statuses-array current-status, and directory-safe employee-search policies when their MCP tools are admitted",
       "Authenticated Teams personal-chat flow accepts optional current-status as_of discovery without exposing or forwarding it, splits self and other history up to twelve calendar months into inclusive 31-day windows, pages each window and current status to exhaustion, and prevents model attendance claims before successful tool data",
       "Name search renders deterministic directory-safe candidates and requires a newly messaged listed username or email before a later exact-selector attendance read; resolved IDs remain internal",
       "Two-stage LLM routing makes a pre-auth guidance decision from bot-owned read-only action definitions and an unverified presentation-only Teams display name; safe greeting, clarification, and attendance-only scope guidance end with zero SSO/OBO/MCP/REST activity, while a validated selection enters the existing single SSO/OBO and live MCP catalog admission path",
-      "TEAMS-LLM-GUIDANCE-ROUTING-001 verification: `uv run pytest tests/unit/test_authenticated_handler.py tests/unit/test_agent_orchestrator.py tests/unit/test_openai_language_model.py tests/integration/test_authenticated_attendance_flow.py -q` (20 passed), `uv run pytest -q` (136 passed), `uv run ruff check src tests` (passed), `uv run ruff format --check src tests` (54 files already formatted), and `uv run mypy --strict src` (Success: no issues found in 29 source files); MCP 1.2.0 and REST v1 contracts, OBO handling, live-catalog authority, and downstream interfaces are unchanged"
+      "TEAMS-LLM-GUIDANCE-ROUTING-001 verification: `uv run pytest tests/unit/test_authenticated_handler.py tests/unit/test_agent_orchestrator.py tests/unit/test_openai_language_model.py tests/integration/test_authenticated_attendance_flow.py -q` (20 passed), `uv run pytest -q` (136 passed), `uv run ruff check src tests` (passed), `uv run ruff format --check src tests` (54 files already formatted), and `uv run mypy --strict src` (Success: no issues found in 29 source files); MCP 1.2.0 and REST v1 contracts, OBO handling, live-catalog authority, and downstream interfaces are unchanged",
+      "TEAMS-TOOL-REPLY-PRESENTATION-001: self/other history, current attendance, and employee search now use explicit bot-owned presentation policies. The model receives reply-safe result shape metadata and can provide only a validated presentation title/context; code renders localized immutable history blocks or status-grouped current names, deterministic search/errors, and validated ordered reply batches. Raw IDs, notes, locations, and source records are omitted. The current-status projection composes REST v1 `first_name` and `last_name` when no display-name field is present, selects filters through one MCP 1.3.0 statuses-array call, and groups the response in product order. A single Slovenian/English equivalence table covers all database punch labels in both directions and preserves exact database Slovenian labels. REST v1 remains additive; local verification is recorded in the root handoff."
     ],
     "events": []
   },
   "dependencies_needed": {
     "attendance-mcp": [
-      "Deployed non-production HTTPS /mcp endpoint implementing contract 1.2.0; initialization is MCP-only and makes no REST admission call",
+      "Deployed non-production HTTPS /mcp endpoint implementing contract 1.3.0; initialization is MCP-only and makes no REST admission call",
       "Attendance REST API Microsoft Entra registration exposing attendance.access",
       "Approved delegated OBO consent and production certificate configuration"
     ],
@@ -27,8 +28,7 @@
     "Real Teams attendance traffic remains disabled until the Entra API registration, delegated OBO consent, certificate, and deployed HTTPS MCP prerequisites are configured and verified end to end.",
     "OpenAI operational and privacy approval for processing Teams message text remains an external activation prerequisite.",
     "Production identity mapping and attendance-data behavior require end-to-end verification against the deployed attendance-mcp boundary and Attendance REST API.",
-    "Organizational privacy/provider approval is required before approved attendance projections are sent to the configured LLM provider; this behavior remains an external activation prerequisite.",
-    "The user-approved raw tool-result model visibility expansion still requires operational/privacy activation approval before real traffic is enabled.",
+    "Organizational privacy/provider approval is required before reply-safe attendance projections are sent to the configured LLM provider; this behavior remains an external activation prerequisite.",
     "Durable language preference and rich outputs remain governed follow-up issues #21 and #22."
   ]
 }

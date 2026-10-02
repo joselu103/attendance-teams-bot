@@ -134,7 +134,7 @@ class SsoOboAttendanceTurnHandler:
             message=message, display_name=display_name
         )
         if isinstance(decision, BotResponse):
-            await context.send_activity(decision.text)
+            await self._send_response(context, decision)
             return
         correlation_id = current_correlation_id()
         logger = _LOGGER.bind(correlation_id=str(correlation_id))
@@ -186,7 +186,7 @@ class SsoOboAttendanceTurnHandler:
 
             step = "teams_reply_delivery"
             try:
-                await context.send_activity(response.text)
+                await self._send_response(context, response)
             except Exception as error:
                 logger.log(
                     logging.ERROR,
@@ -221,6 +221,14 @@ class SsoOboAttendanceTurnHandler:
         )
         lifecycle.fail(error)
         await context.send_activity(_SAFE_AUTHENTICATION_REPLY)
+
+    @staticmethod
+    async def _send_response(
+        context: BotServiceAuthenticatedTurnContext, response: BotResponse
+    ) -> None:
+        """Deliver a validated batch in order; a failed send is deliberately not retried."""
+        for message in response.messages:
+            await context.send_activity(message)
 
     @staticmethod
     def _display_name(context: BotServiceAuthenticatedTurnContext) -> str | None:
