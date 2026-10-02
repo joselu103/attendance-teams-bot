@@ -108,6 +108,28 @@ async def test_openai_rejects_parallel_or_malformed_final_and_marks_results_as_d
 
 
 @pytest.mark.anyio
+async def test_openai_omits_tool_call_parameters_for_the_post_result_reply() -> None:
+    completion = FakeCompletion(
+        Completion((Choice(Message('{"messages":["Attendance found"],"language":"en"}')),))
+    )
+    model = OpenAiLanguageModel(completion, "test")
+
+    response = await model.complete(
+        ModelRequest(
+            "show",
+            date(2026, 8, 15),
+            "Europe/Ljubljana",
+            (),
+            (ToolResultView("execution", "list_my_attendance_events", {"items": []}),),
+        )
+    )
+
+    assert response == FinalResponse("Attendance found", "en", messages=("Attendance found",))
+    assert "tools" not in completion.requests[0]
+    assert "parallel_tool_calls" not in completion.requests[0]
+
+
+@pytest.mark.anyio
 async def test_openai_pre_auth_guidance_includes_display_name_and_requires_scope_kind() -> None:
     completion = FakeCompletion(
         Completion(
