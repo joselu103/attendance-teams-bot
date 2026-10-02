@@ -274,6 +274,6 @@ def test_current_attendance_exposes_only_status_grouped_names() -> None:
     )
 
     assert (
-        response.text == "**Trenutna prisotnost**\n\n**Pisarna**\n- Ada Example\n\n"
-        "**Delo na daljavo**\n- Blaž Example"
+        response.text == "**Trenutna prisotnost**\n\n**Delo na firmi**\n- Ada Example\n\n"
+        "**Delo od doma**\n- Blaž Example"
     )

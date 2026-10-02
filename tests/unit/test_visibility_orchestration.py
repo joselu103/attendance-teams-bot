@@ -13,7 +13,7 @@ from attendance_teams_bot.agent.language_model import (
     ToolCall,
 )
 from attendance_teams_bot.agent.mcp_catalog import DiscoveredMcpTool
-from attendance_teams_bot.agent.orchestrator import AttendanceAgent
+from attendance_teams_bot.agent.orchestrator import AttendanceAgent, _current_status_names
 from attendance_teams_bot.mcp.client import AttendanceToolFailure
 from attendance_teams_bot.mcp.contracts import (
     AttendanceEvent,
@@ -43,7 +43,7 @@ def catalog() -> tuple[DiscoveredMcpTool, ...]:
             "list_attendance_events",
             {"employee_id": {}, "start_date": {}, "end_date": {}, "limit": {}, "offset": {}},
         ),
-        tool("get_current_attendance", {"as_of": {}, "status": {}, "limit": {}, "offset": {}}),
+        tool("get_current_attendance", {"statuses": {}, "limit": {}, "offset": {}}),
         tool("search_employees", {"query": {}, "limit": {}}),
     )
 
@@ -176,7 +176,9 @@ async def test_exact_selector_is_resolved_then_internal_id_only_drives_history()
 async def test_current_status_fetches_all_pages_and_hides_unknown_before_model() -> None:
     agent, model, session = subject(
         [
-            ToolCall("x", "get_current_attendance", {"status": "office", "reply_language": "en"}),
+            ToolCall(
+                "x", "get_current_attendance", {"statuses": ["office"], "reply_language": "en"}
+            ),
             FinalResponse(
                 "ignored", "en", presentation=PresentationPlan("Current attendance", None)
             ),
@@ -185,7 +187,10 @@ async def test_current_status_fetches_all_pages_and_hides_unknown_before_model()
     assert (
         await agent.handle(message="Office", mcp_access_token=SecretStr("token"))
     ).text == "**Current attendance**\n\n**Office**\n- Ada"
-    assert [call[1]["offset"] for call in session.calls] == [0, 50]
+    assert [call[1] for call in session.calls] == [
+        {"statuses": ["office"], "limit": 50, "offset": 0},
+        {"statuses": ["office"], "limit": 50, "offset": 50},
+    ]
     assert model.requests[1].tool_results[0].result["statuses"] == [
         {"status": "office", "count": 1}
     ]
@@ -196,7 +201,9 @@ async def test_current_status_fetches_all_pages_and_hides_unknown_before_model()
 async def test_current_status_uses_the_rest_contract_first_and_last_name_fields() -> None:
     agent, _, session = subject(
         [
-            ToolCall("x", "get_current_attendance", {"status": "office", "reply_language": "en"}),
+            ToolCall(
+                "x", "get_current_attendance", {"statuses": ["office"], "reply_language": "en"}
+            ),
             FinalResponse(
                 "ignored", "en", presentation=PresentationPlan("Current attendance", None)
             ),
@@ -234,6 +241,81 @@ async def test_current_status_without_a_filter_omits_status_and_fetches_every_pa
     assert "status" not in model.requests[1].tool_results[0].result
 
 
+def test_current_status_groups_follow_the_business_status_order() -> None:
+    groups = _current_status_names(
+        {
+            "items": [
+                {"display_name": "No status", "status": "no_status"},
+                {"display_name": "Break", "status": "break"},
+                {"display_name": "Remote", "status": "remote"},
+                {"display_name": "Absent", "status": "absence"},
+                {"display_name": "Office", "status": "office"},
+                {"display_name": "Customer", "status": "customer_site"},
+            ]
+        }
+    )
+
+    assert [status for status, _ in groups] == [
+        "office",
+        "remote",
+        "customer_site",
+        "break",
+        "absence",
+        "no_status",
+    ]
+
+
+@dataclass
+class MultiStatusSession(Session):
+    async def call_tool(self, *, name: str, arguments: dict[str, object]) -> object:
+        self.calls.append((name, arguments))
+        if name == "get_current_attendance":
+            statuses = arguments["statuses"]
+            if not isinstance(statuses, list):
+                raise AssertionError("expected an MCP statuses array")
+            names = {"office": "Office employee", "remote": "Remote employee"}
+            return CurrentAttendancePage(
+                items=tuple(
+                    {"display_name": names[status], "status": status} for status in statuses
+                ),
+                limit=50,
+                offset=0,
+                next_offset=None,
+            )
+        return await super().call_tool(name=name, arguments=arguments)
+
+
+@pytest.mark.anyio
+async def test_current_status_accepts_and_combines_multiple_requested_statuses() -> None:
+    model = Model(
+        [
+            ToolCall(
+                "selection",
+                "get_current_attendance",
+                {"statuses": ["office", "remote"], "reply_language": "en"},
+            ),
+            FinalResponse(
+                "ignored", "en", presentation=PresentationPlan("Current attendance", None)
+            ),
+        ]
+    )
+    session = MultiStatusSession()
+    agent = AttendanceAgent(
+        model,
+        Factory(session),
+        correlation_id_factory=lambda: UUID(int=1),
+        reference_date_factory=lambda: date(2026, 8, 15),
+    )
+
+    response = await agent.handle(message="office or home", mcp_access_token=SecretStr("token"))
+
+    assert [call[1] for call in session.calls] == [
+        {"statuses": ["office", "remote"], "limit": 50, "offset": 0}
+    ]
+    assert "**Office**\n- Office employee" in response.text
+    assert "**Remote work**\n- Remote employee" in response.text
+
+
 @pytest.mark.anyio
 async def test_rejects_multiple_selectors_unknown_status_and_internal_ids_in_reply() -> None:
     agent, _, session = subject(
@@ -257,7 +339,13 @@ async def test_rejects_multiple_selectors_unknown_status_and_internal_ids_in_rep
     )
     assert not session.calls
     agent, _, _ = subject(
-        [ToolCall("x", "get_current_attendance", {"status": "unknown", "reply_language": "en"})]
+        [
+            ToolCall(
+                "x",
+                "get_current_attendance",
+                {"statuses": ["unknown"], "reply_language": "en"},
+            )
+        ]
     )
     assert (
         "temporarily unavailable"

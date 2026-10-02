@@ -11,8 +11,11 @@ bot-owned composite other-employee attendance action only when both
 `resolve_employee` and `list_attendance_events` are admitted, and exposes
 `get_current_attendance` only when its server-current-time schema is admitted.
 The bot resolves exactly one model-provided selector and keeps the resolved ID
-internal; CRMT makes every authorization decision. Current status accepts only
-the six contract statuses, has no `as_of`, and is paged to exhaustion.
+internal; CRMT makes every authorization decision. Current status accepts an
+optional non-empty `statuses` array of the six contract statuses, has no
+`as_of`, and is paged to exhaustion through one MCP request. Omitted `statuses`
+requests the whole office; status grouping is code-owned in the fixed product
+order.
 
 Every policy has a bot-owned `reply_language` enum (`en` or `sl`); unsupported
 languages fail closed. Successful MCP results are converted to typed reply-safe

@@ -52,6 +52,12 @@ A validated non-empty ordered sequence of Teams messages. History date groups ar
 atomic; delivery stops on the first send failure.
 _Avoid_: retry queue, fragmented date group
 
+**Current-status filter set**:
+An optional, unique non-empty set of the six user-facing current-attendance
+statuses supplied by the model to one MCP request. Omission means the whole
+office; code controls grouping and its fixed display order.
+_Avoid_: per-status fan-out, model-owned ordering
+
 ## MCP catalog policy
 
 **Discovery admission**:

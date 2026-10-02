@@ -66,6 +66,7 @@ from attendance_teams_bot.observability import current_correlation_id
 MAX_MODEL_CALLS = 3
 PAGE_SIZE = 50
 MAX_CURRENT_PAGES = 200
+_CURRENT_STATUS_ORDER = ("office", "remote", "customer_site", "break", "absence", "no_status")
 _LOGGER = structlog.get_logger(__name__)
 
 
@@ -324,8 +325,12 @@ class AttendanceAgent:
             if not isinstance(result, EmployeeSuggestionPage):
                 raise McpContractIncompatible
             return result
-        status = arguments.get("status")
-        return await _all_current_pages(session, str(status) if status is not None else None)
+        statuses = arguments.get("statuses")
+        if not isinstance(statuses, tuple) or not all(
+            isinstance(status, str) for status in statuses
+        ):
+            return await _all_current_pages(session, None)
+        return await _all_current_pages(session, statuses)
 
     def _unavailable(self, language: ReplyLanguage, display_name: str | None) -> BotResponse:
         return self.presenter.present(UnavailablePresentation(language, display_name))
@@ -369,14 +374,14 @@ async def _all_attendance_pages(
 
 
 async def _all_current_pages(
-    session: AuthenticatedMcpSession, status: str | None
+    session: AuthenticatedMcpSession, statuses: tuple[str, ...] | None
 ) -> dict[str, object]:
     items: list[dict[str, object]] = []
     offset = 0
     for _ in range(MAX_CURRENT_PAGES):
         arguments: dict[str, object] = {"limit": PAGE_SIZE, "offset": offset}
-        if status is not None:
-            arguments["status"] = status
+        if statuses is not None:
+            arguments["statuses"] = list(statuses)
         page = await session.call_tool(name=CURRENT_ATTENDANCE_TOOL, arguments=arguments)
         if (
             not isinstance(page, CurrentAttendancePage)
@@ -390,8 +395,6 @@ async def _all_current_pages(
         )
         if page.next_offset is None:
             result: dict[str, object] = {"items": items, "complete": True}
-            if status is not None:
-                result["status"] = status
             return result
         if page.next_offset <= offset:
             raise McpContractIncompatible
@@ -436,9 +439,9 @@ def _current_status_names(result: Mapping[str, object]) -> tuple[tuple[str, tupl
         if normalized_name and len(normalized_name) <= 160:
             groups.setdefault(status, []).append(normalized_name)
     return tuple(
-        (status, tuple(sorted(set(names), key=str.casefold)))
-        for status, names in sorted(groups.items(), key=lambda group: group[0].casefold())
-        if names
+        (status, tuple(sorted(set(groups[status]), key=str.casefold)))
+        for status in _CURRENT_STATUS_ORDER
+        if groups.get(status)
     )
 
 

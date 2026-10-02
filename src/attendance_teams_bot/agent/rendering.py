@@ -437,12 +437,12 @@ def _current_batch(presentation: CurrentAttendancePresentation) -> BotResponse:
 
 def _current_status(value: str, language: ReplyLanguage) -> str:
     labels = {
-        "office": ("Office", "Pisarna"),
-        "remote": ("Remote work", "Delo na daljavo"),
-        "customer_site": ("Customer site", "Pri stranki"),
-        "break": ("Break", "Odmor"),
-        "absence": ("Absent", "Odsotnost"),
-        "no_status": ("No status", "Brez stanja"),
+        "office": ("Office", "Delo na firmi"),
+        "remote": ("Remote work", "Delo od doma"),
+        "customer_site": ("Customer site", "Delo pri stranki"),
+        "break": ("Lunch break", "Na malici"),
+        "absence": ("Absent", "Odsotni"),
+        "no_status": ("No status", "Ni statusa"),
     }
     return labels.get(value.casefold(), (value, value))[1 if language == "sl" else 0]
 

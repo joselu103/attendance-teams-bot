@@ -165,8 +165,9 @@ their required MCP schemas are present. A name search renders directory-safe
 candidates and requires the user to send a listed username or email in a new
 message before an attendance read. The model never receives or chooses a
 resolved employee ID; CRMT remains responsible for authorization. Current status
-uses server time, optionally accepts only `office`, `remote`, `customer_site`,
-`break`, `absence`, and `no_status`, and is fetched through every available page.
+uses server time, optionally accepts a `statuses` array containing only `office`,
+`remote`, `customer_site`, `break`, `absence`, and `no_status`, and is fetched
+through every available page in one MCP request.
 Every model call receives only its bot-owned schema, including `reply_language`
 restricted to `en` or `sl`; remote discovery metadata and disabled tools are
 never prompted. The model receives the Ljubljana reference date and resolves
@@ -179,7 +180,7 @@ and authority are never model-controlled.
 The first enabled slice supports only personal one-to-one chats. Group, meeting,
 channel, missing, and unknown conversation scope stop before SSO, OBO, OpenAI,
 or MCP. The bot calls the public attendance-mcp MCP contract
-[`1.2.0`](../attendance-crmt/docs/integrations/teams-bot-mcp-auth-contract.md)
+`1.3.0`
 through bounded sequential, non-parallel model calls. By explicit user approval,
 the next model turn receives raw successful read-only MCP results as data, never
 instructions. This policy expansion does not permit raw rendering: IDs, notes,
