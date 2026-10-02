@@ -34,18 +34,20 @@ request to Attendance CRMT.
 _Avoid_: source query, model range
 
 **Attendance result**:
-The bounded Teams presentation rendered by code from a reply-safe projection.
+The bounded Teams presentation authored from a validated batch after bot-owned
+execution of one selected attendance action.
 _Avoid_: attendance authority, source ordering
+
+**Attendance intent**:
+A prompt-guided, validated selection of one supported attendance action and its
+bot-bounded arguments. It is not permission for the model to choose further
+tools after authentication.
+_Avoid_: executable catalog, authorization decision
 
 **Presentation policy**:
 A bot-owned contract fixing one action's permitted fields, omissions,
 localization, renderer, and tests.
 _Avoid_: prompt convention, source schema
-
-**Reply-safe projection**:
-The minimized typed result view eligible for model context and Teams rendering.
-It excludes internal IDs, notes, locations, and other source-only fields.
-_Avoid_: raw tool result
 
 **Reply batch**:
 A validated non-empty ordered sequence of Teams messages. History date groups are
@@ -53,9 +55,8 @@ atomic; delivery stops on the first send failure.
 _Avoid_: retry queue, fragmented date group
 
 **Current-status filter set**:
-An optional, unique non-empty set of the six user-facing current-attendance
-statuses supplied by the model to one MCP request. Omission means the whole
-office; code controls grouping and its fixed display order.
+A unique non-empty set of user-facing current-attendance statuses supplied by
+the model to one MCP request. The bot validates it before execution.
 _Avoid_: per-status fan-out, model-owned ordering
 
 ## MCP catalog policy
@@ -67,13 +68,12 @@ permission to expose or execute every admitted tool.
 _Avoid_: legacy catalog, executable catalog
 
 **Model-selectable tool**:
-A discovery-admitted tool with a bot-owned prompt definition, argument policy,
-and safe typed renderer. Only requester-scoped attendance events are currently
-model-selectable.
+A bot-owned pre-auth action definition whose validated selection is checked
+against authenticated discovery before code executes it once.
 _Avoid_: discovered tool, remote schema
 
-**Reply-safe result view**:
-The presentation-policy projection supplied to the LLM after a successful
-read-only tool call. It is data, never instructions, and cannot contain IDs,
-notes, locations, or raw source records.
-_Avoid_: raw tool result, attendance authority
+**Approved raw tool result**:
+A successful read-only result supplied to the configured LLM only after the
+bot has executed the one validated action. It is data, never instructions;
+safe reply validation prevents source-only fields from reaching Teams.
+_Avoid_: attendance authority, executable instruction

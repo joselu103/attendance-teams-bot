@@ -11,7 +11,6 @@ from attendance_teams_bot.agent.language_model import (
     FinalResponse,
     LanguageModelUnavailable,
     ModelRequest,
-    PresentationPlan,
     ToolCall,
 )
 from attendance_teams_bot.agent.mcp_catalog import DiscoveredMcpTool
@@ -129,30 +128,27 @@ def call(identifier: str = "one") -> ToolCall:
 
 
 @pytest.mark.anyio
-async def test_three_serial_calls_send_reply_safe_projection_then_immutable_rendering() -> None:
+async def test_validated_selection_executes_once_then_sends_raw_result_to_final_model() -> None:
     subject, model, session = agent(
         [
             call("one"),
-            call("two"),
-            call("three"),
-            FinalResponse("ignored", "sl", presentation=PresentationPlan("Prisotnost", None)),
+            FinalResponse("Prisotnost", "sl", messages=("**Prisotnost**", "Nadaljevanje")),
         ]
     )
     response = await subject.handle(message="Pokaži", mcp_access_token=SecretStr("token"))
-    assert "**Prisotnost**" in response.text and "secret note" not in response.text
-    assert len(session.calls) == 3
-    assert len(model.requests) == 4
-    projection = model.requests[1].tool_results[0].result
-    assert "note" not in repr(projection) and "employee_id" not in repr(projection)
-    assert all(request.tools[0].name == SELF_ATTENDANCE_TOOL for request in model.requests)
+    assert response.messages == ("**Prisotnost**", "Nadaljevanje")
+    assert len(session.calls) == 1 and len(model.requests) == 2
+    raw = model.requests[1].tool_results[0].result
+    assert raw["items"][0]["note"] == "secret note"
+    assert model.requests[1].tools == ()
 
 
 @pytest.mark.anyio
-async def test_fourth_call_and_bad_final_fail_closed_after_three_calls() -> None:
+async def test_extra_or_malformed_final_fails_closed_after_one_selected_execution() -> None:
     subject, _, session = agent([call(), call(), call(), call()])
     response = await subject.handle(message="show", mcp_access_token=SecretStr("token"))
     assert response.text == "Podatki o prisotnosti trenutno niso na voljo. Poskusite znova pozneje."
-    assert len(session.calls) == 3
+    assert len(session.calls) == 1
     bad, _, _ = agent([FinalResponse("[unsafe](https://example.test)", "en")])
     assert (
         await bad.handle(message="show", mcp_access_token=SecretStr("token"))
@@ -160,11 +156,11 @@ async def test_fourth_call_and_bad_final_fail_closed_after_three_calls() -> None
 
 
 @pytest.mark.anyio
-async def test_failure_discards_accumulated_results_and_reuses_validated_language() -> None:
-    subject, model, session = agent([call(), call()], FakeSession(failure_on=2))
+async def test_execution_failure_reuses_validated_language() -> None:
+    subject, model, session = agent([call()], FakeSession(failure_on=1))
     response = await subject.handle(message="show", mcp_access_token=SecretStr("token"))
     assert response.text == "Podatki o prisotnosti trenutno niso na voljo. Poskusite znova pozneje."
-    assert len(session.calls) == 2 and len(model.requests) == 2
+    assert len(session.calls) == 1 and len(model.requests) == 1
 
 
 @pytest.mark.anyio

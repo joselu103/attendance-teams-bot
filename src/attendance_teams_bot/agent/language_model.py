@@ -34,6 +34,7 @@ class FinalResponse:
     language: ReplyLanguage
     guidance_kind: GuidanceKind | None = None
     presentation: PresentationPlan | None = None
+    messages: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

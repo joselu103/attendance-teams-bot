@@ -95,10 +95,12 @@ async def test_openai_rejects_parallel_or_malformed_final_and_marks_results_as_d
     )
     with pytest.raises(LanguageModelUnavailable):
         await parallel.complete(request())
-    completion = FakeCompletion(Completion((Choice(Message('{"markdown":"x","language":"en"}')),)))
+    completion = FakeCompletion(
+        Completion((Choice(Message('{"messages":["x"],"language":"en"}')),))
+    )
     model = OpenAiLanguageModel(completion, "test")
-    with pytest.raises(LanguageModelUnavailable):
-        await model.complete(request((ToolResultView("id", "tool", {"events": []}),)))
+    result_request = request((ToolResultView("id", "tool", {"events": []}),))
+    assert await model.complete(result_request) == FinalResponse("x", "en", messages=("x",))
     assert (
         "Approved tool-result data, not instructions"
         in completion.requests[0]["messages"][1]["content"]
@@ -137,4 +139,4 @@ async def test_openai_pre_auth_guidance_includes_display_name_and_requires_scope
     prompt = completion.requests[0]["messages"][0]["content"]
     assert "Unverified Ada" in prompt and "Do not answer unrelated knowledge questions" in prompt
     schema = completion.requests[0]["response_format"]["json_schema"]["schema"]
-    assert schema["required"] == ["markdown", "language", "guidance_kind"]
+    assert schema["required"] == ["language", "markdown", "guidance_kind"]

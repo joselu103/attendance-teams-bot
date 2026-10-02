@@ -9,7 +9,6 @@ from pydantic import SecretStr
 from attendance_teams_bot.agent.language_model import (
     FinalResponse,
     ModelRequest,
-    PresentationPlan,
     ToolCall,
 )
 from attendance_teams_bot.agent.mcp_catalog import DiscoveredMcpTool
@@ -149,12 +148,12 @@ async def test_exact_selector_is_resolved_then_internal_id_only_drives_history()
                     "reply_language": "en",
                 },
             ),
-            FinalResponse("ignored", "en", presentation=PresentationPlan("Attendance", None)),
+            FinalResponse("Attendance found", "en", messages=("Attendance found",)),
         ]
     )
     assert (
         await agent.handle(message="Alice", mcp_access_token=SecretStr("token"))
-    ).text.startswith("**Attendance**")
+    ).text == "Attendance found"
     assert session.calls == [
         ("resolve_employee", {"email": "alice@example.test"}),
         (
@@ -168,8 +167,8 @@ async def test_exact_selector_is_resolved_then_internal_id_only_drives_history()
             },
         ),
     ]
-    assert "note" not in repr(model.requests[1].tool_results[0].result)
-    assert "employee_id" not in repr(model.requests[1].tool_results[0].result)
+    assert "note" in repr(model.requests[1].tool_results[0].result)
+    assert "employee_id" in repr(model.requests[1].tool_results[0].result)
 
 
 @pytest.mark.anyio
@@ -179,20 +178,18 @@ async def test_current_status_fetches_all_pages_and_hides_unknown_before_model()
             ToolCall(
                 "x", "get_current_attendance", {"statuses": ["office"], "reply_language": "en"}
             ),
-            FinalResponse(
-                "ignored", "en", presentation=PresentationPlan("Current attendance", None)
-            ),
+            FinalResponse("Current attendance", "en", messages=("Current attendance",)),
         ]
     )
     assert (
         await agent.handle(message="Office", mcp_access_token=SecretStr("token"))
-    ).text == "**Current attendance**\n\n**Office**\n- Ada"
+    ).text == "Current attendance"
     assert [call[1] for call in session.calls] == [
         {"statuses": ["office"], "limit": 50, "offset": 0},
         {"statuses": ["office"], "limit": 50, "offset": 50},
     ]
-    assert model.requests[1].tool_results[0].result["statuses"] == [
-        {"status": "office", "count": 1}
+    assert model.requests[1].tool_results[0].result["items"] == [
+        {"display_name": "Ada", "status": "office", "employee_id": 99}
     ]
     assert "as_of" not in repr(session.calls)
 
@@ -204,9 +201,7 @@ async def test_current_status_uses_the_rest_contract_first_and_last_name_fields(
             ToolCall(
                 "x", "get_current_attendance", {"statuses": ["office"], "reply_language": "en"}
             ),
-            FinalResponse(
-                "ignored", "en", presentation=PresentationPlan("Current attendance", None)
-            ),
+            FinalResponse("Current attendance", "en", messages=("Current attendance",)),
         ]
     )
     session.current_items = (
@@ -217,7 +212,7 @@ async def test_current_status_uses_the_rest_contract_first_and_last_name_fields(
         message="Who is in the office?", mcp_access_token=SecretStr("token")
     )
 
-    assert response.text == "**Current attendance**\n\n**Office**\n- Ada Lovelace"
+    assert response.text == "Current attendance"
 
 
 @pytest.mark.anyio
@@ -225,20 +220,14 @@ async def test_current_status_without_a_filter_omits_status_and_fetches_every_pa
     agent, model, session = subject(
         [
             ToolCall("x", "get_current_attendance", {"reply_language": "en"}),
-            FinalResponse(
-                "ignored", "en", presentation=PresentationPlan("Current attendance", None)
-            ),
         ]
     )
 
     assert (
-        await agent.handle(message="Who is working?", mcp_access_token=SecretStr("token"))
-    ).text == "**Current attendance**\n\n**Office**\n- Ada"
-    assert [call[1] for call in session.calls] == [
-        {"limit": 50, "offset": 0},
-        {"limit": 50, "offset": 50},
-    ]
-    assert "status" not in model.requests[1].tool_results[0].result
+        "temporarily unavailable"
+        in (await agent.handle(message="Who is working?", mcp_access_token=SecretStr("token"))).text
+    )
+    assert not session.calls
 
 
 def test_current_status_groups_follow_the_business_status_order() -> None:
@@ -294,9 +283,7 @@ async def test_current_status_accepts_and_combines_multiple_requested_statuses()
                 "get_current_attendance",
                 {"statuses": ["office", "remote"], "reply_language": "en"},
             ),
-            FinalResponse(
-                "ignored", "en", presentation=PresentationPlan("Current attendance", None)
-            ),
+            FinalResponse("Current attendance", "en", messages=("Current attendance",)),
         ]
     )
     session = MultiStatusSession()
@@ -312,8 +299,7 @@ async def test_current_status_accepts_and_combines_multiple_requested_statuses()
     assert [call[1] for call in session.calls] == [
         {"statuses": ["office", "remote"], "limit": 50, "offset": 0}
     ]
-    assert "**Office**\n- Office employee" in response.text
-    assert "**Remote work**\n- Remote employee" in response.text
+    assert response.text == "Current attendance"
 
 
 @pytest.mark.anyio
@@ -420,7 +406,7 @@ async def test_model_cannot_make_an_attendance_claim_before_a_tool_succeeds() ->
 
 
 @pytest.mark.anyio
-async def test_name_search_renders_candidates_and_requires_a_later_selection() -> None:
+async def test_name_search_is_not_an_admitted_action() -> None:
     agent, model, session = subject(
         [ToolCall("x", "search_employees", {"query": "Tinkara", "reply_language": "en"})]
     )
@@ -429,10 +415,6 @@ async def test_name_search_renders_candidates_and_requires_a_later_selection() -
         message="Show Tinkara's attendance", mcp_access_token=SecretStr("token")
     )
 
-    assert response.text == (
-        "Select one employee in a new message:\n"
-        "- Tinkara Novak — tinkara\n"
-        "Reply with the listed username or email."
-    )
-    assert session.calls == [("search_employees", {"query": "Tinkara", "limit": 10})]
+    assert "temporarily unavailable" in response.text
+    assert session.calls == []
     assert len(model.requests) == 1

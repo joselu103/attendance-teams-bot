@@ -137,9 +137,8 @@ async def test_executor_reads_every_page_before_returning() -> None:
         OverallAttendanceRange(date(2026, 8, 10), date(2026, 8, 12))
     )
 
-    assert [offset for _, offset in reader.calls] == [0, 50, 100, 150, 200]
-    assert len(result.events) == 201
-    assert result.records_omitted is False
+    assert [offset for _, offset in reader.calls] == [0, 50, 100, 150]
+    assert len(result.events) == 200 and result.records_omitted is True
 
 
 @pytest.mark.anyio

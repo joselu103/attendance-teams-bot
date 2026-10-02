@@ -12,6 +12,7 @@ from attendance_teams_bot.mcp.contracts import AttendanceEvent, AttendanceEventP
 
 PAGE_SIZE = 50
 MAX_PAGES_PER_WINDOW = 200
+MAX_EVENTS = 200
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,7 +106,14 @@ class AttendanceWindowExecutor:
                 page = await self.page_reader.read_page(window=window, offset=offset)
                 if page.limit != PAGE_SIZE or page.offset != offset or len(page.items) > PAGE_SIZE:
                     raise McpContractIncompatible
-                events.extend(page.items)
+                remaining = MAX_EVENTS - len(events)
+                events.extend(page.items[:remaining])
+                if len(page.items) > remaining:
+                    return AttendanceWindowResult(events=tuple(events), records_omitted=True)
+                if len(events) == MAX_EVENTS:
+                    return AttendanceWindowResult(
+                        events=tuple(events), records_omitted=page.next_offset is not None
+                    )
                 if page.next_offset is None:
                     break
                 if page.next_offset <= offset:

@@ -144,7 +144,7 @@ def test_current_status_admits_statuses_without_exposing_or_sending_as_of() -> N
     policy = catalog.selected_tool("get_current_attendance")
     assert policy is not None
     assert "as_of" not in policy.definition.input_schema["properties"]
-    assert policy.validate_arguments({"reply_language": "en"}) == ({}, "en")
+    assert policy.validate_arguments({"reply_language": "en"}) is None
     assert policy.validate_arguments(
         {"statuses": ["office", "remote"], "reply_language": "en"}
     ) == ({"statuses": ("office", "remote")}, "en")

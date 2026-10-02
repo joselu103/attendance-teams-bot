@@ -127,8 +127,6 @@ class ToolPolicy:
         language = arguments.get("reply_language")
         if language not in {"en", "sl"}:
             return None
-        if set(arguments) == {"reply_language"}:
-            return {}, language
         if set(arguments) != {"statuses", "reply_language"}:
             return None
         statuses = arguments["statuses"]
@@ -162,7 +160,6 @@ def pre_auth_tool_policies() -> tuple[ToolPolicy, ...]:
         ToolPolicy(canonical_self_attendance_tool(), "self"),
         ToolPolicy(canonical_other_attendance_tool(), "other"),
         ToolPolicy(canonical_current_attendance_tool(), "current"),
-        ToolPolicy(canonical_employee_search_tool(), "search"),
     )
 
 
@@ -207,7 +204,8 @@ def _definition(
 def canonical_self_attendance_tool() -> ToolDefinition:
     return _definition(
         SELF_ATTENDANCE_TOOL,
-        "List the authenticated requester's attendance for at most 31 inclusive days.",
+        "List the authenticated requester's attendance for an inclusive period of at most "
+        "12 calendar months. The bot partitions it into 31-day MCP requests.",
         {
             "start_date": {"type": "string", "format": "date"},
             "end_date": {"type": "string", "format": "date"},
@@ -220,8 +218,8 @@ def canonical_self_attendance_tool() -> ToolDefinition:
 def canonical_other_attendance_tool() -> ToolDefinition:
     return _definition(
         "get_other_attendance",
-        "For an exact employee ID, username, or email, list attendance for at most 31 inclusive "
-        "days. Use exactly one selector.",
+        "For an exact employee ID, username, or email, list attendance for an inclusive period "
+        "of at most 12 calendar months. Use exactly one selector; the bot partitions MCP calls.",
         {
             "employee_id": {"type": "string"},
             "username": {"type": "string"},
@@ -237,7 +235,7 @@ def canonical_other_attendance_tool() -> ToolDefinition:
 def canonical_current_attendance_tool() -> ToolDefinition:
     return _definition(
         CURRENT_ATTENDANCE_TOOL,
-        "List current workforce attendance, optionally filtered to one or more approved statuses; "
+        "List current workforce attendance for one or more approved statuses; "
         "server time is authoritative.",
         {
             "statuses": {
@@ -249,7 +247,7 @@ def canonical_current_attendance_tool() -> ToolDefinition:
             },
             "reply_language": {"type": "string", "enum": ["en", "sl"]},
         },
-        ["reply_language"],
+        ["statuses", "reply_language"],
     )
 
 
