@@ -21,6 +21,13 @@ _Avoid_: open event, current attendance
 Unverified Teams-provided presentation metadata that may be used only in a greeting.
 _Avoid_: employee identity, authorization identity
 
+**Pre-auth guidance decision**:
+A no-token LLM routing decision using bot-owned read-only action definitions and,
+only for greeting personalization, an unverified Teams display name. A safe
+no-tool result ends the turn; a validated action selection proceeds to SSO/OBO
+and live MCP discovery.
+_Avoid_: authentication decision, identity mapping
+
 **Attendance window**:
 A bot-controlled, inclusive period of at most 31 calendar days used for one
 request to Attendance CRMT.

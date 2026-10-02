@@ -137,6 +137,16 @@ class AdmittedMcpCatalog:
         return next((policy for policy in self.policies if policy.definition.name == name), None)
 
 
+def pre_auth_tool_policies() -> tuple[ToolPolicy, ...]:
+    """Return bot-owned actions for the untrusted, unauthenticated model decision."""
+    return (
+        ToolPolicy(canonical_self_attendance_tool(), "self"),
+        ToolPolicy(canonical_other_attendance_tool(), "other"),
+        ToolPolicy(canonical_current_attendance_tool(), "current"),
+        ToolPolicy(canonical_employee_search_tool(), "search"),
+    )
+
+
 def admit_mcp_catalog(discovered_tools: Sequence[DiscoveredMcpTool]) -> AdmittedMcpCatalog | None:
     remote: dict[str, Mapping[str, object]] = {}
     for tool in discovered_tools:

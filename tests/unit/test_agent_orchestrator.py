@@ -15,7 +15,7 @@ from attendance_teams_bot.agent.language_model import (
 )
 from attendance_teams_bot.agent.mcp_catalog import DiscoveredMcpTool
 from attendance_teams_bot.agent.orchestrator import AttendanceAgent
-from attendance_teams_bot.agent.rendering import CLARIFICATION_REPLY, UNAVAILABLE_REPLY
+from attendance_teams_bot.agent.rendering import UNAVAILABLE_REPLY
 from attendance_teams_bot.mcp.client import AttendanceToolFailure
 from attendance_teams_bot.mcp.contracts import (
     SELF_ATTENDANCE_TOOL,
@@ -163,11 +163,17 @@ async def test_failure_discards_accumulated_results_and_reuses_validated_languag
 
 
 @pytest.mark.anyio
-async def test_ambiguous_numeric_date_never_reaches_model_or_mcp() -> None:
-    subject, model, session = agent([FinalResponse("ignored", "en")])
+async def test_ambiguous_numeric_date_is_a_pre_auth_model_clarification() -> None:
+    subject, model, session = agent(
+        [
+            FinalResponse(
+                "Please clarify the attendance date range.", "en", "attendance_clarification"
+            )
+        ]
+    )
     response = await subject.handle(message="show 6/8", mcp_access_token=SecretStr("token"))
-    assert response.text == CLARIFICATION_REPLY
-    assert not model.requests and not session.calls
+    assert response.text == "Please clarify the attendance date range."
+    assert len(model.requests) == 1 and not session.calls
 
 
 @pytest.mark.anyio
@@ -195,7 +201,22 @@ async def test_unavailable_greeting_failure_outcomes_are_classified_without_sens
 
     for model, session in (
         (FakeModel([FinalResponse("Hello!", "en")]), FakeSession()),
-        (FakeModel([FinalResponse("ignored", "en")]), RejectedCatalogSession()),
+        (
+            FakeModel(
+                [
+                    ToolCall(
+                        "catalog",
+                        SELF_ATTENDANCE_TOOL,
+                        {
+                            "start_date": "2026-08-10",
+                            "end_date": "2026-08-12",
+                            "reply_language": "en",
+                        },
+                    )
+                ]
+            ),
+            RejectedCatalogSession(),
+        ),
         (UnavailableModel(), FakeSession()),
         (FakeModel([]), FakeSession()),
     ):

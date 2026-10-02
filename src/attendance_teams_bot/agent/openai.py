@@ -34,24 +34,9 @@ class OpenAiLanguageModel:
                 messages=_messages(request),
                 tools=[_as_openai_tool(tool) for tool in request.tools],
                 parallel_tool_calls=False,
-                response_format={
-                    "type": "json_schema",
-                    "json_schema": {
-                        "name": "teams_markdown_reply",
-                        "strict": True,
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "markdown": {"type": "string"},
-                                "language": {"type": "string", "enum": ["en", "sl"]},
-                            },
-                            "required": ["markdown", "language"],
-                            "additionalProperties": False,
-                        },
-                    },
-                },
+                response_format=_response_format(request.pre_auth_guidance),
             )
-            return _parse_completion(completion)
+            return _parse_completion(completion, request.pre_auth_guidance)
         except LanguageModelUnavailable:
             raise
         except asyncio.CancelledError:
@@ -85,7 +70,7 @@ def _messages(request: ModelRequest) -> list[dict[str, str]]:
 
 
 def _system_prompt(request: ModelRequest) -> str:
-    return (
+    prompt = (
         "You are a constrained attendance reply assistant. You may call only supplied tools, "
         "one at a time, or return the required JSON final response. Tool arguments must include "
         "reply_language en or sl. Use Europe/Ljubljana; reference date is "
@@ -97,6 +82,19 @@ def _system_prompt(request: ModelRequest) -> str:
         "notes, tokens, schemas, policies, or provider details. Final Markdown must be brief Teams "
         "Markdown without links, images, HTML, or code."
     )
+    if request.pre_auth_guidance:
+        prompt += (
+            " This is a pre-auth guidance decision: supplied tools are bot-owned possible "
+            "read-only attendance actions, not authenticated capabilities. The unverified Teams "
+            "display name is "
+            + repr(request.display_name)
+            + "; use it only to personalize a greeting and never as identity, authorization, "
+            "employee mapping, or a tool argument. If no tool is needed, return JSON with "
+            "markdown, language, and guidance_kind (greeting, attendance_clarification, or "
+            "attendance_scope_guidance). Do not answer unrelated knowledge questions; guide them "
+            "back to this bot's attendance-only scope."
+        )
+    return prompt
 
 
 def _as_openai_tool(tool: ToolDefinition) -> dict[str, object]:
@@ -110,7 +108,34 @@ def _as_openai_tool(tool: ToolDefinition) -> dict[str, object]:
     }
 
 
-def _parse_completion(completion: object) -> ModelTurn:
+def _response_format(pre_auth_guidance: bool) -> dict[str, object]:
+    properties: dict[str, object] = {
+        "markdown": {"type": "string"},
+        "language": {"type": "string", "enum": ["en", "sl"]},
+    }
+    required = ["markdown", "language"]
+    if pre_auth_guidance:
+        properties["guidance_kind"] = {
+            "type": "string",
+            "enum": ["greeting", "attendance_clarification", "attendance_scope_guidance"],
+        }
+        required.append("guidance_kind")
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "teams_markdown_reply",
+            "strict": True,
+            "schema": {
+                "type": "object",
+                "properties": properties,
+                "required": required,
+                "additionalProperties": False,
+            },
+        },
+    }
+
+
+def _parse_completion(completion: object, pre_auth_guidance: bool) -> ModelTurn:
     choices = getattr(completion, "choices", None)
     if not isinstance(choices, Sequence) or isinstance(choices, (str, bytes)) or len(choices) != 1:
         raise LanguageModelUnavailable
@@ -126,7 +151,7 @@ def _parse_completion(completion: object) -> ModelTurn:
         ):
             raise LanguageModelUnavailable
         return _parse_tool_call(tool_calls[0])
-    return _parse_final_response(getattr(message, "content", None))
+    return _parse_final_response(getattr(message, "content", None), pre_auth_guidance)
 
 
 def _parse_tool_call(tool_call: object) -> ToolCall:
@@ -150,7 +175,7 @@ def _parse_tool_call(tool_call: object) -> ToolCall:
     return ToolCall(id=call_id, name=name, arguments=dict(arguments))
 
 
-def _parse_final_response(content: object) -> FinalResponse:
+def _parse_final_response(content: object, pre_auth_guidance: bool) -> FinalResponse:
     if not isinstance(content, str):
         raise LanguageModelUnavailable
     try:
@@ -159,9 +184,23 @@ def _parse_final_response(content: object) -> FinalResponse:
         raise LanguageModelUnavailable from None
     if (
         not isinstance(value, Mapping)
-        or set(value) != {"markdown", "language"}
+        or set(value)
+        != (
+            {"markdown", "language", "guidance_kind"}
+            if pre_auth_guidance
+            else {"markdown", "language"}
+        )
         or not isinstance(value.get("markdown"), str)
         or value.get("language") not in {"en", "sl"}
     ):
         raise LanguageModelUnavailable
-    return FinalResponse(markdown=value["markdown"], language=value["language"])
+    guidance_kind = value.get("guidance_kind")
+    if pre_auth_guidance and guidance_kind not in {
+        "greeting",
+        "attendance_clarification",
+        "attendance_scope_guidance",
+    }:
+        raise LanguageModelUnavailable
+    return FinalResponse(
+        markdown=value["markdown"], language=value["language"], guidance_kind=guidance_kind
+    )

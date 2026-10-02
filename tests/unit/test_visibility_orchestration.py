@@ -218,7 +218,7 @@ async def test_rejects_multiple_selectors_unknown_status_and_internal_ids_in_rep
         ]
     )
     assert (
-        "Please provide"
+        "temporarily unavailable"
         in (await agent.handle(message="x", mcp_access_token=SecretStr("token"))).text
     )
     assert not session.calls
@@ -226,7 +226,7 @@ async def test_rejects_multiple_selectors_unknown_status_and_internal_ids_in_rep
         [ToolCall("x", "get_current_attendance", {"status": "unknown", "reply_language": "en"})]
     )
     assert (
-        "Please provide"
+        "temporarily unavailable"
         in (await agent.handle(message="x", mcp_access_token=SecretStr("token"))).text
     )
     agent, _, _ = subject(

@@ -8,7 +8,7 @@ from typing import Protocol
 import structlog
 from pydantic import SecretStr
 
-from attendance_teams_bot.agent.contracts import BotResponse
+from attendance_teams_bot.agent.contracts import BotResponse, SelectedAttendanceAction
 from attendance_teams_bot.auth.obo import DelegatedAuthenticationUnavailable
 from attendance_teams_bot.observability import (
     OperationLifecycle,
@@ -29,11 +29,16 @@ class BotServiceOnlyMessageHandler(Protocol):
 
 
 class AttendanceApplication(Protocol):
-    async def handle(
+    async def pre_auth_decision(
+        self, *, message: str, display_name: str | None = None
+    ) -> BotResponse | SelectedAttendanceAction: ...
+
+    async def handle_selected(
         self,
         *,
         message: str,
         mcp_access_token: SecretStr,
+        selection: SelectedAttendanceAction,
         display_name: str | None = None,
     ) -> BotResponse: ...
 
@@ -124,6 +129,13 @@ class SsoOboAttendanceTurnHandler:
     async def _handle_attendance_message(
         self, *, context: BotServiceAuthenticatedTurnContext, message: str
     ) -> None:
+        display_name = self._display_name(context)
+        decision = await self.application.pre_auth_decision(
+            message=message, display_name=display_name
+        )
+        if isinstance(decision, BotResponse):
+            await context.send_activity(decision.text)
+            return
         correlation_id = current_correlation_id()
         logger = _LOGGER.bind(correlation_id=str(correlation_id))
         input_metadata = message_input_metadata(message)
@@ -164,10 +176,11 @@ class SsoOboAttendanceTurnHandler:
             lifecycle.step_completed(step=step)
 
             step = "attendance_application"
-            response = await self.application.handle(
+            response = await self.application.handle_selected(
                 message=message,
                 mcp_access_token=token_b,
-                display_name=self._display_name(context),
+                selection=decision,
+                display_name=display_name,
             )
             lifecycle.step_completed(step=step)
 

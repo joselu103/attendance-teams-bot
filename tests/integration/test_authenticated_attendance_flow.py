@@ -6,10 +6,9 @@ from uuid import UUID, uuid4
 import pytest
 from pydantic import SecretStr
 
-from attendance_teams_bot.agent.language_model import FinalResponse, ModelRequest
+from attendance_teams_bot.agent.language_model import FinalResponse, ModelRequest, ToolCall
 from attendance_teams_bot.agent.mcp_catalog import DiscoveredMcpTool
 from attendance_teams_bot.agent.orchestrator import AttendanceAgent
-from attendance_teams_bot.agent.rendering import UNAVAILABLE_REPLY
 from attendance_teams_bot.mcp.contracts import (
     SELF_ATTENDANCE_TOOL,
     AttendanceEvent,
@@ -24,11 +23,16 @@ class Conversation:
 
 
 @dataclass
+class Sender:
+    name: str | None = None
+
+
+@dataclass
 class Activity:
     type: str = "message"
     text: str | None = "Show my attendance from 2026-08-10 to 2026-08-12"
     conversation: Conversation = field(default_factory=Conversation)
-    from_property: object | None = None
+    from_property: Sender | None = None
 
 
 @dataclass
@@ -62,7 +66,26 @@ class GreetingModel:
 
     async def complete(self, request: ModelRequest) -> FinalResponse:
         self.requests.append(request)
-        return FinalResponse("Hello!", "en")
+        return FinalResponse("Hello!", "en", "greeting")
+
+
+@dataclass
+class AttendanceModel:
+    requests: list[ModelRequest] = field(default_factory=list)
+
+    async def complete(self, request: ModelRequest) -> ToolCall | FinalResponse:
+        self.requests.append(request)
+        if request.pre_auth_guidance:
+            return ToolCall(
+                "selection",
+                SELF_ATTENDANCE_TOOL,
+                {
+                    "start_date": "2026-08-10",
+                    "end_date": "2026-08-12",
+                    "reply_language": "en",
+                },
+            )
+        return FinalResponse("Attendance found", "en")
 
 
 @dataclass
@@ -137,7 +160,7 @@ def anyio_backend() -> str:
 async def test_authenticated_turn_uses_only_obo_token_for_attendance_mcp() -> None:
     factory, obo = Factory(), Obo()
     attendance = AttendanceAgent(
-        language_model=None,
+        language_model=AttendanceModel(),
         mcp_session_factory=factory,
         correlation_id_factory=uuid4,
         reference_date_factory=lambda: date(2026, 8, 15),
@@ -153,7 +176,7 @@ async def test_authenticated_turn_uses_only_obo_token_for_attendance_mcp() -> No
 
 
 @pytest.mark.anyio
-async def test_personal_greeting_replays_through_one_obo_exchange_without_tool_calls() -> None:
+async def test_personal_greeting_stops_before_sso_obo_or_mcp() -> None:
     factory, obo, model = Factory(), Obo(), GreetingModel()
     attendance = AttendanceAgent(
         language_model=model,
@@ -161,13 +184,14 @@ async def test_personal_greeting_replays_through_one_obo_exchange_without_tool_c
         correlation_id_factory=lambda: UUID(int=1),
         reference_date_factory=lambda: date(2026, 8, 15),
     )
-    context = Context(Activity(text="Hello"))
+    context = Context(Activity(text="Hello", from_property=Sender("Unverified Ada")))
 
     await SsoOboAttendanceTurnHandler(attendance, Sso(), obo).handle(context)
 
-    assert obo.assertions == [SecretStr("token-a")]
-    assert factory.tokens == [SecretStr("token-b")]
-    assert factory.correlation_ids == [UUID(int=1)]
-    assert model.requests and model.requests[0].tool_results == ()
+    assert obo.assertions == []
+    assert factory.tokens == []
+    assert factory.correlation_ids == []
+    assert model.requests and model.requests[0].pre_auth_guidance is True
+    assert model.requests[0].display_name == "Unverified Ada"
     assert factory.session.calls == []
-    assert context.sent == [UNAVAILABLE_REPLY]
+    assert context.sent == ["Hello!"]
