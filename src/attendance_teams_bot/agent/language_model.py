@@ -6,6 +6,7 @@ from datetime import date
 from typing import Literal, Protocol
 
 ReplyLanguage = Literal["en", "sl"]
+GuidanceKind = Literal["greeting", "attendance_clarification", "attendance_scope_guidance"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,6 +32,7 @@ class FinalResponse:
 
     markdown: str
     language: ReplyLanguage
+    guidance_kind: GuidanceKind | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,6 +51,8 @@ class ModelRequest:
     timezone: str
     tools: tuple[ToolDefinition, ...]
     tool_results: tuple[ToolResultView, ...] = ()
+    display_name: str | None = None
+    pre_auth_guidance: bool = False
 
 
 ModelTurn = ToolCall | FinalResponse

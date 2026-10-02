@@ -5,7 +5,7 @@ import pytest
 from pydantic import SecretStr
 
 import attendance_teams_bot.observability as observability
-from attendance_teams_bot.agent.contracts import BotResponse
+from attendance_teams_bot.agent.contracts import BotResponse, SelectedAttendanceAction
 from attendance_teams_bot.auth.obo import DelegatedAuthenticationUnavailable
 from attendance_teams_bot.teams.authenticated import (
     BotServiceOnlyHandler,
@@ -50,16 +50,25 @@ class Application:
     tokens: list[SecretStr] = field(default_factory=list)
     display_names: list[str | None] = field(default_factory=list)
 
-    async def handle(
+    async def pre_auth_decision(
+        self, *, message: str, display_name: str | None = None
+    ) -> SelectedAttendanceAction:
+        del message
+        self.display_names.append(display_name)
+        return SelectedAttendanceAction("list_my_attendance_events", {}, "en")
+
+    async def handle_selected(
         self,
         *,
         message: str,
         mcp_access_token: SecretStr,
+        selection: SelectedAttendanceAction,
         display_name: str | None = None,
     ) -> BotResponse:
-        assert message == "Show my attendance"
+        del message
+        assert selection.name == "list_my_attendance_events"
         self.tokens.append(mcp_access_token)
-        self.display_names.append(display_name)
+        assert display_name == self.display_names[-1]
         return BotResponse(text="attendance reply")
 
 
@@ -142,6 +151,24 @@ async def test_blank_turn_does_not_start_authentication() -> None:
 
 
 @pytest.mark.anyio
+async def test_safe_pre_auth_scope_guidance_skips_sso_and_obo() -> None:
+    class GuidanceApplication(Application):
+        async def pre_auth_decision(self, **kwargs: object) -> BotResponse:
+            del kwargs
+            return BotResponse("I can help with attendance, not weather forecasts.")
+
+    application, sso, obo = GuidanceApplication(), Sso(), Obo()
+    context = Context(Activity(text="What is the weather?"))
+
+    await handler(application, sso, obo).handle(context)
+
+    assert sso.calls == 0
+    assert obo.assertions == []
+    assert application.tokens == []
+    assert context.sent == ["I can help with attendance, not weather forecasts."]
+
+
+@pytest.mark.anyio
 async def test_sso_and_obo_failures_send_safe_replies_without_calling_the_application() -> None:
     class FailingSso(Sso):
         async def get_token(self, context: Context) -> SecretStr:
@@ -174,7 +201,7 @@ async def test_cancellation_emits_one_terminal_event_and_does_not_reply(monkeypa
     monkeypatch.setattr(observability, "operation_event", record_event)
 
     class CancellingApplication(Application):
-        async def handle(self, **kwargs: object) -> BotResponse:
+        async def handle_selected(self, **kwargs: object) -> BotResponse:
             del kwargs
             raise asyncio.CancelledError
 
@@ -202,7 +229,7 @@ async def test_application_and_reply_failures_emit_the_active_step_lifecycle_eve
     monkeypatch.setattr(observability, "operation_event", record_event)
 
     class FailingApplication(Application):
-        async def handle(self, **kwargs: object) -> BotResponse:
+        async def handle_selected(self, **kwargs: object) -> BotResponse:
             del kwargs
             raise ValueError("application failure")
 

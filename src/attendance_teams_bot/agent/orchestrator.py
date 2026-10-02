@@ -17,20 +17,24 @@ from attendance_teams_bot.agent.attendance_window import (
     McpAttendancePageReader,
     OverallAttendanceRange,
 )
-from attendance_teams_bot.agent.contracts import BotResponse
-from attendance_teams_bot.agent.date_resolver import has_ambiguous_numeric_date
+from attendance_teams_bot.agent.contracts import BotResponse, SelectedAttendanceAction
 from attendance_teams_bot.agent.language_model import (
     FinalResponse,
     LanguageModel,
     LanguageModelUnavailable,
     ModelRequest,
     ReplyLanguage,
+    ToolCall,
     ToolResultView,
 )
-from attendance_teams_bot.agent.mcp_catalog import DiscoveredMcpTool, ToolPolicy, admit_mcp_catalog
+from attendance_teams_bot.agent.mcp_catalog import (
+    DiscoveredMcpTool,
+    ToolPolicy,
+    admit_mcp_catalog,
+    pre_auth_tool_policies,
+)
 from attendance_teams_bot.agent.rendering import (
     AttendanceResultPresenter,
-    ClarificationPresentation,
     EmployeeCandidatesPresentation,
     InvalidRequestPresentation,
     ToolFailurePresentation,
@@ -91,9 +95,94 @@ class AttendanceAgent:
     async def handle(
         self, *, message: str, mcp_access_token: SecretStr, display_name: str | None = None
     ) -> BotResponse:
+        decision = await self.pre_auth_decision(message=message, display_name=display_name)
+        if isinstance(decision, BotResponse):
+            return decision
+        return await self.handle_selected(
+            message=message,
+            mcp_access_token=mcp_access_token,
+            selection=decision,
+            display_name=display_name,
+        )
+
+    async def pre_auth_decision(
+        self, *, message: str, display_name: str | None = None
+    ) -> BotResponse | SelectedAttendanceAction:
+        """Route without credentials using only bot-owned attendance action definitions."""
         language: ReplyLanguage = "en"
-        if has_ambiguous_numeric_date(message):
-            return self.presenter.present(ClarificationPresentation(language, display_name))
+        correlation_id = self.correlation_id_factory()
+        try:
+            turn = await self.language_model.complete(
+                ModelRequest(
+                    message,
+                    self.reference_date_factory(),
+                    "Europe/Ljubljana",
+                    tuple(policy.definition for policy in pre_auth_tool_policies()),
+                    display_name=display_name,
+                    pre_auth_guidance=True,
+                )
+            )
+            if isinstance(turn, FinalResponse):
+                if (
+                    turn.guidance_kind is None
+                    or turn.language not in {"en", "sl"}
+                    or not is_safe_model_markdown(turn.markdown)
+                ):
+                    return self._unavailable_with_outcome(
+                        language, display_name, correlation_id, "malformed_final"
+                    )
+                return BotResponse(text=turn.markdown)
+            policy = next(
+                (item for item in pre_auth_tool_policies() if item.definition.name == turn.name),
+                None,
+            )
+            if policy is None:
+                return self._unavailable_with_outcome(
+                    language, display_name, correlation_id, "invalid_tool_selection"
+                )
+            validated = policy.validate_arguments(turn.arguments)
+            if validated is None:
+                return self._unavailable_with_outcome(
+                    language, display_name, correlation_id, "invalid_tool_selection"
+                )
+            _, language = validated
+            return SelectedAttendanceAction(turn.name, dict(turn.arguments), language)
+        except asyncio.CancelledError:
+            raise
+        except LanguageModelUnavailable as error:
+            return self._unavailable_with_outcome(
+                language, display_name, correlation_id, "model_unavailable", error
+            )
+        except Exception as error:
+            return self._unavailable_with_outcome(
+                language, display_name, correlation_id, "unexpected_exception", error
+            )
+
+    async def handle_selected(
+        self,
+        *,
+        message: str,
+        mcp_access_token: SecretStr,
+        selection: SelectedAttendanceAction,
+        display_name: str | None = None,
+    ) -> BotResponse:
+        """Authenticate, rediscover, and execute a pre-auth selection only if still admitted."""
+        return await self._handle_authenticated(
+            message=message,
+            mcp_access_token=mcp_access_token,
+            selection=selection,
+            display_name=display_name,
+        )
+
+    async def _handle_authenticated(
+        self,
+        *,
+        message: str,
+        mcp_access_token: SecretStr,
+        selection: SelectedAttendanceAction,
+        display_name: str | None = None,
+    ) -> BotResponse:
+        language = selection.language
         correlation_id = self.correlation_id_factory()
         try:
             async with self.mcp_session_factory.open(
@@ -106,19 +195,28 @@ class AttendanceAgent:
                     )
                 results: list[ToolResultView] = []
                 sensitive: set[str] = set()
+                pending_turn: ToolCall | None = ToolCall(
+                    "pre-auth-selection", selection.name, selection.arguments
+                )
                 for call_count in range(MAX_MODEL_CALLS + 1):
-                    turn = await self.language_model.complete(
-                        ModelRequest(
-                            message,
-                            self.reference_date_factory(),
-                            "Europe/Ljubljana",
-                            catalog.model_tools,
-                            tuple(results),
+                    turn: ToolCall | FinalResponse
+                    if pending_turn is not None:
+                        turn = pending_turn
+                        pending_turn = None
+                    else:
+                        turn = await self.language_model.complete(
+                            ModelRequest(
+                                message,
+                                self.reference_date_factory(),
+                                "Europe/Ljubljana",
+                                catalog.model_tools,
+                                tuple(results),
+                            )
                         )
-                    )
                     if isinstance(turn, FinalResponse):
                         if (
                             not results
+                            or turn.guidance_kind is not None
                             or turn.language not in {"en", "sl"}
                             or not is_safe_model_markdown(turn.markdown)
                             or _mentions_sensitive(turn.markdown, sensitive)

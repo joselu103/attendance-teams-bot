@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date
 from typing import Literal
@@ -22,3 +23,12 @@ class ListMyAttendanceIntent:
 @dataclass(frozen=True, slots=True)
 class Clarification:
     message: str
+
+
+@dataclass(frozen=True, slots=True)
+class SelectedAttendanceAction:
+    """A bot-validated pre-auth action, awaiting live MCP catalog admission."""
+
+    name: str
+    arguments: Mapping[str, object]
+    language: ReplyLanguage
