@@ -80,6 +80,9 @@ class Model:
 @dataclass
 class Session:
     calls: list[tuple[str, dict[str, object]]] = field(default_factory=list)
+    current_items: tuple[dict[str, object], ...] = (
+        {"display_name": "Ada", "status": "office", "employee_id": 99},
+    )
 
     async def list_tools(self) -> tuple[DiscoveredMcpTool, ...]:
         return catalog()
@@ -91,7 +94,7 @@ class Session:
         if name == "get_current_attendance":
             if arguments["offset"] == 0:
                 return CurrentAttendancePage(
-                    items=({"display_name": "Ada", "status": "office", "employee_id": 99},),
+                    items=self.current_items,
                     limit=50,
                     offset=0,
                     next_offset=50,
@@ -187,6 +190,27 @@ async def test_current_status_fetches_all_pages_and_hides_unknown_before_model()
         {"status": "office", "count": 1}
     ]
     assert "as_of" not in repr(session.calls)
+
+
+@pytest.mark.anyio
+async def test_current_status_uses_the_rest_contract_first_and_last_name_fields() -> None:
+    agent, _, session = subject(
+        [
+            ToolCall("x", "get_current_attendance", {"status": "office", "reply_language": "en"}),
+            FinalResponse(
+                "ignored", "en", presentation=PresentationPlan("Current attendance", None)
+            ),
+        ]
+    )
+    session.current_items = (
+        {"first_name": "Ada", "last_name": "Lovelace", "status": "office", "employee_id": 99},
+    )
+
+    response = await agent.handle(
+        message="Who is in the office?", mcp_access_token=SecretStr("token")
+    )
+
+    assert response.text == "**Current attendance**\n\n**Office**\n- Ada Lovelace"
 
 
 @pytest.mark.anyio

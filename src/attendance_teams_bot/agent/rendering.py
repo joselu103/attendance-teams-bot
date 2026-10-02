@@ -234,26 +234,29 @@ _WEEKDAYS: dict[ReplyLanguage, tuple[str, ...]] = {
     "en": ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"),
     "sl": ("ponedeljek", "torek", "sreda", "četrtek", "petek", "sobota", "nedelja"),
 }
-_TYPE_LABELS: dict[ReplyLanguage, dict[str, str]] = {
-    "en": {
-        "office": "Office",
-        "delo na firmi": "Office",
-        "work": "Work",
-        "remote work": "Remote work",
-        "work from home": "Remote work",
-        "break": "Break",
-        "leave": "Leave",
-    },
-    "sl": {
-        "office": "Pisarna",
-        "delo na firmi": "Pisarna",
-        "work": "Delo",
-        "remote work": "Delo na daljavo",
-        "work from home": "Delo na daljavo",
-        "break": "Odmor",
-        "leave": "Odsotnost",
-    },
-}
+# One row per database label. The renderer uses the same row in either direction.
+_PUNCH_TYPE_EQUIVALENTS: tuple[tuple[str, str], ...] = (
+    ("Delo na firmi", "Office"),
+    ("Delo od doma", "Remote work"),
+    ("Delo pri stranki", "Customer site"),
+    ("Na malici", "Lunch break"),
+    ("Dopust", "Leave"),
+    ("Bolniška", "Sick leave"),
+    ("Nega otroka", "Childcare leave"),
+    ("Izredni dopust", "Emergency leave"),
+    ("Neplačani dopust", "Unpaid leave"),
+    ("Darovanje krvi", "Blood donation leave"),
+    ("Spremstvo", "Accompaniment leave"),
+    ("Očetovski dopust", "Paternity leave"),
+    ("Porodniška", "Maternity leave"),
+)
+
+# Compatibility-only input aliases; output always uses a database label above.
+_ENGLISH_PUNCH_TYPE_ALIASES: tuple[tuple[str, str], ...] = (
+    ("work", "Office"),
+    ("work from home", "Remote work"),
+    ("break", "Lunch break"),
+)
 
 
 def render_attendance_events(
@@ -484,9 +487,15 @@ def _attendance_type(value: str | None, language: ReplyLanguage) -> str:
     if value is None or not value.strip():
         return _copy(language, "Unspecified attendance", "Nedoločena prisotnost")
     normalized = " ".join(value.split()).casefold()
-    return _TYPE_LABELS[language].get(normalized, _safe_text(value)) or _copy(
-        language, "Unspecified attendance", "Nedoločena prisotnost"
-    )
+    for slovene, english in _PUNCH_TYPE_EQUIVALENTS:
+        if normalized in {slovene.casefold(), english.casefold()}:
+            return english if language == "en" else slovene
+    for alias, english in _ENGLISH_PUNCH_TYPE_ALIASES:
+        if normalized == alias:
+            for slovene, canonical_english in _PUNCH_TYPE_EQUIVALENTS:
+                if canonical_english == english:
+                    return canonical_english if language == "en" else slovene
+    return _safe_text(value) or _copy(language, "Unspecified attendance", "Nedoločena prisotnost")
 
 
 def _safe_text(value: str | None) -> str:

@@ -96,7 +96,7 @@ def test_presentation_localizes_types_active_and_escaped_values() -> None:
     )
 
     assert "**Prisotnost: 10 avgust 2026–10 avgust 2026**" in result
-    assert "- 10:00–Prisoten (v teku): Delo na daljavo *(Aktivno)*" in result
+    assert "- 10:00–Prisoten (v teku): Delo od doma *(Aktivno)*" in result
     assert "- Začetni čas ni na voljo–18:00: \\*Other\\*" in result
 
 
@@ -104,6 +104,37 @@ def test_presentation_translates_only_controlled_attendance_type_aliases() -> No
     result = _present_events(_event(1, punch_type="Delo na firmi", location="Lokacija"))
 
     assert "Office" in result and "Lokacija" not in result
+
+
+_PUNCH_TYPE_EQUIVALENTS = (
+    ("Delo na firmi", "Office"),
+    ("Delo od doma", "Remote work"),
+    ("Delo pri stranki", "Customer site"),
+    ("Na malici", "Lunch break"),
+    ("Dopust", "Leave"),
+    ("Bolniška", "Sick leave"),
+    ("Nega otroka", "Childcare leave"),
+    ("Izredni dopust", "Emergency leave"),
+    ("Neplačani dopust", "Unpaid leave"),
+    ("Darovanje krvi", "Blood donation leave"),
+    ("Spremstvo", "Accompaniment leave"),
+    ("Očetovski dopust", "Paternity leave"),
+    ("Porodniška", "Maternity leave"),
+)
+
+
+@pytest.mark.parametrize(("slovene", "english"), _PUNCH_TYPE_EQUIVALENTS)
+def test_presentation_translates_every_database_slovenian_label_to_english(
+    slovene: str, english: str
+) -> None:
+    assert english in _present_events(_event(1, punch_type=slovene), language="en")
+
+
+@pytest.mark.parametrize(("slovene", "english"), _PUNCH_TYPE_EQUIVALENTS)
+def test_presentation_translates_english_to_the_exact_database_slovenian_label(
+    slovene: str, english: str
+) -> None:
+    assert slovene in _present_events(_event(1, punch_type=english), language="sl")
 
 
 def test_presentation_separates_date_blocks_and_keeps_same_day_events_contiguous() -> None:

@@ -426,6 +426,10 @@ def _current_status_names(result: Mapping[str, object]) -> tuple[tuple[str, tupl
             continue
         status = item.get("status")
         name = item.get("display_name", item.get("employee_name", item.get("name")))
+        if not isinstance(name, str):
+            first_name, last_name = item.get("first_name"), item.get("last_name")
+            if isinstance(first_name, str) and isinstance(last_name, str):
+                name = f"{first_name} {last_name}"
         if not isinstance(status, str) or not isinstance(name, str):
             continue
         normalized_name = " ".join(name.split())
