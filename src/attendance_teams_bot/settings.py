@@ -1,4 +1,3 @@
-import re
 from enum import StrEnum
 from typing import Literal, Self
 from urllib.parse import urlsplit
@@ -116,8 +115,6 @@ class Settings(BaseSettings):
         try:
             parsed = urlsplit(value.get_secret_value())
             host = parsed.hostname
-            # Accessing port is intentionally part of validation: urlsplit accepts
-            # malformed numeric ports until this property is read.
             _ = parsed.port
         except ValueError:
             raise ValueError("DATABASE_URL must be a PostgreSQL URL") from None
@@ -125,7 +122,6 @@ class Settings(BaseSettings):
             parsed.scheme not in {"postgres", "postgresql"}
             or not host
             or any(character.isspace() for character in host)
-            or not re.fullmatch(r"[A-Za-z0-9:.\-]+", host)
         ):
             raise ValueError("DATABASE_URL must be a PostgreSQL URL")
         return value
