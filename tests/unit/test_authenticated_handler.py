@@ -272,3 +272,44 @@ async def test_application_and_reply_failures_emit_the_active_step_lifecycle_eve
 
     assert events[-1][0] == "operation_failed"
     assert events[-1][1]["step"] == "teams_reply_delivery"
+
+
+@pytest.mark.anyio
+async def test_failed_batch_send_stops_without_retry_and_logs_only_safe_progress(
+    monkeypatch,
+) -> None:
+    import attendance_teams_bot.teams.authenticated as authenticated
+
+    logged: list[dict[str, object]] = []
+
+    class Logger:
+        def error(self, event: str, **fields: object) -> None:
+            logged.append({"event": event, **fields})
+
+    monkeypatch.setattr(authenticated, "_LOGGER", Logger())
+
+    @dataclass
+    class SecondSendFails(Context):
+        async def send_activity(self, text: str) -> None:
+            if text == "second":
+                raise RuntimeError("transport detail")
+            self.sent.append(text)
+
+    class BatchApplication(Application):
+        async def handle_selected(self, **kwargs: object) -> BotResponse:
+            del kwargs
+            return BotResponse.batch(("first", "second", "third"))
+
+    context = SecondSendFails(Activity())
+    with pytest.raises(RuntimeError, match="transport detail"):
+        await SsoOboAttendanceTurnHandler._send_response(
+            context, BotResponse.batch(("first", "second", "third"))
+        )
+
+    assert context.sent == ["first"]
+    assert len(logged) == 1
+    assert logged[0]["event"] == "teams_reply_send_failed"
+    assert logged[0]["completed_messages"] == 1
+    assert logged[0]["total_messages"] == 3
+    assert logged[0]["error_type"] == "RuntimeError"
+    assert "transport detail" not in repr(logged)

@@ -26,10 +26,12 @@ from attendance_teams_bot.mcp.contracts import (
     ATTENDANCE_MCP_CONTRACT_MAJOR,
     CORRELATION_ID_HEADER,
     CURRENT_ATTENDANCE_TOOL,
+    CURRENT_WORK_STATUS_TOOL,
     RESOLVE_EMPLOYEE_TOOL,
     SEARCH_EMPLOYEES_TOOL,
     AttendanceEventPage,
     CurrentAttendancePage,
+    CurrentWorkStatusPage,
     EmployeeSuggestionPage,
     McpToolFailure,
     ResolvedEmployee,
@@ -80,7 +82,13 @@ class StreamableHttpAttendanceSession:
         *,
         name: str,
         arguments: Mapping[str, object],
-    ) -> AttendanceEventPage | ResolvedEmployee | CurrentAttendancePage | EmployeeSuggestionPage:
+    ) -> (
+        AttendanceEventPage
+        | ResolvedEmployee
+        | CurrentAttendancePage
+        | CurrentWorkStatusPage
+        | EmployeeSuggestionPage
+    ):
         """Execute an admitted tool and validate its named, typed result."""
         metadata = {"tool_name": name, "argument_count": len(arguments)}
         lifecycle = OperationLifecycle(
@@ -100,12 +108,15 @@ class StreamableHttpAttendanceSession:
                 AttendanceEventPage
                 | ResolvedEmployee
                 | CurrentAttendancePage
+                | CurrentWorkStatusPage
                 | EmployeeSuggestionPage
             )
             if name == RESOLVE_EMPLOYEE_TOOL:
                 page = ResolvedEmployee.model_validate(payload)
             elif name == CURRENT_ATTENDANCE_TOOL:
                 page = CurrentAttendancePage.model_validate(payload)
+            elif name == CURRENT_WORK_STATUS_TOOL:
+                page = CurrentWorkStatusPage.model_validate(payload)
             elif name == SEARCH_EMPLOYEES_TOOL:
                 page = EmployeeSuggestionPage.model_validate(payload)
             else:

@@ -18,7 +18,7 @@ from attendance_teams_bot.mcp.client import AttendanceToolFailure
 from attendance_teams_bot.mcp.contracts import (
     AttendanceEvent,
     AttendanceEventPage,
-    CurrentAttendancePage,
+    CurrentWorkStatusPage,
     EmployeeSuggestion,
     EmployeeSuggestionPage,
     McpToolFailure,
@@ -43,7 +43,7 @@ def catalog() -> tuple[DiscoveredMcpTool, ...]:
             "list_attendance_events",
             {"employee_id": {}, "start_date": {}, "end_date": {}, "limit": {}, "offset": {}},
         ),
-        tool("get_current_attendance", {"statuses": {}, "limit": {}, "offset": {}}),
+        tool("get_current_work_status", {"statuses": {}, "limit": {}, "offset": {}}),
         tool("search_employees", {"query": {}, "limit": {}}),
     )
 
@@ -81,7 +81,7 @@ class Model:
 class Session:
     calls: list[tuple[str, dict[str, object]]] = field(default_factory=list)
     current_items: tuple[dict[str, object], ...] = (
-        {"display_name": "Ada", "status": "office", "employee_id": 99},
+        {"first_name": "Ada", "last_name": "", "status": "office"},
     )
 
     async def list_tools(self) -> tuple[DiscoveredMcpTool, ...]:
@@ -91,16 +91,16 @@ class Session:
         self.calls.append((name, arguments))
         if name == "resolve_employee":
             return ResolvedEmployee(employee_id=99, username="alice")
-        if name == "get_current_attendance":
+        if name == "get_current_work_status":
             if arguments["offset"] == 0:
-                return CurrentAttendancePage(
+                return CurrentWorkStatusPage(
                     items=self.current_items,
                     limit=50,
                     offset=0,
                     next_offset=50,
                 )
-            return CurrentAttendancePage(
-                items=({"display_name": "Hidden", "status": "unknown", "employee_id": 100},),
+            return CurrentWorkStatusPage(
+                items=(),
                 limit=50,
                 offset=50,
                 next_offset=None,
@@ -154,7 +154,7 @@ async def test_exact_selector_is_resolved_then_internal_id_only_drives_history()
     )
     assert (
         await agent.handle(message="Alice", mcp_access_token=SecretStr("token"))
-    ).text.startswith("**Attendance**")
+    ).text.startswith("**Part 1 of 1**\n\n**Attendance**")
     assert session.calls == [
         ("resolve_employee", {"email": "alice@example.test"}),
         (
@@ -177,7 +177,7 @@ async def test_current_status_fetches_all_pages_and_hides_unknown_before_model()
     agent, model, session = subject(
         [
             ToolCall(
-                "x", "get_current_attendance", {"statuses": ["office"], "reply_language": "en"}
+                "x", "get_current_work_status", {"statuses": ["office"], "reply_language": "en"}
             ),
             FinalResponse(
                 "ignored", "en", presentation=PresentationPlan("Current attendance", None)
@@ -186,7 +186,7 @@ async def test_current_status_fetches_all_pages_and_hides_unknown_before_model()
     )
     assert (
         await agent.handle(message="Office", mcp_access_token=SecretStr("token"))
-    ).text == "**Current attendance**\n\n**Office**\n- Ada"
+    ).text.startswith("**Part 1 of 1**\n\n**Current attendance**\n\n**Office**\n- Ada")
     assert [call[1] for call in session.calls] == [
         {"statuses": ["office"], "limit": 50, "offset": 0},
         {"statuses": ["office"], "limit": 50, "offset": 50},
@@ -202,29 +202,29 @@ async def test_current_status_uses_the_rest_contract_first_and_last_name_fields(
     agent, _, session = subject(
         [
             ToolCall(
-                "x", "get_current_attendance", {"statuses": ["office"], "reply_language": "en"}
+                "x", "get_current_work_status", {"statuses": ["office"], "reply_language": "en"}
             ),
             FinalResponse(
                 "ignored", "en", presentation=PresentationPlan("Current attendance", None)
             ),
         ]
     )
-    session.current_items = (
-        {"first_name": "Ada", "last_name": "Lovelace", "status": "office", "employee_id": 99},
-    )
+    session.current_items = ({"first_name": "Ada", "last_name": "Lovelace", "status": "office"},)
 
     response = await agent.handle(
         message="Who is in the office?", mcp_access_token=SecretStr("token")
     )
 
-    assert response.text == "**Current attendance**\n\n**Office**\n- Ada Lovelace"
+    assert response.text.startswith(
+        "**Part 1 of 1**\n\n**Current attendance**\n\n**Office**\n- Ada Lovelace"
+    )
 
 
 @pytest.mark.anyio
 async def test_current_status_without_a_filter_omits_status_and_fetches_every_page() -> None:
     agent, model, session = subject(
         [
-            ToolCall("x", "get_current_attendance", {"reply_language": "en"}),
+            ToolCall("x", "get_current_work_status", {"reply_language": "en"}),
             FinalResponse(
                 "ignored", "en", presentation=PresentationPlan("Current attendance", None)
             ),
@@ -233,7 +233,7 @@ async def test_current_status_without_a_filter_omits_status_and_fetches_every_pa
 
     assert (
         await agent.handle(message="Who is working?", mcp_access_token=SecretStr("token"))
-    ).text == "**Current attendance**\n\n**Office**\n- Ada"
+    ).text.startswith("**Part 1 of 1**\n\n**Current attendance**\n\n**Office**\n- Ada")
     assert [call[1] for call in session.calls] == [
         {"limit": 50, "offset": 0},
         {"limit": 50, "offset": 50},
@@ -245,12 +245,12 @@ def test_current_status_groups_follow_the_business_status_order() -> None:
     groups = _current_status_names(
         {
             "items": [
-                {"display_name": "No status", "status": "no_status"},
-                {"display_name": "Break", "status": "break"},
-                {"display_name": "Remote", "status": "remote"},
-                {"display_name": "Absent", "status": "absence"},
-                {"display_name": "Office", "status": "office"},
-                {"display_name": "Customer", "status": "customer_site"},
+                {"first_name": "No", "last_name": "status", "status": "no_status"},
+                {"first_name": "Break", "last_name": "", "status": "break"},
+                {"first_name": "Remote", "last_name": "", "status": "remote"},
+                {"first_name": "Absent", "last_name": "", "status": "absence"},
+                {"first_name": "Office", "last_name": "", "status": "office"},
+                {"first_name": "Customer", "last_name": "", "status": "customer_site"},
             ]
         }
     )
@@ -269,14 +269,15 @@ def test_current_status_groups_follow_the_business_status_order() -> None:
 class MultiStatusSession(Session):
     async def call_tool(self, *, name: str, arguments: dict[str, object]) -> object:
         self.calls.append((name, arguments))
-        if name == "get_current_attendance":
+        if name == "get_current_work_status":
             statuses = arguments["statuses"]
             if not isinstance(statuses, list):
                 raise AssertionError("expected an MCP statuses array")
             names = {"office": "Office employee", "remote": "Remote employee"}
-            return CurrentAttendancePage(
+            return CurrentWorkStatusPage(
                 items=tuple(
-                    {"display_name": names[status], "status": status} for status in statuses
+                    {"first_name": names[status], "last_name": "", "status": status}
+                    for status in statuses
                 ),
                 limit=50,
                 offset=0,
@@ -291,7 +292,7 @@ async def test_current_status_accepts_and_combines_multiple_requested_statuses()
         [
             ToolCall(
                 "selection",
-                "get_current_attendance",
+                "get_current_work_status",
                 {"statuses": ["office", "remote"], "reply_language": "en"},
             ),
             FinalResponse(
@@ -342,7 +343,7 @@ async def test_rejects_multiple_selectors_unknown_status_and_internal_ids_in_rep
         [
             ToolCall(
                 "x",
-                "get_current_attendance",
+                "get_current_work_status",
                 {"statuses": ["unknown"], "reply_language": "en"},
             )
         ]

@@ -129,30 +129,28 @@ def call(identifier: str = "one") -> ToolCall:
 
 
 @pytest.mark.anyio
-async def test_three_serial_calls_send_reply_safe_projection_then_immutable_rendering() -> None:
+async def test_one_validated_tool_call_sends_minimal_projection_and_immutable_rendering() -> None:
     subject, model, session = agent(
         [
             call("one"),
-            call("two"),
-            call("three"),
             FinalResponse("ignored", "sl", presentation=PresentationPlan("Prisotnost", None)),
         ]
     )
     response = await subject.handle(message="Pokaži", mcp_access_token=SecretStr("token"))
     assert "**Prisotnost**" in response.text and "secret note" not in response.text
-    assert len(session.calls) == 3
-    assert len(model.requests) == 4
+    assert len(session.calls) == 1
+    assert len(model.requests) == 2
     projection = model.requests[1].tool_results[0].result
     assert "note" not in repr(projection) and "employee_id" not in repr(projection)
-    assert all(request.tools[0].name == SELF_ATTENDANCE_TOOL for request in model.requests)
+    assert model.requests[1].tools == ()
 
 
 @pytest.mark.anyio
-async def test_fourth_call_and_bad_final_fail_closed_after_three_calls() -> None:
-    subject, _, session = agent([call(), call(), call(), call()])
+async def test_model_cannot_select_another_tool_after_the_validated_execution() -> None:
+    subject, _, session = agent([call(), call()])
     response = await subject.handle(message="show", mcp_access_token=SecretStr("token"))
     assert response.text == "Podatki o prisotnosti trenutno niso na voljo. Poskusite znova pozneje."
-    assert len(session.calls) == 3
+    assert len(session.calls) == 1
     bad, _, _ = agent([FinalResponse("[unsafe](https://example.test)", "en")])
     assert (
         await bad.handle(message="show", mcp_access_token=SecretStr("token"))
@@ -160,11 +158,13 @@ async def test_fourth_call_and_bad_final_fail_closed_after_three_calls() -> None
 
 
 @pytest.mark.anyio
-async def test_failure_discards_accumulated_results_and_reuses_validated_language() -> None:
-    subject, model, session = agent([call(), call()], FakeSession(failure_on=2))
+async def test_failure_returns_localized_safe_reply_without_additional_model_or_tool_calls() -> (
+    None
+):
+    subject, model, session = agent([call()], FakeSession(failure_on=1))
     response = await subject.handle(message="show", mcp_access_token=SecretStr("token"))
     assert response.text == "Podatki o prisotnosti trenutno niso na voljo. Poskusite znova pozneje."
-    assert len(session.calls) == 2 and len(model.requests) == 2
+    assert len(session.calls) == 1 and len(model.requests) == 1
 
 
 @pytest.mark.anyio
@@ -177,8 +177,20 @@ async def test_ambiguous_numeric_date_is_a_pre_auth_model_clarification() -> Non
         ]
     )
     response = await subject.handle(message="show 6/8", mcp_access_token=SecretStr("token"))
-    assert response.text == "Please clarify the attendance date range."
+    assert response.text == "Please clarify the attendance date range you want to view."
     assert len(model.requests) == 1 and not session.calls
+
+
+@pytest.mark.anyio
+async def test_pre_auth_model_guidance_is_a_code_rendered_fixed_reply() -> None:
+    subject, _, session = agent(
+        [FinalResponse("The model's invented guidance", "sl", "attendance_scope_guidance")]
+    )
+
+    response = await subject.handle(message="weather?", mcp_access_token=SecretStr("token"))
+
+    assert response.text == "Lahko vam prikažem dogodke vaše prisotnosti za določeno obdobje."
+    assert not session.calls
 
 
 @pytest.mark.anyio

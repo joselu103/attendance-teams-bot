@@ -30,15 +30,17 @@ class OpenAiLanguageModel:
 
     async def complete(self, request: ModelRequest) -> ModelTurn:
         try:
-            completion = await self.completion(
-                model=self.model,
-                messages=_messages(request),
-                tools=[_as_openai_tool(tool) for tool in request.tools],
-                parallel_tool_calls=False,
-                response_format=_response_format(
+            options: dict[str, object] = {
+                "model": self.model,
+                "messages": _messages(request),
+                "response_format": _response_format(
                     request.pre_auth_guidance, bool(request.tool_results)
                 ),
-            )
+            }
+            if request.tools:
+                options["tools"] = [_as_openai_tool(tool) for tool in request.tools]
+                options["parallel_tool_calls"] = False
+            completion = await self.completion(**options)
             return _parse_completion(
                 completion, request.pre_auth_guidance, bool(request.tool_results)
             )

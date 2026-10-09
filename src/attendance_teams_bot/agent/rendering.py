@@ -11,7 +11,6 @@ from attendance_teams_bot.agent.language_model import PresentationPlan
 from attendance_teams_bot.mcp.contracts import AttendanceEvent, EmployeeSuggestion, McpToolErrorCode
 
 MAX_REPLY_CHARACTERS = 12_000
-MAX_REPLY_BATCH = 12
 _REPLY_TIMEZONE = ZoneInfo("Europe/Ljubljana")
 
 
@@ -48,7 +47,7 @@ TOOL_FAILURE_REPLIES = {
     "NOT_FOUND": "No matching employee was found.",
 }
 
-GuidanceIntent = Literal["unsupported", "date_ambiguous"]
+GuidanceIntent = Literal["unsupported", "date_ambiguous", "greeting"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -395,19 +394,8 @@ def _history_batch(presentation: SafeHistoryPresentation) -> BotResponse:
     prefix = f"**{_safe_text(presentation.plan.title)}**"
     if presentation.plan.context:
         prefix += "\n\n" + _safe_text(presentation.plan.context)
-    messages: list[str] = []
-    current = prefix
-    for block in blocks:
-        candidate = current + "\n\n" + block
-        if len(candidate) > MAX_REPLY_CHARACTERS:
-            if current == prefix or len(messages) >= MAX_REPLY_BATCH - 1:
-                return BotResponse(_localized_safe_reply(UNAVAILABLE_REPLY, presentation.language))
-            messages.append(current)
-            current = block
-        else:
-            current = candidate
-    messages.append(current)
-    return _response_batch(tuple(messages), presentation.language, presentation.display_name)
+    response = _ordered_batch(prefix, blocks, presentation.language, presentation.display_name)
+    return response or BotResponse(_localized_safe_reply(UNAVAILABLE_REPLY, presentation.language))
 
 
 def _current_batch(presentation: CurrentAttendancePresentation) -> BotResponse:
@@ -423,16 +411,72 @@ def _current_batch(presentation: CurrentAttendancePresentation) -> BotResponse:
             presentation.language,
             presentation.display_name,
         )
-    lines = [f"**{_safe_text(presentation.plan.title)}**"]
+    prefix = f"**{_safe_text(presentation.plan.title)}**"
     if presentation.plan.context:
-        lines.extend(("", _safe_text(presentation.plan.context)))
+        prefix += "\n\n" + _safe_text(presentation.plan.context)
+    blocks: list[str] = []
     for status, names in presentation.status_names:
-        lines.extend(("", f"**{_current_status(status, presentation.language)}**"))
-        lines.extend(f"- {_safe_text(name)}" for name in names)
-    text = "\n".join(lines)
-    if len(text) > MAX_REPLY_CHARACTERS:
-        return BotResponse(_localized_safe_reply(UNAVAILABLE_REPLY, presentation.language))
-    return _response(text, presentation.language, presentation.display_name)
+        heading = f"**{_current_status(status, presentation.language)}**"
+        group = heading
+        for name in names:
+            line = f"- {_safe_text(name)}"
+            candidate = group + "\n" + line
+            if len(candidate) > MAX_REPLY_CHARACTERS - 80 and group != heading:
+                blocks.append(group)
+                group = heading + "\n" + line
+            elif len(candidate) > MAX_REPLY_CHARACTERS - 80:
+                return BotResponse(_localized_safe_reply(UNAVAILABLE_REPLY, presentation.language))
+            else:
+                group = candidate
+        if group != heading:
+            blocks.append(group)
+    response = _ordered_batch(prefix, blocks, presentation.language, presentation.display_name)
+    return response or BotResponse(_localized_safe_reply(UNAVAILABLE_REPLY, presentation.language))
+
+
+def _ordered_batch(
+    prefix: str,
+    blocks: list[str],
+    language: ReplyLanguage,
+    display_name: str | None,
+) -> BotResponse | None:
+    """Pack complete fact blocks and mark every part plus the batch end."""
+    suffix = "\n\n**Konec rezultatov**" if language == "sl" else "\n\n**End of results**"
+    reserve = len("**Part 9999 of 9999**\n\n") + len(suffix)
+    capacity = MAX_REPLY_CHARACTERS - reserve
+    if capacity < 1:
+        return None
+    name = _safe_display_name(display_name)
+    if name:
+        greeting = "Pozdravljeni" if language == "sl" else "Hello"
+        prefix = f"{greeting}, {name}!\n\n{prefix}"
+    bodies: list[str] = []
+    current = prefix
+    for block in blocks:
+        candidate = current + "\n\n" + block
+        if len(candidate) <= capacity:
+            current = candidate
+        elif current != prefix:
+            bodies.append(current)
+            current = block
+            if len(current) > capacity:
+                return None
+        else:
+            return None
+    if current != prefix:
+        bodies.append(current)
+    if not bodies:
+        return None
+    total = len(bodies)
+    part = "Del " if language == "sl" else "Part "
+    of = " od " if language == "sl" else " of "
+    messages = tuple(
+        f"**{part}{index}{of}{total}**\n\n{body}" + (suffix if index == total else "")
+        for index, body in enumerate(bodies, start=1)
+    )
+    if any(len(message) > MAX_REPLY_CHARACTERS for message in messages):
+        return None
+    return BotResponse.batch(messages)
 
 
 def _current_status(value: str, language: ReplyLanguage) -> str:
@@ -509,6 +553,8 @@ def _safe_text(value: str | None) -> str:
 
 
 def _guidance_copy(intent: GuidanceIntent, language: ReplyLanguage) -> str:
+    if intent == "greeting":
+        return _copy(language, "I can help with attendance.", "Pomagam vam lahko pri prisotnosti.")
     if intent == "date_ambiguous":
         return _copy(
             language,

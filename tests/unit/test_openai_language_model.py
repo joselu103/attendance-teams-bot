@@ -138,3 +138,33 @@ async def test_openai_pre_auth_guidance_includes_display_name_and_requires_scope
     assert "Unverified Ada" in prompt and "Do not answer unrelated knowledge questions" in prompt
     schema = completion.requests[0]["response_format"]["json_schema"]["schema"]
     assert schema["required"] == ["markdown", "language", "guidance_kind"]
+
+
+@pytest.mark.anyio
+async def test_post_result_completion_cannot_advertise_tools() -> None:
+    completion = FakeCompletion(
+        Completion(
+            (
+                Choice(
+                    Message(
+                        '{"markdown":"Done","language":"en","presentation":'
+                        '{"title":"Attendance","context":null}}'
+                    )
+                ),
+            )
+        )
+    )
+    model = OpenAiLanguageModel(completion, "test")
+    response = await model.complete(
+        ModelRequest(
+            "show my attendance",
+            date(2026, 8, 15),
+            "Europe/Ljubljana",
+            (),
+            (ToolResultView("execution", "list_my_attendance_events", {"has_records": True}),),
+        )
+    )
+
+    assert isinstance(response, FinalResponse)
+    assert "tools" not in completion.requests[0]
+    assert "parallel_tool_calls" not in completion.requests[0]
