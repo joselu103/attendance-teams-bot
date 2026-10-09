@@ -64,6 +64,17 @@ framing for one authenticated tenant/AAD user session. It is untrusted context,
 not attendance authority, identity evidence, or a facts cache.
 _Avoid_: attendance history, user preference store
 
+**Active continuation**:
+A short-lived cursor for the next page of an already delivered attendance-history
+result. It is bound to an authenticated user and Teams conversation, and it
+supplies query shape only after fresh authorization.
+_Avoid_: result cache, authorization grant, signed query
+
+**Continuation lease**:
+The short exclusive claim preventing two button clicks or typed requests from
+retrieving the same next page concurrently.
+_Avoid_: distributed attendance lock, retry queue
+
 ## MCP catalog policy
 
 **Discovery admission**:

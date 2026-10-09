@@ -1,11 +1,13 @@
 import asyncio
 import os
+from datetime import date
 from uuid import uuid4
 
 import asyncpg
 import pytest
 
 import attendance_teams_bot.memory.database as database
+from attendance_teams_bot.agent.continuation import HistoryContinuation
 from attendance_teams_bot.memory.database import _SCHEMA_LOCK, PostgresConversationMemory
 
 
@@ -195,4 +197,33 @@ async def test_maintenance_drains_more_than_one_cleanup_batch(monkeypatch) -> No
             maintenance.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await maintenance
+        await memory.close()
+
+
+@pytest.mark.anyio
+async def test_active_continuation_is_leased_then_advanced_or_cleared() -> None:
+    database_url = os.environ.get("TEST_DATABASE_URL")
+    if database_url is None:
+        pytest.skip("TEST_DATABASE_URL is required for synthetic PostgreSQL verification")
+    memory = PostgresConversationMemory(database_url)
+    assert await memory.start()
+    session, conversation = f"synthetic-{uuid4()}", f"conversation-{uuid4()}"
+    first = HistoryContinuation("self", date(2026, 1, 1), date(2026, 1, 31), 50, "en")
+    second = HistoryContinuation("self", date(2026, 1, 1), date(2026, 1, 31), 100, "en")
+    try:
+        identifier = await memory.replace_continuation(session, conversation, first)
+        assert identifier is not None
+        claimed = await memory.claim_continuation(session, conversation, identifier)
+        assert claimed is not None
+        assert claimed.query == first
+        assert await memory.claim_continuation(session, conversation) is None
+
+        next_identifier = await memory.finish_continuation(claimed, session, conversation, second)
+        assert next_identifier is not None and next_identifier != identifier
+        assert await memory.claim_continuation(session, conversation, identifier) is None
+        final = await memory.claim_continuation(session, conversation, next_identifier)
+        assert final is not None and final.query == second
+        assert await memory.finish_continuation(final, session, conversation, None) is None
+        assert await memory.claim_continuation(session, conversation) is None
+    finally:
         await memory.close()

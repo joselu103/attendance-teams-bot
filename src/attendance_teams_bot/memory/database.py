@@ -5,11 +5,17 @@ import hashlib
 from collections.abc import AsyncIterator, Awaitable
 from contextlib import asynccontextmanager
 from typing import Protocol, TypeVar, cast
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import asyncpg  # type: ignore[import-untyped]
 import structlog
 
+from attendance_teams_bot.agent.continuation import (
+    CONTINUATION_LEASE_SECONDS,
+    CONTINUATION_TTL_SECONDS,
+    ClaimedContinuation,
+    HistoryContinuation,
+)
 from attendance_teams_bot.memory.models import ChatMessage, ChatRole
 
 MAX_CONTENT_LENGTH = 4_000
@@ -35,6 +41,26 @@ class ConversationMemory(Protocol):
         self, session_id: str, user_content: str, assistant_content: str
     ) -> None: ...
 
+    async def replace_continuation(
+        self, session_id: str, conversation_id: str, query: HistoryContinuation | None
+    ) -> UUID | None: ...
+
+    async def claim_continuation(
+        self, session_id: str, conversation_id: str, identifier: UUID | None = None
+    ) -> ClaimedContinuation | None: ...
+
+    async def finish_continuation(
+        self,
+        claimed: ClaimedContinuation,
+        session_id: str,
+        conversation_id: str,
+        query: HistoryContinuation | None,
+    ) -> UUID | None: ...
+
+    async def release_continuation(
+        self, claimed: ClaimedContinuation, session_id: str, conversation_id: str
+    ) -> None: ...
+
 
 class StatelessConversationMemory:
     """No-op memory used for absent configuration and temporary database outages."""
@@ -52,6 +78,33 @@ class StatelessConversationMemory:
         self, session_id: str, user_content: str, assistant_content: str
     ) -> None:
         del session_id, user_content, assistant_content
+
+    async def replace_continuation(
+        self, session_id: str, conversation_id: str, query: HistoryContinuation | None
+    ) -> UUID | None:
+        del session_id, conversation_id, query
+        return None
+
+    async def claim_continuation(
+        self, session_id: str, conversation_id: str, identifier: UUID | None = None
+    ) -> ClaimedContinuation | None:
+        del session_id, conversation_id, identifier
+        return None
+
+    async def finish_continuation(
+        self,
+        claimed: ClaimedContinuation,
+        session_id: str,
+        conversation_id: str,
+        query: HistoryContinuation | None,
+    ) -> UUID | None:
+        del claimed, session_id, conversation_id, query
+        return None
+
+    async def release_continuation(
+        self, claimed: ClaimedContinuation, session_id: str, conversation_id: str
+    ) -> None:
+        del claimed, session_id, conversation_id
 
 
 def memory_session_id(tenant_id: str | None, aad_object_id: str | None) -> str | None:
@@ -171,6 +224,85 @@ class PostgresConversationMemory:
             _LOGGER.warning("conversation_memory_cleanup_failed", error_type=type(error).__name__)
             return 0
 
+    async def replace_continuation(
+        self, session_id: str, conversation_id: str, query: HistoryContinuation | None
+    ) -> UUID | None:
+        """Replace one delivered history cursor, or clear it after a final page."""
+        pool = self._pool
+        if pool is None:
+            return None
+        try:
+            return await self._bounded(
+                self._replace_continuation_transaction(pool, session_id, conversation_id, query)
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            _LOGGER.warning(
+                "conversation_continuation_write_failed", error_type=type(error).__name__
+            )
+            return None
+
+    async def claim_continuation(
+        self, session_id: str, conversation_id: str, identifier: UUID | None = None
+    ) -> ClaimedContinuation | None:
+        """Lease the active cursor once; button and text routes share this operation."""
+        pool = self._pool
+        if pool is None:
+            return None
+        try:
+            return await self._bounded(
+                self._claim_continuation_transaction(pool, session_id, conversation_id, identifier)
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            _LOGGER.warning(
+                "conversation_continuation_claim_failed", error_type=type(error).__name__
+            )
+            return None
+
+    async def finish_continuation(
+        self,
+        claimed: ClaimedContinuation,
+        session_id: str,
+        conversation_id: str,
+        query: HistoryContinuation | None,
+    ) -> UUID | None:
+        pool = self._pool
+        if pool is None:
+            return None
+        try:
+            return await self._bounded(
+                self._finish_continuation_transaction(
+                    pool, claimed, session_id, conversation_id, query
+                )
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            _LOGGER.warning(
+                "conversation_continuation_finish_failed", error_type=type(error).__name__
+            )
+            return None
+
+    async def release_continuation(
+        self, claimed: ClaimedContinuation, session_id: str, conversation_id: str
+    ) -> None:
+        pool = self._pool
+        if pool is None:
+            return
+        try:
+            await self._bounded(
+                self._release_continuation_transaction(pool, claimed, session_id, conversation_id)
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            _LOGGER.warning(
+                "conversation_continuation_release_failed", error_type=type(error).__name__
+            )
+
     async def _save(self, session_id: str, messages: tuple[tuple[ChatRole, str], ...]) -> None:
         pool = self._pool
         if pool is None:
@@ -232,6 +364,178 @@ class PostgresConversationMemory:
                     "CREATE INDEX IF NOT EXISTS chat_messages_created_idx "
                     "ON chat_messages (created_at)"
                 )
+                await connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS active_continuations (
+                        id UUID PRIMARY KEY,
+                        session_id TEXT NOT NULL,
+                        conversation_id TEXT NOT NULL,
+                        scope TEXT NOT NULL CHECK (scope IN ('self', 'admin')),
+                        start_date DATE NOT NULL,
+                        end_date DATE NOT NULL,
+                        next_offset INTEGER NOT NULL CHECK (next_offset > 0),
+                        language TEXT NOT NULL CHECK (language IN ('en', 'sl')),
+                        target BIGINT,
+                        expires_at TIMESTAMPTZ NOT NULL,
+                        lease UUID,
+                        lease_expires_at TIMESTAMPTZ,
+                        UNIQUE (session_id, conversation_id)
+                    )
+                    """
+                )
+                await connection.execute(
+                    "CREATE INDEX IF NOT EXISTS active_continuations_expires_idx "
+                    "ON active_continuations (expires_at)"
+                )
+
+    async def _replace_continuation_transaction(
+        self,
+        pool: asyncpg.Pool,
+        session_id: str,
+        conversation_id: str,
+        query: HistoryContinuation | None,
+    ) -> UUID | None:
+        async with pool.acquire() as connection, connection.transaction():
+            await connection.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+                session_id + ":" + conversation_id,
+            )
+            if query is None:
+                await connection.execute(
+                    "DELETE FROM active_continuations "
+                    "WHERE session_id = $1 AND conversation_id = $2",
+                    session_id,
+                    conversation_id,
+                )
+                return None
+            identifier = uuid4()
+            await connection.execute(
+                """
+                INSERT INTO active_continuations
+                    (id, session_id, conversation_id, scope, start_date, end_date, next_offset,
+                     language, target, expires_at, lease, lease_expires_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9,
+                        NOW() + ($10 * INTERVAL '1 second'), NULL, NULL)
+                ON CONFLICT (session_id, conversation_id) DO UPDATE SET
+                    id = EXCLUDED.id, scope = EXCLUDED.scope, start_date = EXCLUDED.start_date,
+                    end_date = EXCLUDED.end_date, next_offset = EXCLUDED.next_offset,
+                    language = EXCLUDED.language, target = EXCLUDED.target,
+                    expires_at = EXCLUDED.expires_at, lease = NULL, lease_expires_at = NULL
+                """,
+                identifier,
+                session_id,
+                conversation_id,
+                query.scope,
+                query.start_date,
+                query.end_date,
+                query.offset,
+                query.language,
+                query.target,
+                CONTINUATION_TTL_SECONDS,
+            )
+            return identifier
+
+    async def _claim_continuation_transaction(
+        self, pool: asyncpg.Pool, session_id: str, conversation_id: str, identifier: UUID | None
+    ) -> ClaimedContinuation | None:
+        async with pool.acquire() as connection, connection.transaction():
+            await connection.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+                session_id + ":" + conversation_id,
+            )
+            row = await connection.fetchrow(
+                """
+                SELECT * FROM active_continuations WHERE session_id = $1 AND conversation_id = $2
+                  AND expires_at > NOW()
+                  AND (lease_expires_at IS NULL OR lease_expires_at <= NOW())
+                  AND ($3::uuid IS NULL OR id = $3)
+                """,
+                session_id,
+                conversation_id,
+                identifier,
+            )
+            if row is None:
+                return None
+            lease = uuid4()
+            await connection.execute(
+                "UPDATE active_continuations SET lease = $1, "
+                "lease_expires_at = NOW() + ($2 * INTERVAL '1 second') WHERE id = $3",
+                lease,
+                CONTINUATION_LEASE_SECONDS,
+                row["id"],
+            )
+            return ClaimedContinuation(
+                row["id"],
+                lease,
+                HistoryContinuation(
+                    row["scope"],
+                    row["start_date"],
+                    row["end_date"],
+                    row["next_offset"],
+                    row["language"],
+                    row["target"],
+                ),
+            )
+
+    async def _finish_continuation_transaction(
+        self,
+        pool: asyncpg.Pool,
+        claimed: ClaimedContinuation,
+        session_id: str,
+        conversation_id: str,
+        query: HistoryContinuation | None,
+    ) -> UUID | None:
+        async with pool.acquire() as connection, connection.transaction():
+            if query is None:
+                result = await connection.execute(
+                    "DELETE FROM active_continuations WHERE id = $1 AND session_id = $2 "
+                    "AND conversation_id = $3 AND lease = $4",
+                    claimed.identifier,
+                    session_id,
+                    conversation_id,
+                    claimed.lease,
+                )
+                return None if result == "DELETE 1" else None
+            identifier = uuid4()
+            result = await connection.execute(
+                """
+                UPDATE active_continuations SET id = $1, scope = $2, start_date = $3, end_date = $4,
+                    next_offset = $5, language = $6, target = $7,
+                    expires_at = NOW() + ($8 * INTERVAL '1 second'), lease = NULL,
+                    lease_expires_at = NULL
+                WHERE id = $9 AND session_id = $10 AND conversation_id = $11 AND lease = $12
+                """,
+                identifier,
+                query.scope,
+                query.start_date,
+                query.end_date,
+                query.offset,
+                query.language,
+                query.target,
+                CONTINUATION_TTL_SECONDS,
+                claimed.identifier,
+                session_id,
+                conversation_id,
+                claimed.lease,
+            )
+            return identifier if result == "UPDATE 1" else None
+
+    async def _release_continuation_transaction(
+        self,
+        pool: asyncpg.Pool,
+        claimed: ClaimedContinuation,
+        session_id: str,
+        conversation_id: str,
+    ) -> None:
+        async with pool.acquire() as connection:
+            await connection.execute(
+                "UPDATE active_continuations SET lease = NULL, lease_expires_at = NULL "
+                "WHERE id = $1 AND session_id = $2 AND conversation_id = $3 AND lease = $4",
+                claimed.identifier,
+                session_id,
+                conversation_id,
+                claimed.lease,
+            )
 
     async def _cleanup(self, pool: asyncpg.Pool) -> int:
         async with pool.acquire() as connection:
@@ -253,7 +557,11 @@ class PostgresConversationMemory:
                     )
                     """
                 )
-                return int(cast(str, result).rsplit(" ", maxsplit=1)[-1])
+                removed_messages = int(cast(str, result).rsplit(" ", maxsplit=1)[-1])
+                result = await connection.execute(
+                    "DELETE FROM active_continuations WHERE expires_at <= NOW()"
+                )
+                return removed_messages + int(cast(str, result).rsplit(" ", maxsplit=1)[-1])
 
     def _require_pool(self) -> asyncpg.Pool:
         if self._pool is None:

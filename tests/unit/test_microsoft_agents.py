@@ -113,6 +113,14 @@ def test_attendance_factory_configures_sso_and_forwards_callback_to_turn_handler
         def __init__(self, *args: object, **kwargs: object) -> None:
             del args, kwargs
 
+        @property
+        def adaptive_card(self):
+            return self
+
+        def action_submit(self, verb: str, *, auth_handlers: list[str]):
+            recorded["submit_verb"] = verb
+            return lambda function: function
+
         def activity(self, activity_type: str, *, auth_handlers: list[str]):
             recorded["activity_type"] = activity_type
             recorded["route_auth_handlers"] = auth_handlers

@@ -7,7 +7,7 @@ from typing import Any, Protocol, cast
 
 import structlog
 from fastapi import FastAPI, Request
-from microsoft_agents.activity import load_configuration_from_env
+from microsoft_agents.activity import Activity, Attachment, load_configuration_from_env
 from microsoft_agents.authentication.msal import MsalConnectionManager
 from microsoft_agents.hosting.core import (
     AgentApplication,
@@ -26,6 +26,8 @@ from microsoft_agents.hosting.fastapi import (
 from pydantic import SecretStr
 from starlette.responses import JSONResponse, Response
 
+from attendance_teams_bot.agent.continuation import HISTORY_VERB
+from attendance_teams_bot.agent.contracts import BotAttachment
 from attendance_teams_bot.auth.obo import MsalOboTokenExchange
 from attendance_teams_bot.memory.database import (
     PostgresConversationMemory,
@@ -67,6 +69,32 @@ class _Authorization(Protocol):
         context: TurnContext,
         auth_handler_id: str | None = None,
     ) -> object: ...
+
+
+class SdkAttendanceContext:
+    """Translate SDK activity and attachment APIs behind the neutral turn port."""
+
+    def __init__(self, context: TurnContext) -> None:
+        self.sdk_context = context
+
+    @property
+    def activity(self) -> Any:
+        return self.sdk_context.activity
+
+    async def send_activity(self, text: str) -> object:
+        return await self.sdk_context.send_activity(text)
+
+    async def send_attachment(self, attachment: BotAttachment) -> object:
+        return await self.sdk_context.send_activity(
+            Activity(
+                type="message",
+                attachments=[
+                    Attachment(
+                        content_type=attachment.content_type, content=dict(attachment.content)
+                    )
+                ],
+            )
+        )
 
 
 class TeamsAuthorizationSsoTokenProvider:
@@ -330,7 +358,13 @@ def _register_attendance_message_handler(
 ) -> None:
     @agent_application.activity("message", auth_handlers=[_ATTENDANCE_AUTH_HANDLER_ID])
     async def on_message(context: TurnContext, _state: TurnState) -> None:
-        await attendance_handler.handle(cast(BotServiceAuthenticatedTurnContext, context))
+        await attendance_handler.handle(SdkAttendanceContext(context))
+
+    @agent_application.adaptive_card.action_submit(
+        HISTORY_VERB, auth_handlers=[_ATTENDANCE_AUTH_HANDLER_ID]
+    )
+    async def on_submit(context: TurnContext, _state: TurnState, data: Any) -> None:
+        await attendance_handler.handle_submission(SdkAttendanceContext(context), data)
 
 
 def _create_http_app(
