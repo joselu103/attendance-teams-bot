@@ -235,6 +235,34 @@ The PostgreSQL sidecar intentionally requires an externally supplied
 set `DATABASE_URL` to the Compose service hostname `postgres` and matching
 `POSTGRES_USER`, `POSTGRES_PASSWORD`, and `POSTGRES_DB` values (for example,
 `postgresql://attendance_memory:<password>@postgres:5432/attendance_memory`).
+The bot filters only these three case-insensitive PostgreSQL-sidecar dotenv
+keys before strict settings validation. Every other unknown dotenv key remains
+an error, while all bot-owned settings stay validated; this makes a copied
+Compose dotenv usable without turning sidecar configuration into application
+settings.
+
+### Manual named-volume restart verification
+
+This is a reproducible local verification procedure, not an automated test. It
+uses only synthetic credentials, an isolated Compose project, and the existing
+named volume; `down` deliberately omits `--volumes` so the marker must survive.
+
+```bash
+export POSTGRES_PASSWORD=synthetic-postgres-password
+export BOT_IMAGE=attendance-teams-bot:memory-restart-check
+docker compose --env-file /dev/null -p attendance-memory-restart build attendance-teams-bot
+docker compose --env-file /dev/null -p attendance-memory-restart up -d postgres
+docker compose --env-file /dev/null -p attendance-memory-restart exec -T postgres \
+  psql -U attendance_memory -d attendance_memory -c \
+  "CREATE TABLE restart_verification (marker TEXT NOT NULL); INSERT INTO restart_verification VALUES ('synthetic-marker');"
+docker compose --env-file /dev/null -p attendance-memory-restart down
+docker compose --env-file /dev/null -p attendance-memory-restart up -d postgres
+docker compose --env-file /dev/null -p attendance-memory-restart exec -T postgres \
+  psql -U attendance_memory -d attendance_memory -c \
+  "SELECT marker FROM restart_verification;"
+docker compose --env-file /dev/null -p attendance-memory-restart down --volumes
+unset POSTGRES_PASSWORD BOT_IMAGE
+```
 
 Set `MCP_ENDPOINT` to the MCP service's reachable HTTPS endpoint, such as
 `https://attendance-mcp.<your-routable-domain>/mcp`; set the Bot Service

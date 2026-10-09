@@ -27,6 +27,7 @@ from attendance_teams_bot.mcp.contracts import (
     McpToolFailure,
     ResolvedEmployee,
 )
+from attendance_teams_bot.memory.models import ChatMessage
 
 
 def tool(name: str, properties: dict[str, object]) -> DiscoveredMcpTool:
@@ -199,6 +200,41 @@ async def test_result_memory_omits_model_presentation_body_and_display_name() ->
     )
 
     assert response.assistant_memory == "Attendance response delivered."
+
+
+@pytest.mark.anyio
+async def test_authenticated_model_calls_share_one_history_snapshot_and_current_input() -> None:
+    agent, model, _ = subject(
+        [
+            ToolCall(
+                "x",
+                "list_my_attendance_events",
+                {
+                    "start_date": "2026-08-01",
+                    "end_date": "2026-08-02",
+                    "reply_language": "en",
+                },
+            ),
+            FinalResponse("ignored", "en", presentation=PresentationPlan("Attendance", None)),
+        ]
+    )
+    history = (
+        ChatMessage("user", "earlier request", datetime(2026, 8, 14, tzinfo=UTC)),
+        ChatMessage("assistant", "safe guidance", datetime(2026, 8, 14, tzinfo=UTC)),
+    )
+
+    await agent.handle(
+        message="show my attendance",
+        mcp_access_token=SecretStr("token"),
+        history=history,
+    )
+
+    assert len(model.requests) == 2
+    assert all(request.history == history for request in model.requests)
+    assert [request.user_message for request in model.requests] == [
+        "show my attendance",
+        "show my attendance",
+    ]
 
 
 @pytest.mark.anyio

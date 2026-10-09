@@ -12,7 +12,9 @@ from pydantic import (
     field_validator,
     model_validator,
 )
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
+
+_SIDECAR_DOTENV_KEYS = frozenset({"postgres_db", "postgres_user", "postgres_password"})
 
 
 class RuntimeMode(StrEnum):
@@ -55,7 +57,11 @@ class Settings(BaseSettings):
     """Load runtime settings and keep attendance integration disabled unless fully configured."""
 
     model_config = SettingsConfigDict(
-        env_file=".env", env_file_encoding="utf-8", hide_input_in_errors=True
+        # A copied Compose dotenv also configures the PostgreSQL sidecar.
+        env_file=".env",
+        env_file_encoding="utf-8",
+        hide_input_in_errors=True,
+        extra="forbid",
     )
 
     log_environment: Literal["local", "staging", "production"] = Field(
@@ -98,6 +104,23 @@ class Settings(BaseSettings):
         default=None,
         validation_alias="CONNECTIONS__SERVICE_CONNECTION__SETTINGS__CLIENTSECRET",
     )
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        """Ignore only Compose sidecar keys from dotenv files, retaining strict settings."""
+        dotenv_settings.env_vars = {  # type: ignore[attr-defined]
+            name: value
+            for name, value in dotenv_settings.env_vars.items()  # type: ignore[attr-defined]
+            if name.casefold() not in _SIDECAR_DOTENV_KEYS
+        }
+        return init_settings, env_settings, dotenv_settings, file_secret_settings
 
     @field_validator("app_version")
     @classmethod

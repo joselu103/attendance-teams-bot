@@ -5,6 +5,7 @@ from uuid import uuid4
 import asyncpg
 import pytest
 
+import attendance_teams_bot.memory.database as database
 from attendance_teams_bot.memory.database import _SCHEMA_LOCK, PostgresConversationMemory
 
 
@@ -105,3 +106,93 @@ async def test_cancelled_schema_start_releases_its_pool_and_allows_retry() -> No
 
     assert await memory.start() is True
     await memory.close()
+
+
+@pytest.mark.anyio
+async def test_exchange_insert_is_atomic_when_assistant_insert_fails() -> None:
+    database_url = os.environ.get("TEST_DATABASE_URL")
+    if database_url is None:
+        pytest.skip("TEST_DATABASE_URL is required for synthetic PostgreSQL verification")
+    memory = PostgresConversationMemory(database_url)
+    assert await memory.start()
+    session = f"synthetic-atomic-{uuid4()}"
+    pool = memory._pool
+    assert pool is not None
+    try:
+        async with pool.acquire() as connection:
+            await connection.execute(
+                """
+                CREATE OR REPLACE FUNCTION reject_synthetic_assistant() RETURNS trigger AS $$
+                BEGIN
+                    IF NEW.role = 'assistant' THEN
+                        RAISE EXCEPTION 'synthetic assistant failure';
+                    END IF;
+                    RETURN NEW;
+                END;
+                $$ LANGUAGE plpgsql
+                """
+            )
+            await connection.execute(
+                """
+                CREATE TRIGGER reject_synthetic_assistant_trigger
+                BEFORE INSERT ON chat_messages
+                FOR EACH ROW EXECUTE FUNCTION reject_synthetic_assistant()
+                """
+            )
+
+        await memory.save_exchange(session, "user turn", "assistant framing")
+
+        assert await memory.get_chat_history(session) == ()
+    finally:
+        async with pool.acquire() as connection:
+            await connection.execute(
+                "DROP TRIGGER IF EXISTS reject_synthetic_assistant_trigger ON chat_messages"
+            )
+            await connection.execute("DROP FUNCTION IF EXISTS reject_synthetic_assistant()")
+        await memory.close()
+
+
+@pytest.mark.anyio
+async def test_maintenance_drains_more_than_one_cleanup_batch(monkeypatch) -> None:
+    database_url = os.environ.get("TEST_DATABASE_URL")
+    if database_url is None:
+        pytest.skip("TEST_DATABASE_URL is required for synthetic PostgreSQL verification")
+    memory = PostgresConversationMemory(database_url)
+    assert await memory.start()
+    pool = memory._pool
+    assert pool is not None
+    session = f"synthetic-expired-{uuid4()}"
+    slept_after_cleanup = asyncio.Event()
+    maintenance: asyncio.Task[None] | None = None
+
+    async def wait_after_cleanup(_seconds: float) -> None:
+        slept_after_cleanup.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(database.asyncio, "sleep", wait_after_cleanup)
+    try:
+        async with pool.acquire() as connection:
+            await connection.executemany(
+                """
+                INSERT INTO chat_messages (session_id, role, content, created_at)
+                VALUES ($1, 'user', 'expired', NOW() - INTERVAL '8 days')
+                """,
+                [(session,) for _ in range(1_001)],
+            )
+
+        maintenance = asyncio.create_task(database._maintenance(memory))
+        await asyncio.wait_for(slept_after_cleanup.wait(), timeout=2)
+        async with pool.acquire() as connection:
+            remaining = await connection.fetchval(
+                "SELECT COUNT(*) FROM chat_messages WHERE session_id = $1", session
+            )
+        assert remaining == 0
+        maintenance.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await maintenance
+    finally:
+        if maintenance is not None and not maintenance.done():
+            maintenance.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await maintenance
+        await memory.close()

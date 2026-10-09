@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from datetime import date
+from datetime import UTC, date, datetime
 
 import pytest
 
@@ -12,6 +12,7 @@ from attendance_teams_bot.agent.language_model import (
     ToolResultView,
 )
 from attendance_teams_bot.agent.openai import OpenAiLanguageModel
+from attendance_teams_bot.memory.models import ChatMessage
 
 
 @dataclass(frozen=True)
@@ -168,3 +169,26 @@ async def test_post_result_completion_cannot_advertise_tools() -> None:
     assert isinstance(response, FinalResponse)
     assert "tools" not in completion.requests[0]
     assert "parallel_tool_calls" not in completion.requests[0]
+
+
+@pytest.mark.anyio
+async def test_openai_preserves_generic_history_roles_and_sends_current_input_once() -> None:
+    completion = FakeCompletion(
+        Completion((Choice(Message('{"markdown":"Done","language":"en"}')),))
+    )
+    model = OpenAiLanguageModel(completion, "test")
+    history = (
+        ChatMessage("user", "earlier question", datetime(2026, 8, 14, tzinfo=UTC)),
+        ChatMessage("assistant", "earlier guidance", datetime(2026, 8, 14, tzinfo=UTC)),
+    )
+
+    await model.complete(
+        ModelRequest("current question", date(2026, 8, 15), "Europe/Ljubljana", (), history=history)
+    )
+
+    messages = completion.requests[0]["messages"]
+    assert messages[1:] == [
+        {"role": "user", "content": "earlier question"},
+        {"role": "assistant", "content": "earlier guidance"},
+        {"role": "user", "content": "current question"},
+    ]

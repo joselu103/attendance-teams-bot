@@ -21,3 +21,8 @@ employee, or bypass fresh MCP catalog admission and authorization. User text
 may contain names; the minimized exclusions apply to assistant factual bodies,
 display names, and source-result fields. PostgreSQL outages fall back to
 stateless operation, preserving the existing reply and retry behavior.
+
+The shared Compose dotenv may also contain `POSTGRES_DB`, `POSTGRES_USER`, and
+`POSTGRES_PASSWORD` for the sidecar. A dotenv-source hook filters only these
+three keys case-insensitively before strict validation; every other unknown key
+is rejected, and sidecar credentials are not modeled as bot configuration.

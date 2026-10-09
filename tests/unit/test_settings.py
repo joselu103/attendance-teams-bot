@@ -86,6 +86,68 @@ def test_settings_reads_the_mcp_endpoint_from_the_environment(monkeypatch) -> No
     assert str(settings.mcp_endpoint) == "https://attendance-mcp.example.test/mcp"
 
 
+def test_settings_accepts_sidecar_keys_in_a_synthetic_compose_dotenv(tmp_path, monkeypatch) -> None:
+    environment_file = tmp_path / "synthetic-compose.env"
+    environment_file.write_text(
+        "\n".join(
+            [
+                "APP_VERSION=synthetic",
+                "DATABASE_URL=",
+                "POSTGRES_DB=synthetic_memory",
+                "POSTGRES_USER=synthetic_user",
+                "POSTGRES_PASSWORD=synthetic-password",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("APP_VERSION", raising=False)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+
+    settings = Settings(_env_file=environment_file)
+
+    assert settings.app_version == "synthetic"
+    assert settings.database_url is None
+
+
+def test_sidecar_filter_keeps_known_dotenv_fields_type_validated(tmp_path) -> None:
+    environment_file = tmp_path / "synthetic-compose.env"
+    environment_file.write_text(
+        "\n".join(
+            [
+                "POSTGRES_DB=synthetic_memory",
+                "POSTGRES_USER=synthetic_user",
+                "POSTGRES_PASSWORD=synthetic-password",
+                "MCP_TIMEOUT_SECONDS=not-a-number",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValidationError, match="MCP_TIMEOUT_SECONDS"):
+        Settings(_env_file=environment_file)
+
+
+def test_sidecar_filter_rejects_misspelled_dotenv_key_without_echoing_value(tmp_path) -> None:
+    environment_file = tmp_path / "synthetic-compose.env"
+    environment_file.write_text("MCP_ENPOINT=synthetic-secret", encoding="utf-8")
+
+    with pytest.raises(ValidationError) as error:
+        Settings(_env_file=environment_file)
+
+    rendered = str(error.value)
+    assert "mcp_enpoint" in rendered.lower()
+    assert "synthetic-secret" not in rendered
+
+
+def test_settings_rejects_unknown_initialization_keyword() -> None:
+    with pytest.raises(ValidationError) as error:
+        Settings(_env_file=None, misspelled_setting="synthetic-secret")
+
+    rendered = str(error.value)
+    assert "misspelled_setting" in rendered
+    assert "synthetic-secret" not in rendered
+
+
 @pytest.mark.parametrize("database_url", ["", "   "])
 def test_blank_optional_database_url_preserves_stateless_configuration(
     monkeypatch, database_url: str

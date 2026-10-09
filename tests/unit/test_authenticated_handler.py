@@ -385,3 +385,32 @@ async def test_failed_batch_send_stops_without_retry_and_logs_only_safe_progress
     assert logged[0]["total_messages"] == 3
     assert logged[0]["error_type"] == "RuntimeError"
     assert "transport detail" not in repr(logged)
+
+
+@pytest.mark.anyio
+async def test_failed_later_batch_message_does_not_save_an_exchange() -> None:
+    @dataclass
+    class SecondSendFails(Context):
+        async def send_activity(self, text: str) -> None:
+            if text == "second":
+                raise RuntimeError("synthetic delivery failure")
+            self.sent.append(text)
+
+    class BatchApplication(Application):
+        async def handle_selected(self, **kwargs: object) -> BotResponse:
+            del kwargs
+            return BotResponse("first", ("first", "second"), "safe framing")
+
+    memory = Memory()
+    context = SecondSendFails(
+        Activity(
+            conversation=Conversation("personal", "4a9c3c7b-eb0a-4e92-8b4a-0a8f1c65c786"),
+            from_property=Sender("Unverified", "63b649e6-17d4-4913-8b24-1a0b3c2da274"),
+        )
+    )
+
+    with pytest.raises(RuntimeError, match="synthetic delivery failure"):
+        await handler(BatchApplication(), memory=memory).handle(context)
+
+    assert context.sent == ["first"]
+    assert memory.saved == []
