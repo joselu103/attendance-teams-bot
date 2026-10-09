@@ -242,7 +242,7 @@ def test_catalog_unavailable_reply_is_localized() -> None:
 
 
 def test_safe_history_batches_only_at_complete_chronological_date_groups(monkeypatch) -> None:
-    monkeypatch.setattr(rendering, "MAX_REPLY_CHARACTERS", 120)
+    monkeypatch.setattr(rendering, "MAX_REPLY_CHARACTERS", 150)
     response = AttendanceResultPresenter().present(
         SafeHistoryPresentation(
             events=(
@@ -258,6 +258,8 @@ def test_safe_history_batches_only_at_complete_chronological_date_groups(monkeyp
     assert len(response.messages) == 2
     assert "Monday, August 10, 2026" in response.messages[0]
     assert "Tuesday, August 11, 2026" in response.messages[1]
+    assert "Part 1 of 2" in response.messages[0]
+    assert "End of results" in response.messages[1]
     assert all(
         "Company" not in message and "Internal" not in message for message in response.messages
     )
@@ -273,7 +275,26 @@ def test_current_attendance_exposes_only_status_grouped_names() -> None:
         )
     )
 
-    assert (
-        response.text == "**Trenutna prisotnost**\n\n**Delo na firmi**\n- Ada Example\n\n"
-        "**Delo od doma**\n- Blaž Example"
+    assert "**Trenutna prisotnost**" in response.text
+    assert "**Delo na firmi**\n- Ada Example" in response.text
+    assert "**Delo od doma**\n- Blaž Example" in response.text
+    assert "Konec rezultatov" in response.text
+
+
+def test_current_status_splits_long_name_groups_without_dropping_records(monkeypatch) -> None:
+    monkeypatch.setattr(rendering, "MAX_REPLY_CHARACTERS", 160)
+    names = tuple(f"Employee {index}" for index in range(20))
+    response = AttendanceResultPresenter().present(
+        CurrentAttendancePresentation(
+            status_names=(("office", names),),
+            language="en",
+            display_name=None,
+            plan=PresentationPlan("Current status", None),
+        )
     )
+
+    assert len(response.messages) > 1
+    combined = "\n".join(response.messages)
+    assert all(name in combined for name in names)
+    assert "End of results" in response.messages[-1]
+    assert all(len(message) <= 160 for message in response.messages)

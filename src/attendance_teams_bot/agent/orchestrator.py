@@ -24,7 +24,6 @@ from attendance_teams_bot.agent.language_model import (
     LanguageModelUnavailable,
     ModelRequest,
     ReplyLanguage,
-    ToolCall,
     ToolResultView,
 )
 from attendance_teams_bot.agent.mcp_catalog import (
@@ -37,6 +36,8 @@ from attendance_teams_bot.agent.rendering import (
     AttendanceResultPresenter,
     CurrentAttendancePresentation,
     EmployeeCandidatesPresentation,
+    GuidanceIntent,
+    GuidancePresentation,
     InvalidRequestPresentation,
     SafeHistoryPresentation,
     ToolFailurePresentation,
@@ -50,20 +51,19 @@ from attendance_teams_bot.mcp.client import (
     McpContractIncompatible,
 )
 from attendance_teams_bot.mcp.contracts import (
-    CURRENT_ATTENDANCE_TOOL,
+    CURRENT_WORK_STATUS_TOOL,
     OTHER_ATTENDANCE_TOOL,
     RESOLVE_EMPLOYEE_TOOL,
     SEARCH_EMPLOYEES_TOOL,
     SELF_ATTENDANCE_TOOL,
     AttendanceEvent,
     AttendanceEventPage,
-    CurrentAttendancePage,
+    CurrentWorkStatusPage,
     EmployeeSuggestionPage,
     ResolvedEmployee,
 )
 from attendance_teams_bot.observability import current_correlation_id
 
-MAX_MODEL_CALLS = 3
 PAGE_SIZE = 50
 MAX_CURRENT_PAGES = 200
 _CURRENT_STATUS_ORDER = ("office", "remote", "customer_site", "break", "absence", "no_status")
@@ -75,7 +75,7 @@ class AuthenticatedMcpSession(Protocol):
     async def call_tool(
         self, *, name: str, arguments: Mapping[str, object]
     ) -> (
-        AttendanceEventPage | ResolvedEmployee | CurrentAttendancePage | EmployeeSuggestionPage
+        AttendanceEventPage | ResolvedEmployee | CurrentWorkStatusPage | EmployeeSuggestionPage
     ): ...
 
 
@@ -136,7 +136,15 @@ class AttendanceAgent:
                     return self._unavailable_with_outcome(
                         language, display_name, correlation_id, "malformed_final"
                     )
-                return BotResponse(text=turn.markdown)
+                if turn.guidance_kind == "greeting":
+                    intent: GuidanceIntent = "greeting"
+                elif turn.guidance_kind == "attendance_clarification":
+                    intent = "date_ambiguous"
+                else:
+                    intent = "unsupported"
+                return self.presenter.present(
+                    GuidancePresentation(intent, turn.language, display_name)
+                )
             policy = next(
                 (item for item in pre_auth_tool_policies() if item.definition.name == turn.name),
                 None,
@@ -198,79 +206,66 @@ class AttendanceAgent:
                     return self._unavailable_with_outcome(
                         language, display_name, correlation_id, "catalog_rejected"
                     )
-                results: list[ToolResultView] = []
-                rendering: SafeHistoryPresentation | CurrentAttendancePresentation | None = None
-                pending_turn: ToolCall | None = ToolCall(
-                    "pre-auth-selection", selection.name, selection.arguments
+                policy = catalog.selected_tool(selection.name)
+                if policy is None:
+                    return self._unavailable_with_outcome(
+                        language, display_name, correlation_id, "selection_not_admitted"
+                    )
+                validated = policy.validate_arguments(selection.arguments)
+                if validated is None:
+                    return self.presenter.present(
+                        InvalidRequestPresentation(language, display_name)
+                    )
+                arguments, language = validated
+                result = await self._execute(session, policy, arguments)
+                if isinstance(result, EmployeeSuggestionPage):
+                    return self.presenter.present(
+                        EmployeeCandidatesPresentation(result.items, language, display_name)
+                    )
+                if policy.kind in {"self", "other"}:
+                    raw_items = result.get("items")
+                    if not isinstance(raw_items, list):
+                        raise McpContractIncompatible
+                    events = tuple(AttendanceEvent.model_validate(item) for item in raw_items)
+                    projection = _history_projection(events, language)
+                    rendering: SafeHistoryPresentation | CurrentAttendancePresentation = (
+                        SafeHistoryPresentation(events, language, display_name, None)
+                    )
+                else:
+                    status_names = _current_status_names(result)
+                    projection = _current_projection(status_names, language)
+                    rendering = CurrentAttendancePresentation(
+                        status_names, language, display_name, None
+                    )
+                final = await self.language_model.complete(
+                    ModelRequest(
+                        message,
+                        self.reference_date_factory(),
+                        "Europe/Ljubljana",
+                        (),
+                        (ToolResultView("execution", policy.definition.name, projection),),
+                    )
                 )
-                for call_count in range(MAX_MODEL_CALLS + 1):
-                    turn: ToolCall | FinalResponse
-                    if pending_turn is not None:
-                        turn = pending_turn
-                        pending_turn = None
-                    else:
-                        turn = await self.language_model.complete(
-                            ModelRequest(
-                                message,
-                                self.reference_date_factory(),
-                                "Europe/Ljubljana",
-                                catalog.model_tools,
-                                tuple(results),
-                            )
-                        )
-                    if isinstance(turn, FinalResponse):
-                        if (
-                            not results
-                            or turn.guidance_kind is not None
-                            or turn.language not in {"en", "sl"}
-                            or not is_safe_model_markdown(turn.markdown)
-                            or turn.language != language
-                            or rendering is None
-                            or turn.presentation is None
-                            or not valid_presentation_plan(turn.presentation)
-                        ):
-                            return self._unavailable_with_outcome(
-                                language, display_name, correlation_id, "malformed_final"
-                            )
-                        if isinstance(rendering, SafeHistoryPresentation):
-                            rendering = SafeHistoryPresentation(
-                                rendering.events, language, display_name, turn.presentation
-                            )
-                        else:
-                            rendering = CurrentAttendancePresentation(
-                                rendering.status_names, language, display_name, turn.presentation
-                            )
-                        return self.presenter.present(rendering)
-                    if call_count == MAX_MODEL_CALLS:
-                        return self._unavailable(language, display_name)
-                    policy = catalog.selected_tool(turn.name)
-                    if policy is None:
-                        return self._unavailable(language, display_name)
-                    validated = policy.validate_arguments(turn.arguments)
-                    if validated is None:
-                        return self.presenter.present(
-                            InvalidRequestPresentation(language, display_name)
-                        )
-                    arguments, language = validated
-                    result = await self._execute(session, policy, arguments)
-                    if isinstance(result, EmployeeSuggestionPage):
-                        return self.presenter.present(
-                            EmployeeCandidatesPresentation(result.items, language, display_name)
-                        )
-                    if policy.kind in {"self", "other"}:
-                        raw_items = result.get("items")
-                        if not isinstance(raw_items, list):
-                            raise McpContractIncompatible
-                        events = tuple(AttendanceEvent.model_validate(item) for item in raw_items)
-                        rendering = SafeHistoryPresentation(events, language, display_name, None)
-                        projection = _history_projection(events, language)
-                    else:
-                        status_names = _current_status_names(result)
-                        rendering = CurrentAttendancePresentation(
-                            status_names, language, display_name, None
-                        )
-                        projection = _current_projection(status_names, language)
-                    results.append(ToolResultView(turn.id, policy.definition.name, projection))
+                if (
+                    not isinstance(final, FinalResponse)
+                    or final.guidance_kind is not None
+                    or final.language != language
+                    or not is_safe_model_markdown(final.markdown)
+                    or final.presentation is None
+                    or not valid_presentation_plan(final.presentation)
+                ):
+                    return self._unavailable_with_outcome(
+                        language, display_name, correlation_id, "malformed_final"
+                    )
+                if isinstance(rendering, SafeHistoryPresentation):
+                    rendering = SafeHistoryPresentation(
+                        rendering.events, language, display_name, final.presentation
+                    )
+                else:
+                    rendering = CurrentAttendancePresentation(
+                        rendering.status_names, language, display_name, final.presentation
+                    )
+                return self.presenter.present(rendering)
         except asyncio.CancelledError:
             raise
         except AttendanceToolFailure as error:
@@ -382,17 +377,15 @@ async def _all_current_pages(
         arguments: dict[str, object] = {"limit": PAGE_SIZE, "offset": offset}
         if statuses is not None:
             arguments["statuses"] = list(statuses)
-        page = await session.call_tool(name=CURRENT_ATTENDANCE_TOOL, arguments=arguments)
+        page = await session.call_tool(name=CURRENT_WORK_STATUS_TOOL, arguments=arguments)
         if (
-            not isinstance(page, CurrentAttendancePage)
+            not isinstance(page, CurrentWorkStatusPage)
             or page.limit != PAGE_SIZE
             or page.offset != offset
+            or len(page.items) > PAGE_SIZE
         ):
             raise McpContractIncompatible
-        # Defensive: unknown is never surfaced to the model or a Teams reply.
-        items.extend(
-            item for item in page.items if str(item.get("status", "")).casefold() != "unknown"
-        )
+        items.extend(item.model_dump() for item in page.items)
         if page.next_offset is None:
             result: dict[str, object] = {"items": items, "complete": True}
             return result
@@ -428,11 +421,11 @@ def _current_status_names(result: Mapping[str, object]) -> tuple[tuple[str, tupl
         if not isinstance(item, Mapping):
             continue
         status = item.get("status")
-        name = item.get("display_name", item.get("employee_name", item.get("name")))
-        if not isinstance(name, str):
-            first_name, last_name = item.get("first_name"), item.get("last_name")
-            if isinstance(first_name, str) and isinstance(last_name, str):
-                name = f"{first_name} {last_name}"
+        first_name, last_name = item.get("first_name"), item.get("last_name")
+        if isinstance(first_name, str) and isinstance(last_name, str):
+            name = f"{first_name} {last_name}"
+        else:
+            continue
         if not isinstance(status, str) or not isinstance(name, str):
             continue
         normalized_name = " ".join(name.split())

@@ -11,7 +11,7 @@ from typing import Literal
 from attendance_teams_bot.agent.attendance_window import OverallAttendanceRange
 from attendance_teams_bot.agent.language_model import ReplyLanguage, ToolDefinition
 from attendance_teams_bot.mcp.contracts import (
-    CURRENT_ATTENDANCE_TOOL,
+    CURRENT_WORK_STATUS_TOOL,
     OTHER_ATTENDANCE_TOOL,
     RESOLVE_EMPLOYEE_TOOL,
     SEARCH_EMPLOYEES_TOOL,
@@ -29,6 +29,7 @@ _ALLOWED_READ_ONLY_TOOL_NAMES = frozenset(
         "get_daily_attendance",
         "get_planned_work",
         "get_current_attendance",
+        "get_current_work_status",
         "get_employee_attendance_analysis",
         "get_employee_attendance_summary",
         "get_exceptions",
@@ -181,7 +182,7 @@ def admit_mcp_catalog(discovered_tools: Sequence[DiscoveredMcpTool]) -> Admitted
         remote.get(OTHER_ATTENDANCE_TOOL)
     ):
         policies.append(ToolPolicy(canonical_other_attendance_tool(), "other"))
-    if _compatible_current(remote.get(CURRENT_ATTENDANCE_TOOL)):
+    if _compatible_current(remote.get(CURRENT_WORK_STATUS_TOOL)):
         policies.append(ToolPolicy(canonical_current_attendance_tool(), "current"))
     if _compatible_search(remote.get(SEARCH_EMPLOYEES_TOOL)):
         policies.append(ToolPolicy(canonical_employee_search_tool(), "search"))
@@ -236,7 +237,7 @@ def canonical_other_attendance_tool() -> ToolDefinition:
 
 def canonical_current_attendance_tool() -> ToolDefinition:
     return _definition(
-        CURRENT_ATTENDANCE_TOOL,
+        CURRENT_WORK_STATUS_TOOL,
         "List current workforce attendance, optionally filtered to one or more approved statuses; "
         "server time is authoritative.",
         {

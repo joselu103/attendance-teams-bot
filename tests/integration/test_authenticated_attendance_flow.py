@@ -194,4 +194,4 @@ async def test_personal_greeting_stops_before_sso_obo_or_mcp() -> None:
     assert model.requests and model.requests[0].pre_auth_guidance is True
     assert model.requests[0].display_name == "Unverified Ada"
     assert factory.session.calls == []
-    assert context.sent == ["Hello!"]
+    assert context.sent == ["Hello, Unverified Ada!\n\nI can help with attendance."]

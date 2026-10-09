@@ -12,6 +12,7 @@ SELF_ATTENDANCE_TOOL = "list_my_attendance_events"
 RESOLVE_EMPLOYEE_TOOL = "resolve_employee"
 OTHER_ATTENDANCE_TOOL = "list_attendance_events"
 CURRENT_ATTENDANCE_TOOL = "get_current_attendance"
+CURRENT_WORK_STATUS_TOOL = "get_current_work_status"
 SEARCH_EMPLOYEES_TOOL = "search_employees"
 
 
@@ -80,6 +81,27 @@ class CurrentAttendancePage(BaseModel):
     model_config = ConfigDict(frozen=True, extra="allow")
 
     items: tuple[dict[str, object], ...]
+    limit: int
+    offset: int
+    next_offset: int | None
+
+
+class CurrentWorkStatusItem(BaseModel):
+    """The pilot category-only REST projection for one workforce member."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    first_name: str
+    last_name: str
+    status: Literal["office", "remote", "customer_site", "break", "absence", "no_status"]
+
+
+class CurrentWorkStatusPage(BaseModel):
+    """A validated page from the category-only MCP tool."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    items: tuple[CurrentWorkStatusItem, ...]
     limit: int
     offset: int
     next_offset: int | None

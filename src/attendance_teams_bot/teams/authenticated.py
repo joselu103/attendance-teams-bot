@@ -185,16 +185,7 @@ class SsoOboAttendanceTurnHandler:
             lifecycle.step_completed(step=step)
 
             step = "teams_reply_delivery"
-            try:
-                await self._send_response(context, response)
-            except Exception as error:
-                logger.log(
-                    logging.ERROR,
-                    "teams_reply_send_failed",
-                    correlation_id=str(correlation_id),
-                    error_type=type(error).__name__,
-                )
-                raise
+            await self._send_response(context, response)
             lifecycle.succeed(step=step)
         except asyncio.CancelledError:
             if not lifecycle.terminal:
@@ -227,8 +218,22 @@ class SsoOboAttendanceTurnHandler:
         context: BotServiceAuthenticatedTurnContext, response: BotResponse
     ) -> None:
         """Deliver a validated batch in order; a failed send is deliberately not retried."""
+        completed = 0
         for message in response.messages:
-            await context.send_activity(message)
+            try:
+                await context.send_activity(message)
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                _LOGGER.error(
+                    "teams_reply_send_failed",
+                    correlation_id=str(current_correlation_id()),
+                    completed_messages=completed,
+                    total_messages=len(response.messages),
+                    error_type=type(error).__name__,
+                )
+                raise
+            completed += 1
 
     @staticmethod
     def _display_name(context: BotServiceAuthenticatedTurnContext) -> str | None:

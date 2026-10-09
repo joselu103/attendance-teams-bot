@@ -3,7 +3,7 @@ from typing import cast
 from fastapi import FastAPI
 
 from attendance_teams_bot.agent.openai import create_openai_language_model
-from attendance_teams_bot.agent.orchestrator import AttendanceAgent
+from attendance_teams_bot.agent.orchestrator import AttendanceAgent, McpSessionFactory
 from attendance_teams_bot.local import LocalUnconfiguredHandler
 from attendance_teams_bot.mcp.session import StreamableHttpAttendanceSessionFactory
 from attendance_teams_bot.settings import (
@@ -73,7 +73,7 @@ def _attendance_application(integration: AttendanceIntegrationSettings) -> Atten
             api_key=integration.openai.api_key,
             model=integration.openai.model,
         ),
-        mcp_session_factory=_attendance_session_factory(integration),
+        mcp_session_factory=cast(McpSessionFactory, _attendance_session_factory(integration)),
     )
 
 

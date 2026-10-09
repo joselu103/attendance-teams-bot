@@ -160,39 +160,43 @@ requester tool must also be present and schema-compatible. Unknown, duplicate,
 missing, malformed, or writable entries fail closed.
 The executable catalog contains `list_my_attendance_events`, a bot-owned
 exact-selector composite that calls `resolve_employee` then
-`list_attendance_events`, `get_current_attendance`, and `search_employees` when
-their required MCP schemas are present. A name search renders directory-safe
+`list_attendance_events`, `get_current_work_status`, and `search_employees` when
+their required MCP schemas are present. The detailed `get_current_attendance`
+tool is not admitted for workforce status because REST now restricts it to
+administrators. A name search renders directory-safe
 candidates and requires the user to send a listed username or email in a new
 message before an attendance read. The model never receives or chooses a
 resolved employee ID; CRMT remains responsible for authorization. Current status
 uses server time, optionally accepts a `statuses` array containing only `office`,
 `remote`, `customer_site`, `break`, `absence`, and `no_status`, and is fetched
 through every available page in one MCP request.
-Every model call receives only its bot-owned schema, including `reply_language`
-restricted to `en` or `sl`; remote discovery metadata and disabled tools are
-never prompted. The model receives the Ljubljana reference date and resolves
+Tool-selection calls receive only bot-owned schemas, including
+`reply_language` restricted to `en` or `sl`; remote discovery metadata,
+administrator-only detailed current attendance, and disabled tools are never
+offered. After one successful execution, the model receives no tools and only a
+reply-safe result view. The model receives the Ljubljana reference date and resolves
 English ordinal and Slovenian day-month forms. Ambiguous numeric dates are
 rejected locally. Each requested range may span up to twelve calendar months;
 the bot partitions it into inclusive 31-day MCP windows and reads every page
 before the model can answer. Identity, resolved employee IDs, roles, pagination,
 and authority are never model-controlled.
 
-The first enabled slice supports only personal one-to-one chats. Group, meeting,
+The initial pilot supports personal one-to-one chats and read-only actions.
+These are pilot scope choices, not permanent product limits. Group, meeting,
 channel, missing, and unknown conversation scope stop before SSO, OBO, OpenAI,
 or MCP. The bot calls the public attendance-mcp MCP contract
 `1.3.0`
-through bounded sequential, non-parallel model calls. By explicit user approval,
-the next model turn receives raw successful read-only MCP results as data, never
-instructions. This policy expansion does not permit raw rendering: IDs, notes,
-tokens, stack traces, and raw payloads never enter replies or logs, and `unknown`
-current statuses are withheld. The final reply is structured model-authored Teams
-Markdown and is rejected if oversized, unsafe, or contains returned internal IDs;
-the model cannot make an attendance, location, status, or no-records claim before
-a successful data tool call;
-before a validated language
-decision failures use English, and later failures retain that language. Images,
-cards, files, and durable language preferences are intentionally deferred to
-issues #22 and #21.
+through one validated model selection and one code-controlled execution. The
+post-result model receives only a reply-safe view: history dates and record
+presence, or current status categories and counts; names, timestamps, event
+types, identifiers, notes, locations, tokens, and raw records stay in code.
+The model may provide only a validated nonfactual title and context; code owns
+attendance facts, translation, chronology, and final message chunks. Guidance
+uses fixed English or Slovenian copy selected by a no-auth model intent, with no
+attendance access. Reply batches mark their parts and finish; delivery stops
+after a failed send and logs only the correlation ID, progress count, and error
+type. Images, cards, files, and durable language preferences are intentionally
+deferred to issues #22 and #21.
 
 This verified client-side behavior does not establish a real integration. Real
 attendance traffic remains disabled by default pending the attendance-mcp
@@ -202,6 +206,29 @@ identity/data verification, and the required organizational privacy/provider and
 development-notice approvals.
 
 ## Container
+
+### Docker Compose source setup
+
+Copy `.env.example` to an untracked `.env`, configure non-secret identifiers
+and service URLs, and provide credentials through the approved local or
+deployment secret mechanism. Compose builds and runs the Teams bot as a separate
+service; the attendance MCP adapter and REST API keep their own Compose
+deployments. Keep `ATTENDANCE_INTEGRATION_ENABLED=false` until the external
+activation gates are approved.
+
+Set `MCP_ENDPOINT` to the MCP service's reachable HTTPS endpoint, such as
+`https://attendance-mcp.<your-routable-domain>/mcp`; set the Bot Service
+messaging endpoint to the bot's own published URL, such as
+`https://attendance-bot.<your-routable-domain>/api/messages`. Replace the
+domain placeholders with DNS names routable from the relevant service and
+Microsoft Bot Service. `localhost` inside a container refers to that
+container. The sample bind address publishes locally only; an approved host or
+ingress must provide routable HTTPS before Teams traffic is enabled.
+
+```bash
+docker compose --env-file .env.example config
+docker compose up --build
+```
 
 Build the production image with immutable source provenance locally:
 
