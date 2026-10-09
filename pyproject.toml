@@ -9,6 +9,7 @@ authors = [
 requires-python = ">=3.14"
 dependencies = [
     "aiohttp>=3.11.11",
+    "asyncpg>=0.31.0,<1",
     "fastapi>=0.141.1",
     "httpx>=0.28.1",
     "mcp>=1.29.0,<2",

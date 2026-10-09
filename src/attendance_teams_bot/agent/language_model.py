@@ -5,6 +5,8 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Literal, Protocol
 
+from attendance_teams_bot.memory.models import ChatMessage
+
 ReplyLanguage = Literal["en", "sl"]
 GuidanceKind = Literal["greeting", "attendance_clarification", "attendance_scope_guidance"]
 
@@ -62,6 +64,7 @@ class ModelRequest:
     tool_results: tuple[ToolResultView, ...] = ()
     display_name: str | None = None
     pre_auth_guidance: bool = False
+    history: tuple[ChatMessage, ...] = ()
 
 
 ModelTurn = ToolCall | FinalResponse

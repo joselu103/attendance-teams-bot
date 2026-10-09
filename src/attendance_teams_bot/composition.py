@@ -1,11 +1,13 @@
 from typing import cast
 
 from fastapi import FastAPI
+from pydantic import SecretStr
 
 from attendance_teams_bot.agent.openai import create_openai_language_model
 from attendance_teams_bot.agent.orchestrator import AttendanceAgent, McpSessionFactory
 from attendance_teams_bot.local import LocalUnconfiguredHandler
 from attendance_teams_bot.mcp.session import StreamableHttpAttendanceSessionFactory
+from attendance_teams_bot.memory.database import PostgresConversationMemory
 from attendance_teams_bot.settings import (
     AttendanceIntegrationSettings,
     RuntimeMode,
@@ -35,7 +37,7 @@ def create_http_app(settings: Settings) -> FastAPI:
     if integration is None:
         return create_bot_service_only_app(connection)
 
-    return create_attendance_enabled_teams_http_app(connection, integration)
+    return create_attendance_enabled_teams_http_app(connection, integration, settings.database_url)
 
 
 def create_local_http_app() -> FastAPI:
@@ -56,6 +58,7 @@ def create_bot_service_only_app(connection: TeamsConnectionSettings) -> FastAPI:
 def create_attendance_enabled_teams_http_app(
     connection: TeamsConnectionSettings,
     integration: AttendanceIntegrationSettings,
+    database_url: SecretStr | None = None,
 ) -> FastAPI:
     """Compose the Teams SSO/OBO attendance endpoint."""
     return create_attendance_teams_http_app(
@@ -63,6 +66,9 @@ def create_attendance_enabled_teams_http_app(
         attendance_application=_attendance_application(integration),
         oauth_connection_name=integration.teams_sso_oauth_connection_name,
         delegated_scope=integration.delegated_scope,
+        memory=(
+            PostgresConversationMemory(database_url.get_secret_value()) if database_url else None
+        ),
     )
 
 

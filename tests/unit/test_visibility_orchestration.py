@@ -6,6 +6,7 @@ from uuid import UUID
 import pytest
 from pydantic import SecretStr
 
+from attendance_teams_bot.agent.contracts import SelectedAttendanceAction
 from attendance_teams_bot.agent.language_model import (
     FinalResponse,
     ModelRequest,
@@ -14,8 +15,10 @@ from attendance_teams_bot.agent.language_model import (
 )
 from attendance_teams_bot.agent.mcp_catalog import DiscoveredMcpTool
 from attendance_teams_bot.agent.orchestrator import AttendanceAgent, _current_status_names
+from attendance_teams_bot.agent.rendering import UNAVAILABLE_REPLY
 from attendance_teams_bot.mcp.client import AttendanceToolFailure
 from attendance_teams_bot.mcp.contracts import (
+    OTHER_ATTENDANCE_TOOL,
     AttendanceEvent,
     AttendanceEventPage,
     CurrentWorkStatusPage,
@@ -24,6 +27,7 @@ from attendance_teams_bot.mcp.contracts import (
     McpToolFailure,
     ResolvedEmployee,
 )
+from attendance_teams_bot.memory.models import ChatMessage
 
 
 def tool(name: str, properties: dict[str, object]) -> DiscoveredMcpTool:
@@ -153,7 +157,7 @@ async def test_exact_selector_is_resolved_then_internal_id_only_drives_history()
         ]
     )
     assert (
-        await agent.handle(message="Alice", mcp_access_token=SecretStr("token"))
+        await agent.handle(message="alice@example.test", mcp_access_token=SecretStr("token"))
     ).text.startswith("**Part 1 of 1**\n\n**Attendance**")
     assert session.calls == [
         ("resolve_employee", {"email": "alice@example.test"}),
@@ -170,6 +174,120 @@ async def test_exact_selector_is_resolved_then_internal_id_only_drives_history()
     ]
     assert "note" not in repr(model.requests[1].tool_results[0].result)
     assert "employee_id" not in repr(model.requests[1].tool_results[0].result)
+
+
+@pytest.mark.anyio
+async def test_result_memory_omits_model_presentation_body_and_display_name() -> None:
+    agent, _, _ = subject(
+        [
+            ToolCall(
+                "x",
+                "get_current_work_status",
+                {"statuses": ["office"], "reply_language": "en"},
+            ),
+            FinalResponse(
+                "ignored",
+                "en",
+                presentation=PresentationPlan("Ada is in Office", "Sensitive factual detail"),
+            ),
+        ]
+    )
+
+    response = await agent.handle(
+        message="Who is in office?",
+        display_name="Unverified Ada",
+        mcp_access_token=SecretStr("token"),
+    )
+
+    assert response.assistant_memory == "Attendance response delivered."
+
+
+@pytest.mark.anyio
+async def test_authenticated_model_calls_share_one_history_snapshot_and_current_input() -> None:
+    agent, model, _ = subject(
+        [
+            ToolCall(
+                "x",
+                "list_my_attendance_events",
+                {
+                    "start_date": "2026-08-01",
+                    "end_date": "2026-08-02",
+                    "reply_language": "en",
+                },
+            ),
+            FinalResponse("ignored", "en", presentation=PresentationPlan("Attendance", None)),
+        ]
+    )
+    history = (
+        ChatMessage("user", "earlier request", datetime(2026, 8, 14, tzinfo=UTC)),
+        ChatMessage("assistant", "safe guidance", datetime(2026, 8, 14, tzinfo=UTC)),
+    )
+
+    await agent.handle(
+        message="show my attendance",
+        mcp_access_token=SecretStr("token"),
+        history=history,
+    )
+
+    assert len(model.requests) == 2
+    assert all(request.history == history for request in model.requests)
+    assert [request.user_message for request in model.requests] == [
+        "show my attendance",
+        "show my attendance",
+    ]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("message", "selector"),
+    [("show yesterday", "day"), ("show joann@example.test", "ann")],
+)
+async def test_historical_selector_substrings_are_rejected_before_authentication(
+    message: str, selector: str
+) -> None:
+    agent, _, session = subject(
+        [
+            ToolCall(
+                "x",
+                OTHER_ATTENDANCE_TOOL,
+                {
+                    "username": selector,
+                    "start_date": "2026-08-01",
+                    "end_date": "2026-08-02",
+                    "reply_language": "en",
+                },
+            )
+        ]
+    )
+
+    response = await agent.handle(message=message, mcp_access_token=SecretStr("token"))
+
+    assert response.text == UNAVAILABLE_REPLY
+    assert session.calls == []
+
+
+@pytest.mark.anyio
+async def test_public_authenticated_selected_path_rechecks_current_exact_selector() -> None:
+    agent, _, session = subject([])
+    selection = SelectedAttendanceAction(
+        OTHER_ATTENDANCE_TOOL,
+        {
+            "email": "ann",
+            "start_date": "2026-08-01",
+            "end_date": "2026-08-02",
+            "reply_language": "en",
+        },
+        "en",
+    )
+
+    response = await agent.handle_selected(
+        message="show joann@example.test",
+        mcp_access_token=SecretStr("token"),
+        selection=selection,
+    )
+
+    assert response.text == UNAVAILABLE_REPLY
+    assert session.calls == []
 
 
 @pytest.mark.anyio

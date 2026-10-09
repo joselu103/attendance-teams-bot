@@ -12,6 +12,7 @@ ReplyLanguage = Literal["en", "sl"]
 class BotResponse:
     text: str
     messages: tuple[str, ...] = ()
+    assistant_memory: str | None = None
     request: None = None
 
     def __post_init__(self) -> None:

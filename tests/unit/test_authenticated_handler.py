@@ -1,5 +1,6 @@
 import asyncio
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 
 import pytest
 from pydantic import SecretStr
@@ -7,6 +8,7 @@ from pydantic import SecretStr
 import attendance_teams_bot.observability as observability
 from attendance_teams_bot.agent.contracts import BotResponse, SelectedAttendanceAction
 from attendance_teams_bot.auth.obo import DelegatedAuthenticationUnavailable
+from attendance_teams_bot.memory.models import ChatMessage
 from attendance_teams_bot.teams.authenticated import (
     BotServiceOnlyHandler,
     SsoOboAttendanceTurnHandler,
@@ -21,11 +23,13 @@ def anyio_backend() -> str:
 @dataclass
 class Conversation:
     conversation_type: str | None = "personal"
+    tenant_id: str | None = None
 
 
 @dataclass
 class Sender:
     name: str | None = None
+    aad_object_id: str | None = None
 
 
 @dataclass
@@ -51,9 +55,13 @@ class Application:
     display_names: list[str | None] = field(default_factory=list)
 
     async def pre_auth_decision(
-        self, *, message: str, display_name: str | None = None
+        self,
+        *,
+        message: str,
+        display_name: str | None = None,
+        history: tuple[ChatMessage, ...] = (),
     ) -> SelectedAttendanceAction:
-        del message
+        del message, history
         self.display_names.append(display_name)
         return SelectedAttendanceAction("list_my_attendance_events", {}, "en")
 
@@ -64,8 +72,9 @@ class Application:
         mcp_access_token: SecretStr,
         selection: SelectedAttendanceAction,
         display_name: str | None = None,
+        history: tuple[ChatMessage, ...] = (),
     ) -> BotResponse:
-        del message
+        del message, history
         assert selection.name == "list_my_attendance_events"
         self.tokens.append(mcp_access_token)
         assert display_name == self.display_names[-1]
@@ -91,13 +100,37 @@ class Obo:
         return SecretStr("token-b")
 
 
+@dataclass
+class Memory:
+    history: tuple[ChatMessage, ...] = ()
+    reads: list[str] = field(default_factory=list)
+    saved: list[tuple[str, str, str]] = field(default_factory=list)
+
+    async def get_chat_history(self, session_id: str, limit: int = 10) -> tuple[ChatMessage, ...]:
+        assert limit == 10
+        self.reads.append(session_id)
+        return self.history
+
+    async def save_message(self, session_id: str, role: str, content: str) -> None:
+        del session_id, role, content
+
+    async def save_exchange(
+        self, session_id: str, user_content: str, assistant_content: str
+    ) -> None:
+        self.saved.append((session_id, user_content, assistant_content))
+
+
 def handler(
-    application: Application, sso: Sso | None = None, obo: Obo | None = None
+    application: Application,
+    sso: Sso | None = None,
+    obo: Obo | None = None,
+    memory: Memory | None = None,
 ) -> SsoOboAttendanceTurnHandler:
     return SsoOboAttendanceTurnHandler(
         application=application,
         sso_token_provider=sso or Sso(),
         obo_token_exchange=obo or Obo(),
+        memory=memory or Memory(),
     )
 
 
@@ -119,6 +152,45 @@ async def test_personal_turn_exchanges_token_a_and_forwards_only_token_b() -> No
     assert application.tokens == [SecretStr("token-b")]
     assert application.display_names == ["Unverified display name"]
     assert context.sent == ["attendance reply"]
+
+
+@pytest.mark.anyio
+async def test_memory_saves_delivered_authenticated_exchange() -> None:
+    @dataclass
+    class MemoryApplication(Application):
+        observed_history: tuple[ChatMessage, ...] = ()
+
+        async def pre_auth_decision(self, **kwargs: object) -> SelectedAttendanceAction:
+            self.observed_history = kwargs["history"]  # type: ignore[assignment,index]
+            return await super().pre_auth_decision(**kwargs)  # type: ignore[arg-type]
+
+        async def handle_selected(self, **kwargs: object) -> BotResponse:
+            del kwargs
+            return BotResponse("safe guidance", assistant_memory="non-factual framing")
+
+    memory = Memory((ChatMessage("user", "earlier", datetime.now(UTC)),))
+    application = MemoryApplication()
+    context = Context(
+        Activity(
+            conversation=Conversation("personal", "4a9c3c7b-eb0a-4e92-8b4a-0a8f1c65c786"),
+            from_property=Sender("Unverified", "63b649e6-17d4-4913-8b24-1a0b3c2da274"),
+        )
+    )
+
+    await handler(application, memory=memory).handle(context)
+
+    assert application.observed_history == memory.history
+    assert len(memory.reads) == len(memory.saved) == 1
+    assert memory.saved[0][1:] == ("Show my attendance", "non-factual framing")
+
+
+@pytest.mark.anyio
+async def test_missing_authenticated_identifiers_keeps_the_turn_stateless() -> None:
+    memory = Memory()
+    await handler(Application(), memory=memory).handle(Context(Activity()))
+
+    assert memory.reads == []
+    assert memory.saved == []
 
 
 @pytest.mark.anyio
@@ -313,3 +385,32 @@ async def test_failed_batch_send_stops_without_retry_and_logs_only_safe_progress
     assert logged[0]["total_messages"] == 3
     assert logged[0]["error_type"] == "RuntimeError"
     assert "transport detail" not in repr(logged)
+
+
+@pytest.mark.anyio
+async def test_failed_later_batch_message_does_not_save_an_exchange() -> None:
+    @dataclass
+    class SecondSendFails(Context):
+        async def send_activity(self, text: str) -> None:
+            if text == "second":
+                raise RuntimeError("synthetic delivery failure")
+            self.sent.append(text)
+
+    class BatchApplication(Application):
+        async def handle_selected(self, **kwargs: object) -> BotResponse:
+            del kwargs
+            return BotResponse("first", ("first", "second"), "safe framing")
+
+    memory = Memory()
+    context = SecondSendFails(
+        Activity(
+            conversation=Conversation("personal", "4a9c3c7b-eb0a-4e92-8b4a-0a8f1c65c786"),
+            from_property=Sender("Unverified", "63b649e6-17d4-4913-8b24-1a0b3c2da274"),
+        )
+    )
+
+    with pytest.raises(RuntimeError, match="synthetic delivery failure"):
+        await handler(BatchApplication(), memory=memory).handle(context)
+
+    assert context.sent == ["first"]
+    assert memory.saved == []

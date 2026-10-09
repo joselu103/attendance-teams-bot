@@ -1,5 +1,6 @@
 from enum import StrEnum
 from typing import Literal, Self
+from urllib.parse import urlsplit
 from uuid import UUID
 
 from pydantic import (
@@ -11,7 +12,9 @@ from pydantic import (
     field_validator,
     model_validator,
 )
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
+
+_SIDECAR_DOTENV_KEYS = frozenset({"postgres_db", "postgres_user", "postgres_password"})
 
 
 class RuntimeMode(StrEnum):
@@ -53,7 +56,13 @@ class AttendanceIntegrationSettings(BaseModel):
 class Settings(BaseSettings):
     """Load runtime settings and keep attendance integration disabled unless fully configured."""
 
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+    model_config = SettingsConfigDict(
+        # A copied Compose dotenv also configures the PostgreSQL sidecar.
+        env_file=".env",
+        env_file_encoding="utf-8",
+        hide_input_in_errors=True,
+        extra="forbid",
+    )
 
     log_environment: Literal["local", "staging", "production"] = Field(
         default="local",
@@ -76,6 +85,7 @@ class Settings(BaseSettings):
     )
     openai_api_key: SecretStr | None = Field(default=None, validation_alias="OPENAI_API_KEY")
     openai_model: str | None = Field(default=None, validation_alias="OPENAI_MODEL")
+    database_url: SecretStr | None = Field(default=None, validation_alias="DATABASE_URL")
     mcp_timeout_seconds: float = Field(
         default=10.0,
         gt=0,
@@ -95,6 +105,23 @@ class Settings(BaseSettings):
         validation_alias="CONNECTIONS__SERVICE_CONNECTION__SETTINGS__CLIENTSECRET",
     )
 
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        """Ignore only Compose sidecar keys from dotenv files, retaining strict settings."""
+        dotenv_settings.env_vars = {  # type: ignore[attr-defined]
+            name: value
+            for name, value in dotenv_settings.env_vars.items()  # type: ignore[attr-defined]
+            if name.casefold() not in _SIDECAR_DOTENV_KEYS
+        }
+        return init_settings, env_settings, dotenv_settings, file_secret_settings
+
     @field_validator("app_version")
     @classmethod
     def validate_app_version(cls, value: str) -> str:
@@ -102,6 +129,25 @@ class Settings(BaseSettings):
         if not normalized:
             raise ValueError("APP_VERSION must not be blank")
         return normalized
+
+    @field_validator("database_url")
+    @classmethod
+    def validate_database_url(cls, value: SecretStr | None) -> SecretStr | None:
+        if value is None or not value.get_secret_value().strip():
+            return None
+        try:
+            parsed = urlsplit(value.get_secret_value())
+            host = parsed.hostname
+            _ = parsed.port
+        except ValueError:
+            raise ValueError("DATABASE_URL must be a PostgreSQL URL") from None
+        if (
+            parsed.scheme not in {"postgres", "postgresql"}
+            or not host
+            or any(character.isspace() for character in host)
+        ):
+            raise ValueError("DATABASE_URL must be a PostgreSQL URL")
+        return value
 
     @model_validator(mode="after")
     def validate_teams_mode(self) -> Self:
