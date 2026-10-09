@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from collections.abc import Callable, Mapping
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field
@@ -23,6 +24,7 @@ from attendance_teams_bot.agent.language_model import (
     LanguageModel,
     LanguageModelUnavailable,
     ModelRequest,
+    PresentationPlan,
     ReplyLanguage,
     ToolResultView,
 )
@@ -62,12 +64,51 @@ from attendance_teams_bot.mcp.contracts import (
     EmployeeSuggestionPage,
     ResolvedEmployee,
 )
+from attendance_teams_bot.memory.models import ChatMessage
 from attendance_teams_bot.observability import current_correlation_id
 
 PAGE_SIZE = 50
 MAX_CURRENT_PAGES = 200
 _CURRENT_STATUS_ORDER = ("office", "remote", "customer_site", "break", "absence", "no_status")
 _LOGGER = structlog.get_logger(__name__)
+
+
+def _guidance_memory(intent: GuidanceIntent, language: ReplyLanguage) -> str:
+    """Return generic guidance without a personalized Teams display name."""
+    english = {
+        "greeting": "I can help with attendance.",
+        "date_ambiguous": "Please clarify the attendance date range you want to view.",
+        "unsupported": "I can help with attendance requests.",
+    }
+    slovene = {
+        "greeting": "Pomagam lahko pri prisotnosti.",
+        "date_ambiguous": "Navedite obdobje prisotnosti.",
+        "unsupported": "Pomagam lahko pri zahtevah glede prisotnosti.",
+    }
+    return (slovene if language == "sl" else english)[intent]
+
+
+def _plan_memory(plan: PresentationPlan) -> str:
+    """Keep a safe turn marker, never model-written attendance presentation text."""
+    del plan
+    return "Attendance response delivered."
+
+
+def _newly_messaged_selector(message: str, arguments: Mapping[str, object]) -> bool:
+    selector = arguments.get("username") or arguments.get("email")
+    if not isinstance(selector, str) or not selector:
+        return False
+    # A selector is an identifier, not a substring: `day` must not be admitted
+    # by `yesterday`, and `ann` must not be admitted by `joann@example.test`.
+    identifier_characters = r"A-Za-z0-9_.@+-"
+    return (
+        re.search(
+            rf"(?<![{identifier_characters}]){re.escape(selector)}(?![{identifier_characters}])",
+            message,
+            flags=re.IGNORECASE,
+        )
+        is not None
+    )
 
 
 class AuthenticatedMcpSession(Protocol):
@@ -98,9 +139,16 @@ class AttendanceAgent:
     ).date()
 
     async def handle(
-        self, *, message: str, mcp_access_token: SecretStr, display_name: str | None = None
+        self,
+        *,
+        message: str,
+        mcp_access_token: SecretStr,
+        display_name: str | None = None,
+        history: tuple[ChatMessage, ...] = (),
     ) -> BotResponse:
-        decision = await self.pre_auth_decision(message=message, display_name=display_name)
+        decision = await self.pre_auth_decision(
+            message=message, display_name=display_name, history=history
+        )
         if isinstance(decision, BotResponse):
             return decision
         return await self.handle_selected(
@@ -108,10 +156,15 @@ class AttendanceAgent:
             mcp_access_token=mcp_access_token,
             selection=decision,
             display_name=display_name,
+            history=history,
         )
 
     async def pre_auth_decision(
-        self, *, message: str, display_name: str | None = None
+        self,
+        *,
+        message: str,
+        display_name: str | None = None,
+        history: tuple[ChatMessage, ...] = (),
     ) -> BotResponse | SelectedAttendanceAction:
         """Route without credentials using only bot-owned attendance action definitions."""
         language: ReplyLanguage = "en"
@@ -125,6 +178,7 @@ class AttendanceAgent:
                     tuple(policy.definition for policy in pre_auth_tool_policies()),
                     display_name=display_name,
                     pre_auth_guidance=True,
+                    history=history,
                 )
             )
             if isinstance(turn, FinalResponse):
@@ -142,8 +196,13 @@ class AttendanceAgent:
                     intent = "date_ambiguous"
                 else:
                     intent = "unsupported"
-                return self.presenter.present(
+                response = self.presenter.present(
                     GuidancePresentation(intent, turn.language, display_name)
+                )
+                return BotResponse(
+                    response.text,
+                    response.messages,
+                    _guidance_memory(intent, turn.language),
                 )
             policy = next(
                 (item for item in pre_auth_tool_policies() if item.definition.name == turn.name),
@@ -155,6 +214,10 @@ class AttendanceAgent:
                 )
             validated = policy.validate_arguments(turn.arguments)
             if validated is None:
+                return self._unavailable_with_outcome(
+                    language, display_name, correlation_id, "invalid_tool_selection"
+                )
+            if policy.kind == "other" and not _newly_messaged_selector(message, validated[0]):
                 return self._unavailable_with_outcome(
                     language, display_name, correlation_id, "invalid_tool_selection"
                 )
@@ -178,13 +241,19 @@ class AttendanceAgent:
         mcp_access_token: SecretStr,
         selection: SelectedAttendanceAction,
         display_name: str | None = None,
+        history: tuple[ChatMessage, ...] = (),
     ) -> BotResponse:
         """Authenticate, rediscover, and execute a pre-auth selection only if still admitted."""
+        if selection.name == OTHER_ATTENDANCE_TOOL and not _newly_messaged_selector(
+            message, selection.arguments
+        ):
+            return self._unavailable(selection.language, display_name)
         return await self._handle_authenticated(
             message=message,
             mcp_access_token=mcp_access_token,
             selection=selection,
             display_name=display_name,
+            history=history,
         )
 
     async def _handle_authenticated(
@@ -194,6 +263,7 @@ class AttendanceAgent:
         mcp_access_token: SecretStr,
         selection: SelectedAttendanceAction,
         display_name: str | None = None,
+        history: tuple[ChatMessage, ...] = (),
     ) -> BotResponse:
         language = selection.language
         correlation_id = self.correlation_id_factory()
@@ -217,6 +287,10 @@ class AttendanceAgent:
                         InvalidRequestPresentation(language, display_name)
                     )
                 arguments, language = validated
+                if policy.kind == "other" and not _newly_messaged_selector(message, arguments):
+                    return self._unavailable_with_outcome(
+                        language, display_name, correlation_id, "invalid_tool_selection"
+                    )
                 result = await self._execute(session, policy, arguments)
                 if isinstance(result, EmployeeSuggestionPage):
                     return self.presenter.present(
@@ -244,6 +318,7 @@ class AttendanceAgent:
                         "Europe/Ljubljana",
                         (),
                         (ToolResultView("execution", policy.definition.name, projection),),
+                        history=history,
                     )
                 )
                 if (
@@ -265,7 +340,10 @@ class AttendanceAgent:
                     rendering = CurrentAttendancePresentation(
                         rendering.status_names, language, display_name, final.presentation
                     )
-                return self.presenter.present(rendering)
+                response = self.presenter.present(rendering)
+                return BotResponse(
+                    response.text, response.messages, _plan_memory(final.presentation)
+                )
         except asyncio.CancelledError:
             raise
         except AttendanceToolFailure as error:

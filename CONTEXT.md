@@ -58,6 +58,12 @@ statuses supplied by the model to one MCP request. Omission means the whole
 office; code controls grouping and its fixed display order.
 _Avoid_: per-status fan-out, model-owned ordering
 
+**Conversation memory**:
+An optional, bounded history of accepted user text and non-factual assistant
+framing for one authenticated tenant/AAD user session. It is untrusted context,
+not attendance authority, identity evidence, or a facts cache.
+_Avoid_: attendance history, user preference store
+
 ## MCP catalog policy
 
 **Discovery admission**:

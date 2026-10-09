@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Protocol
 
 import structlog
@@ -10,6 +10,12 @@ from pydantic import SecretStr
 
 from attendance_teams_bot.agent.contracts import BotResponse, SelectedAttendanceAction
 from attendance_teams_bot.auth.obo import DelegatedAuthenticationUnavailable
+from attendance_teams_bot.memory.database import (
+    ConversationMemory,
+    StatelessConversationMemory,
+    memory_session_id,
+)
+from attendance_teams_bot.memory.models import ChatMessage
 from attendance_teams_bot.observability import (
     OperationLifecycle,
     current_correlation_id,
@@ -30,7 +36,11 @@ class BotServiceOnlyMessageHandler(Protocol):
 
 class AttendanceApplication(Protocol):
     async def pre_auth_decision(
-        self, *, message: str, display_name: str | None = None
+        self,
+        *,
+        message: str,
+        display_name: str | None = None,
+        history: tuple[ChatMessage, ...] = (),
     ) -> BotResponse | SelectedAttendanceAction: ...
 
     async def handle_selected(
@@ -40,15 +50,18 @@ class AttendanceApplication(Protocol):
         mcp_access_token: SecretStr,
         selection: SelectedAttendanceAction,
         display_name: str | None = None,
+        history: tuple[ChatMessage, ...] = (),
     ) -> BotResponse: ...
 
 
 class TurnConversation(Protocol):
     conversation_type: str | None
+    tenant_id: str | None
 
 
 class TurnSender(Protocol):
     name: str | None
+    aad_object_id: str | None
 
 
 class TurnActivity(Protocol):
@@ -89,6 +102,7 @@ class SsoOboAttendanceTurnHandler:
     application: AttendanceApplication
     sso_token_provider: SsoTokenProvider
     obo_token_exchange: OboTokenExchange
+    memory: ConversationMemory = field(default_factory=StatelessConversationMemory)
 
     async def handle(self, context: BotServiceAuthenticatedTurnContext) -> None:
         """Process personal text turns only, obtaining SSO and OBO tokens before delegation."""
@@ -130,11 +144,14 @@ class SsoOboAttendanceTurnHandler:
         self, *, context: BotServiceAuthenticatedTurnContext, message: str
     ) -> None:
         display_name = self._display_name(context)
+        session_id = self._session_id(context)
+        history = await self.memory.get_chat_history(session_id) if session_id else ()
         decision = await self.application.pre_auth_decision(
-            message=message, display_name=display_name
+            message=message, display_name=display_name, history=history
         )
         if isinstance(decision, BotResponse):
             await self._send_response(context, decision)
+            await self._save_delivered_exchange(session_id, message, decision)
             return
         correlation_id = current_correlation_id()
         logger = _LOGGER.bind(correlation_id=str(correlation_id))
@@ -181,11 +198,13 @@ class SsoOboAttendanceTurnHandler:
                 mcp_access_token=token_b,
                 selection=decision,
                 display_name=display_name,
+                history=history,
             )
             lifecycle.step_completed(step=step)
 
             step = "teams_reply_delivery"
             await self._send_response(context, response)
+            await self._save_delivered_exchange(session_id, message, response)
             lifecycle.succeed(step=step)
         except asyncio.CancelledError:
             if not lifecycle.terminal:
@@ -239,3 +258,17 @@ class SsoOboAttendanceTurnHandler:
     def _display_name(context: BotServiceAuthenticatedTurnContext) -> str | None:
         sender = context.activity.from_property
         return sender.name if sender is not None else None
+
+    @staticmethod
+    def _session_id(context: BotServiceAuthenticatedTurnContext) -> str | None:
+        conversation = context.activity.conversation
+        sender = context.activity.from_property
+        return memory_session_id(
+            getattr(conversation, "tenant_id", None), getattr(sender, "aad_object_id", None)
+        )
+
+    async def _save_delivered_exchange(
+        self, session_id: str | None, message: str, response: BotResponse
+    ) -> None:
+        if session_id is not None and response.assistant_memory is not None:
+            await self.memory.save_exchange(session_id, message, response.assistant_memory)

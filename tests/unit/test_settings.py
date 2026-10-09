@@ -86,6 +86,33 @@ def test_settings_reads_the_mcp_endpoint_from_the_environment(monkeypatch) -> No
     assert str(settings.mcp_endpoint) == "https://attendance-mcp.example.test/mcp"
 
 
+@pytest.mark.parametrize("database_url", ["", "   "])
+def test_blank_optional_database_url_preserves_stateless_configuration(
+    monkeypatch, database_url: str
+) -> None:
+    monkeypatch.setenv("DATABASE_URL", database_url)
+
+    assert Settings(_env_file=None).database_url is None
+
+
+@pytest.mark.parametrize(
+    "database_url",
+    [
+        "postgresql://user:secret@postgres:not-a-port/memory",
+        "postgresql://user:secret@bad host/memory",
+    ],
+)
+def test_database_url_rejects_malformed_network_parts_without_echoing_input(
+    monkeypatch, database_url: str
+) -> None:
+    monkeypatch.setenv("DATABASE_URL", database_url)
+
+    with pytest.raises(ValidationError) as error:
+        Settings(_env_file=None)
+
+    assert database_url not in str(error.value)
+
+
 def test_disabled_flag_suppresses_complete_attendance_configuration(monkeypatch) -> None:
     monkeypatch.setenv("BOT_RUNTIME_MODE", "teams")
     monkeypatch.setenv("ATTENDANCE_INTEGRATION_ENABLED", "false")

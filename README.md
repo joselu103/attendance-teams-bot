@@ -207,6 +207,20 @@ development-notice approvals.
 
 ## Container
 
+### Optional conversation memory
+
+Set `DATABASE_URL` only through the approved secret mechanism to enable the
+bot-owned PostgreSQL conversation store. It retains a seven-day, twenty-message
+maximum per authenticated tenant/AAD-user session for follow-up context; it does
+not cache attendance facts, authorization data, assistant factual bodies, source-result
+fields, or display names. User text may contain names. History may inform intent
+or date references but never authorize tools or supply identity or attendance facts. When absent or
+temporarily unavailable, the bot stays stateless and delivery continues normally.
+
+The Compose file includes an internal-only PostgreSQL 17 service and named
+`postgres_data` volume. It is intentionally a single bot replica; scaling the
+Teams SDK process state is outside this slice.
+
 ### Docker Compose source setup
 
 Copy `.env.example` to an untracked `.env`, configure non-secret identifiers
@@ -215,6 +229,12 @@ deployment secret mechanism. Compose builds and runs the Teams bot as a separate
 service; the attendance MCP adapter and REST API keep their own Compose
 deployments. Keep `ATTENDANCE_INTEGRATION_ENABLED=false` until the external
 activation gates are approved.
+
+The PostgreSQL sidecar intentionally requires an externally supplied
+`POSTGRES_PASSWORD`; no credential default is committed. If memory is enabled,
+set `DATABASE_URL` to the Compose service hostname `postgres` and matching
+`POSTGRES_USER`, `POSTGRES_PASSWORD`, and `POSTGRES_DB` values (for example,
+`postgresql://attendance_memory:<password>@postgres:5432/attendance_memory`).
 
 Set `MCP_ENDPOINT` to the MCP service's reachable HTTPS endpoint, such as
 `https://attendance-mcp.<your-routable-domain>/mcp`; set the Bot Service

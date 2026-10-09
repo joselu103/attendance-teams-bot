@@ -1,5 +1,7 @@
+import re
 from enum import StrEnum
 from typing import Literal, Self
+from urllib.parse import urlsplit
 from uuid import UUID
 
 from pydantic import (
@@ -53,7 +55,9 @@ class AttendanceIntegrationSettings(BaseModel):
 class Settings(BaseSettings):
     """Load runtime settings and keep attendance integration disabled unless fully configured."""
 
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+    model_config = SettingsConfigDict(
+        env_file=".env", env_file_encoding="utf-8", hide_input_in_errors=True
+    )
 
     log_environment: Literal["local", "staging", "production"] = Field(
         default="local",
@@ -76,6 +80,7 @@ class Settings(BaseSettings):
     )
     openai_api_key: SecretStr | None = Field(default=None, validation_alias="OPENAI_API_KEY")
     openai_model: str | None = Field(default=None, validation_alias="OPENAI_MODEL")
+    database_url: SecretStr | None = Field(default=None, validation_alias="DATABASE_URL")
     mcp_timeout_seconds: float = Field(
         default=10.0,
         gt=0,
@@ -102,6 +107,28 @@ class Settings(BaseSettings):
         if not normalized:
             raise ValueError("APP_VERSION must not be blank")
         return normalized
+
+    @field_validator("database_url")
+    @classmethod
+    def validate_database_url(cls, value: SecretStr | None) -> SecretStr | None:
+        if value is None or not value.get_secret_value().strip():
+            return None
+        try:
+            parsed = urlsplit(value.get_secret_value())
+            host = parsed.hostname
+            # Accessing port is intentionally part of validation: urlsplit accepts
+            # malformed numeric ports until this property is read.
+            _ = parsed.port
+        except ValueError:
+            raise ValueError("DATABASE_URL must be a PostgreSQL URL") from None
+        if (
+            parsed.scheme not in {"postgres", "postgresql"}
+            or not host
+            or any(character.isspace() for character in host)
+            or not re.fullmatch(r"[A-Za-z0-9:.\-]+", host)
+        ):
+            raise ValueError("DATABASE_URL must be a PostgreSQL URL")
+        return value
 
     @model_validator(mode="after")
     def validate_teams_mode(self) -> Self:

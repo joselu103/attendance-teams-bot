@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
+from collections.abc import AsyncIterator, Mapping
+from contextlib import asynccontextmanager
 from typing import Any, Protocol, cast
 
 import structlog
@@ -26,6 +27,11 @@ from pydantic import SecretStr
 from starlette.responses import JSONResponse, Response
 
 from attendance_teams_bot.auth.obo import MsalOboTokenExchange
+from attendance_teams_bot.memory.database import (
+    PostgresConversationMemory,
+    StatelessConversationMemory,
+    conversation_memory_lifespan,
+)
 from attendance_teams_bot.observability import (
     authentication_event,
     install_http_request_observability,
@@ -221,6 +227,7 @@ def create_attendance_teams_http_app(
     oauth_connection_name: str,
     delegated_scope: str,
     storage: Storage | None = None,
+    memory: PostgresConversationMemory | None = None,
 ) -> FastAPI:
     """Create the authenticated Teams app that performs SSO, OBO, and attendance handling."""
     _validate_oauth_connection_name(oauth_connection_name)
@@ -241,6 +248,7 @@ def create_attendance_teams_http_app(
         authorization=authorization,
         default_connection=default_connection,
         delegated_scope=delegated_scope,
+        memory=memory,
     )
 
     adapter = CloudAdapter(connection_manager=connection_manager)
@@ -257,6 +265,7 @@ def create_attendance_teams_http_app(
         agent_application=agent_application,
         adapter=adapter,
         oauth_connection_name=oauth_connection_name,
+        memory=memory,
     )
 
 
@@ -291,6 +300,7 @@ def _create_attendance_turn_handler(
     authorization: Authorization,
     default_connection: Any,
     delegated_scope: str,
+    memory: PostgresConversationMemory | None,
 ) -> SsoOboAttendanceTurnHandler:
     return SsoOboAttendanceTurnHandler(
         application=attendance_application,
@@ -302,6 +312,7 @@ def _create_attendance_turn_handler(
             provider=default_connection,
             delegated_scope=delegated_scope,
         ),
+        memory=memory if memory is not None else StatelessConversationMemory(),
     )
 
 
@@ -328,8 +339,14 @@ def _create_http_app(
     agent_application: AgentApplication[TurnState],
     adapter: CloudAdapter,
     oauth_connection_name: str | None = None,
+    memory: PostgresConversationMemory | None = None,
 ) -> FastAPI:
-    app = FastAPI()
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        async with conversation_memory_lifespan(memory):
+            yield
+
+    app = FastAPI(lifespan=lifespan)
     install_teams_callback_observability(app)
     app.state.agent_configuration = connection_manager.get_default_connection_configuration()
 
