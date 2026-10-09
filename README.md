@@ -130,6 +130,7 @@ MCP_TIMEOUT_SECONDS=10
 TEAMS_SSO_OAUTH_CONNECTION_NAME=<azure-bot-oauth-connection-name>
 OPENAI_API_KEY=<secret-openai-api-key>
 OPENAI_MODEL=<explicit-approved-model-name>
+ATTENDANCE_HISTORY_SIGNING_KEY=<persistent-secret-from-approved-secret-store>
 ```
 
 `TEAMS_SSO_OAUTH_CONNECTION_NAME` obtains the Teams token (token A). The bot
@@ -143,7 +144,7 @@ configuration; no production model is selected by default. Use an untracked
 local `.env` only for development and a deployment secret manager for the key.
 `ATTENDANCE_INTEGRATION_ENABLED=false` remains authoritative even if every
 Teams, MCP, and OpenAI value is present. When enabled, incomplete Teams, MCP, or
-OpenAI configuration fails startup rather than falling back to an attendance route.
+OpenAI or history signing-key configuration fails startup rather than falling back to an attendance route.
 
 ### Bounded language-model and MCP policy
 
@@ -176,9 +177,12 @@ administrator-only detailed current attendance, and disabled tools are never
 offered. After one successful execution, the model receives no tools and only a
 reply-safe result view. The model receives the Ljubljana reference date and resolves
 English ordinal and Slovenian day-month forms. Ambiguous numeric dates are
-rejected locally. Each requested range may span up to twelve calendar months;
-the bot partitions it into inclusive 31-day MCP windows and reads every page
-before the model can answer. Identity, resolved employee IDs, roles, pagination,
+rejected locally. History requires both boundaries, with no maximum date span.
+Clear relative periods such as “last month” resolve to explicit inclusive
+Europe/Ljubljana dates, shown in every page. Missing or ambiguous boundaries
+require a new message restating the whole period. Future end dates are allowed.
+The initial history request reads one page with `limit=50`, `offset=0` over the
+complete requested period. Identity, resolved employee IDs, roles, pagination,
 and authority are never model-controlled.
 
 The initial pilot supports personal one-to-one chats and read-only actions.
@@ -195,8 +199,41 @@ attendance facts, translation, chronology, and final message chunks. Guidance
 uses fixed English or Slovenian copy selected by a no-auth model intent, with no
 attendance access. Reply batches mark their parts and finish; delivery stops
 after a failed send and logs only the correlation ID, progress count, and error
-type. Images, cards, files, and durable language preferences are intentionally
-deferred to issues #22 and #21.
+type. History adds a separate Next page Adaptive Card after every text batch
+when the server returns a valid advancing `next_offset`. Final and empty pages
+have no button. Other rich outputs and durable language preferences remain
+follow-up work in issues #22 and #21.
+
+### History continuation and signing-key setup
+
+`ATTENDANCE_HISTORY_SIGNING_KEY` is required when attendance is enabled. Supply
+an externally provisioned high-entropy secret of at least 32 UTF-8 bytes through
+the approved secret manager, using the same persistent value on every replica.
+The bot stores it as `SecretStr`, never generates it at startup, and does not
+write it to logs or model context. Compose passes the runtime value through;
+this repository does not provision a real secret.
+
+A Next page button holds a versioned HMAC-SHA256 signed query: original dates,
+self/administrator scope, the once-resolved administrator target (only for that
+scope), fixed limit 50, next offset, reply language, and authenticated SDK
+Teams tenant/AAD-user/conversation bindings. Payloads have strict field/type,
+size, version, date-order, scope and signature checks. A signature binds query
+context; the REST API remains the authorization authority.
+
+Each valid personal-chat click gets current Teams SSO credentials, performs one
+OBO exchange, discovers and admits the live MCP catalog, and requests exactly
+one history page directly. It bypasses both model selection and completion and
+uses the localized deterministic renderer. Malformed submissions never fall
+back to a model. The initial administrator selection resolves once; continuations
+keep its signed resolved target without a new directory lookup.
+
+Buttons have no time expiry and survive restarts with the same key. Replacing
+the key invalidates existing buttons. Repeated clicks request their original
+offset; results use live data, so additions/deletions can move records between
+pages. There is no snapshot, stored query history, aggregate cap, or maximum
+number of reachable history pages. REST 1.0.0 and pre-release MCP 1.3.0 tool
+names, arguments, and response schemas remain compatible. Current-status paging
+and upstream report limits are unchanged.
 
 This verified client-side behavior does not establish a real integration. Real
 attendance traffic remains disabled by default pending the attendance-mcp

@@ -2,6 +2,7 @@ from typing import cast
 
 from fastapi import FastAPI
 
+from attendance_teams_bot.agent.continuation import ContinuationSigner
 from attendance_teams_bot.agent.openai import create_openai_language_model
 from attendance_teams_bot.agent.orchestrator import AttendanceAgent, McpSessionFactory
 from attendance_teams_bot.local import LocalUnconfiguredHandler
@@ -63,12 +64,14 @@ def create_attendance_enabled_teams_http_app(
         attendance_application=_attendance_application(integration),
         oauth_connection_name=integration.teams_sso_oauth_connection_name,
         delegated_scope=integration.delegated_scope,
+        continuation_signer=ContinuationSigner(integration.history_signing_key),
     )
 
 
 def _attendance_application(integration: AttendanceIntegrationSettings) -> AttendanceAgent:
     """Build the attendance orchestration boundary from validated integration settings."""
     return AttendanceAgent(
+        continuation_signer=ContinuationSigner(integration.history_signing_key),
         language_model=create_openai_language_model(
             api_key=integration.openai.api_key,
             model=integration.openai.model,

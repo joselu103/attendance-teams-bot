@@ -100,6 +100,7 @@ def test_teams_mode_composes_enabled_attendance_integration(monkeypatch) -> None
     monkeypatch.setenv("TEAMS_SSO_OAUTH_CONNECTION_NAME", "attendance-teams-sso")
     monkeypatch.setenv("OPENAI_API_KEY", "test-only-openai-key")
     monkeypatch.setenv("OPENAI_MODEL", "gpt-5-mini")
+    monkeypatch.setenv("ATTENDANCE_HISTORY_SIGNING_KEY", "synthetic-test-signing-key-32-bytes")
     recorded: dict[str, object] = {}
     expected_app = object()
     expected_model = object()

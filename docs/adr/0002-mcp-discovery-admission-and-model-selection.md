@@ -25,7 +25,7 @@ omits IDs, notes, and locations. Current attendance exposes only names under
 translated non-empty status groups, with no timestamps, locations, or event data.
 Search remains deterministic and directory-safe.
 
-After a result, the model returns a validated presentation plan containing only
+After an initial result, the model returns a validated presentation plan containing only
 a short title and optional context. Code owns factual blocks, chronology,
 completeness, status membership, translations, empty states, errors, and employee
 selection. A new model-admitted tool needs an explicit presentation policy and
@@ -33,6 +33,11 @@ tests before successful results may be exposed. Long history replies form a
 validated non-empty ordered batch only at complete date-group boundaries; Teams
 delivery is sequential and stops without blind retry on a send failure. Remote
 descriptions and schemas remain outside the prompt.
+
+Signed history continuations bypass both model stages. They use the original
+full-period query and signed resolved administrator target (if applicable),
+re-admit the live catalog, read one page, and render deterministically. The
+Next page attachment is delivered only after every text send succeeds.
 
 Before authentication, the configured LLM receives only bot-owned definitions of
 all currently supported read-only actions, the message, and an unverified Teams

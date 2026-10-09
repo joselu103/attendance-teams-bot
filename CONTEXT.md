@@ -28,10 +28,19 @@ no-tool result ends the turn; a validated action selection proceeds to SSO/OBO
 and live MCP discovery.
 _Avoid_: authentication decision, identity mapping
 
-**Attendance window**:
-A bot-controlled, inclusive period of at most 31 calendar days used for one
-request to Attendance CRMT.
-_Avoid_: source query, model range
+**History period**:
+The complete requested attendance interval, including both Europe/Ljubljana
+calendar dates, with no maximum span.
+_Avoid_: attendance window, remembered partial period
+
+**History page**:
+Up to 50 attendance events from the requested period at one pagination position.
+_Avoid_: complete history, snapshot
+
+**History continuation**:
+A Next page button retaining the original period, selected target, language and
+pagination position for the same signed-in Teams conversation.
+_Avoid_: new query, authorization grant
 
 **Attendance result**:
 The bounded Teams presentation rendered by code from a reply-safe projection.

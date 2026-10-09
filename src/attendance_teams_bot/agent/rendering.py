@@ -30,7 +30,7 @@ def is_safe_model_markdown(markdown: object) -> bool:
 
 UNAVAILABLE_REPLY = "Attendance data is temporarily unavailable. Please try again later."
 INVALID_REQUEST_REPLY = "Please provide a valid attendance request."
-CLARIFICATION_REPLY = "Please clarify the attendance date range you want to view."
+CLARIFICATION_REPLY = "Please restate the complete attendance period with both start and end dates."
 TOOL_FAILURE_REPLIES = {
     "INVALID_ARGUMENT": "Check the attendance date range and try again.",
     "FORBIDDEN": "You do not have permission to view that attendance.",
@@ -51,14 +51,6 @@ GuidanceIntent = Literal["unsupported", "date_ambiguous", "greeting"]
 
 
 @dataclass(frozen=True, slots=True)
-class EventResultPresentation:
-    events: tuple[AttendanceEvent, ...]
-    records_omitted: bool
-    language: ReplyLanguage
-    display_name: str | None
-
-
-@dataclass(frozen=True, slots=True)
 class CurrentAttendancePresentation:
     status_names: tuple[tuple[str, tuple[str, ...]], ...]
     language: ReplyLanguage
@@ -72,6 +64,9 @@ class SafeHistoryPresentation:
     language: ReplyLanguage
     display_name: str | None
     plan: PresentationPlan | None
+    start_date: date | None = None
+    end_date: date | None = None
+    has_more: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,8 +115,7 @@ class CatalogUnavailablePresentation:
 
 
 AttendancePresentation = (
-    EventResultPresentation
-    | CurrentAttendancePresentation
+    CurrentAttendancePresentation
     | SafeHistoryPresentation
     | ClarificationPresentation
     | GuidancePresentation
@@ -137,13 +131,7 @@ class AttendanceResultPresenter:
     """Build every safe, localized Attendance reply from a typed outcome."""
 
     def present(self, presentation: AttendancePresentation) -> BotResponse:
-        if isinstance(presentation, EventResultPresentation):
-            text = render_attendance_events(
-                presentation.events,
-                language=presentation.language,
-                records_omitted=presentation.records_omitted,
-            )
-        elif isinstance(presentation, SafeHistoryPresentation):
+        if isinstance(presentation, SafeHistoryPresentation):
             return _history_batch(presentation)
         elif isinstance(presentation, CurrentAttendancePresentation):
             return _current_batch(presentation)
@@ -258,74 +246,6 @@ _ENGLISH_PUNCH_TYPE_ALIASES: tuple[tuple[str, str], ...] = (
 )
 
 
-def render_attendance_events(
-    events: tuple[AttendanceEvent, ...],
-    *,
-    language: ReplyLanguage = "en",
-    records_omitted: bool = False,
-) -> str:
-    """Render an aggregate reply within the Teams character budget.
-
-    Events are retained in safely returned source order while the existing local
-    presentation sorts them by display date. The disclosure deliberately makes
-    no claim about the source's ordering.
-    """
-    selected: list[AttendanceEvent] = []
-    omitted = records_omitted
-    for index, event in enumerate(events):
-        candidate = tuple((*selected, event))
-        needs_disclosure = records_omitted or index < len(events) - 1
-        if (
-            len(_render_events(candidate, language, records_omitted=needs_disclosure))
-            > MAX_REPLY_CHARACTERS
-        ):
-            omitted = True
-            break
-        selected.append(event)
-    return _render_events(tuple(selected), language, records_omitted=omitted)
-
-
-def _render_events(
-    events: tuple[AttendanceEvent, ...],
-    language: ReplyLanguage,
-    *,
-    records_omitted: bool = False,
-) -> str:
-    if not events:
-        return _copy(
-            language,
-            "No attendance events were found for that date range.",
-            "Za to obdobje ni evidentiranih dogodkov prisotnosti.",
-        )
-    groups: defaultdict[date | None, list[AttendanceEvent]] = defaultdict(list)
-    for event in events:
-        groups[_event_date(event)].append(event)
-    dated_groups = sorted(day for day in groups if day is not None)
-    response_parts = [_range_heading(dated_groups, language)] if dated_groups else []
-    for day in dated_groups:
-        response_parts.append(f"**{_format_date(day, language, weekday=True)}**")
-        response_parts.append(
-            "\n".join(
-                _render_attendance_event(event, language) for event in _sort_events(groups[day])
-            )
-        )
-    if None in groups:
-        response_parts.append(f"**{_copy(language, 'Date unavailable', 'Datum ni na voljo')}**")
-        response_parts.append(
-            "\n".join(
-                _render_attendance_event(event, language) for event in _sort_events(groups[None])
-            )
-        )
-    response = "\n\n".join(part for part in response_parts if part)
-    if records_omitted:
-        response += "\n" + _copy(
-            language,
-            "Showing returned events only; additional records were omitted.",
-            "Prikazani so samo vrnjeni dogodki; dodatni zapisi so izpuščeni.",
-        )
-    return response
-
-
 def _render_attendance_event(event: AttendanceEvent, language: ReplyLanguage) -> str:
     if event.checked_in_at is None and event.checked_out_at is None:
         time_range = _copy(language, "Time unavailable", "Čas ni na voljo")
@@ -360,14 +280,29 @@ def _safe_plan_text(value: str, limit: int) -> bool:
 
 
 def _history_batch(presentation: SafeHistoryPresentation) -> BotResponse:
-    if presentation.plan is None or not valid_presentation_plan(presentation.plan):
+    if presentation.plan is not None and not valid_presentation_plan(presentation.plan):
         return BotResponse(_localized_safe_reply(UNAVAILABLE_REPLY, presentation.language))
+    period = (
+        f"{presentation.start_date.isoformat()} – {presentation.end_date.isoformat()} "
+        + _copy(
+            presentation.language, "(Europe/Ljubljana, inclusive)", "(Europe/Ljubljana, vključno)"
+        )
+        if presentation.start_date and presentation.end_date
+        else ""
+    )
     if not presentation.events:
         return _response(
             _copy(
                 presentation.language,
-                "No attendance events were found for that date range.",
-                "Za to obdobje ni evidentiranih dogodkov prisotnosti.",
+                "No attendance events were found for that date range."
+                + (" " + period if period else ""),
+                "Za to obdobje ni evidentiranih dogodkov prisotnosti."
+                + (" " + period if period else ""),
+            )
+            + (
+                "\n\n**" + _copy(presentation.language, "Final page", "Zadnja stran") + "**"
+                if period
+                else ""
             ),
             presentation.language,
             presentation.display_name,
@@ -391,10 +326,33 @@ def _history_batch(presentation: SafeHistoryPresentation) -> BotResponse:
                 for event in _sort_events(groups[None])
             )
         )
-    prefix = f"**{_safe_text(presentation.plan.title)}**"
-    if presentation.plan.context:
+    title = (
+        presentation.plan.title
+        if presentation.plan
+        else _copy(presentation.language, "Attendance", "Prisotnost")
+    )
+    prefix = f"**{_safe_text(title)}**"
+    if period:
+        prefix += "\n\n" + period
+    if presentation.plan and presentation.plan.context:
         prefix += "\n\n" + _safe_text(presentation.plan.context)
-    response = _ordered_batch(prefix, blocks, presentation.language, presentation.display_name)
+    response = _ordered_batch(
+        prefix,
+        blocks,
+        presentation.language,
+        presentation.display_name,
+        suffix=_copy(
+            presentation.language,
+            "More results — use Next page.",
+            "Več rezultatov — izberite Naslednja stran.",
+        )
+        if presentation.has_more
+        else (
+            _copy(presentation.language, "Final page", "Zadnja stran")
+            if presentation.start_date
+            else None
+        ),
+    )
     return response or BotResponse(_localized_safe_reply(UNAVAILABLE_REPLY, presentation.language))
 
 
@@ -439,9 +397,13 @@ def _ordered_batch(
     blocks: list[str],
     language: ReplyLanguage,
     display_name: str | None,
+    *,
+    suffix: str | None = None,
 ) -> BotResponse | None:
     """Pack complete fact blocks and mark every part plus the batch end."""
-    suffix = "\n\n**Konec rezultatov**" if language == "sl" else "\n\n**End of results**"
+    suffix = (
+        "\n\n**" + (suffix or ("Konec rezultatov" if language == "sl" else "End of results")) + "**"
+    )
     reserve = len("**Part 9999 of 9999**\n\n") + len(suffix)
     capacity = MAX_REPLY_CHARACTERS - reserve
     if capacity < 1:
@@ -506,15 +468,6 @@ def _sort_events(events: list[AttendanceEvent]) -> list[AttendanceEvent]:
     )
 
 
-def _range_heading(days: list[date], language: ReplyLanguage) -> str:
-    if not days:
-        return ""
-    start, end = days[0], days[-1]
-    if language == "sl":
-        return f"**Prisotnost: {_format_date(start, language)}–{_format_date(end, language)}**"
-    return f"**Attendance: {_format_date(start, language)}–{_format_date(end, language)}**"
-
-
 def _format_date(value: date, language: ReplyLanguage, *, weekday: bool = False) -> str:
     day = f"{value.day} {_MONTHS[language][value.month - 1]} {value.year}"
     if language == "en":
@@ -559,7 +512,7 @@ def _guidance_copy(intent: GuidanceIntent, language: ReplyLanguage) -> str:
         return _copy(
             language,
             CLARIFICATION_REPLY,
-            "Prosimo, pojasnite obdobje prisotnosti, ki ga želite prikazati.",
+            "Prosimo, znova navedite celotno obdobje prisotnosti z začetnim in končnim datumom.",
         )
     return _copy(
         language,
@@ -603,7 +556,9 @@ def _localized_safe_reply(text: str, language: ReplyLanguage) -> str:
         return text
     slovene = {
         UNAVAILABLE_REPLY: "Podatki o prisotnosti trenutno niso na voljo. Poskusite znova pozneje.",
-        INVALID_REQUEST_REPLY: "Prosimo, navedite obdobje največ 31 dni.",
+        INVALID_REQUEST_REPLY: (
+            "Prosimo, navedite veljavno obdobje prisotnosti z začetnim in končnim datumom."
+        ),
         TOOL_FAILURE_REPLIES[
             "INVALID_ARGUMENT"
         ]: "Preverite obdobje prisotnosti in poskusite znova.",

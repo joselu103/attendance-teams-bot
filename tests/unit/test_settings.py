@@ -43,7 +43,7 @@ def test_settings_default_to_local_mode_without_a_dotenv_file(tmp_path, monkeypa
 def test_settings_reject_teams_mode_without_bot_service_configuration(
     tmp_path, monkeypatch
 ) -> None:
-    (tmp_path / ".env").write_text("BOT_RUNTIME_MODE=teams", encoding="utf-8")
+    (tmp_path / "synthetic-settings.txt").write_text("BOT_RUNTIME_MODE=teams", encoding="utf-8")
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("BOT_RUNTIME_MODE", "teams")
 
@@ -54,7 +54,7 @@ def test_settings_reject_teams_mode_without_bot_service_configuration(
 def test_settings_loads_complete_teams_configuration_from_one_dotenv(tmp_path, monkeypatch) -> None:
     client_id = uuid4()
     tenant_id = uuid4()
-    environment_file = tmp_path / ".env"
+    environment_file = tmp_path / "synthetic-settings.txt"
     environment_file.write_text(
         "\n".join(
             [
@@ -70,7 +70,7 @@ def test_settings_loads_complete_teams_configuration_from_one_dotenv(tmp_path, m
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("BOT_RUNTIME_MODE")
 
-    settings = Settings()
+    settings = Settings(_env_file=environment_file)
 
     assert settings.mode is RuntimeMode.TEAMS
     assert settings.teams_connection is not None
@@ -137,6 +137,7 @@ def test_settings_build_complete_attendance_integration(monkeypatch) -> None:
     monkeypatch.setenv("TEAMS_SSO_OAUTH_CONNECTION_NAME", "AttendanceTeamsSso")
     monkeypatch.setenv("OPENAI_API_KEY", "test-only-openai-key")
     monkeypatch.setenv("OPENAI_MODEL", "gpt-5-mini")
+    monkeypatch.setenv("ATTENDANCE_HISTORY_SIGNING_KEY", "synthetic-test-signing-key-32-bytes")
 
     settings = Settings(_env_file=None)
 
@@ -149,3 +150,31 @@ def test_settings_build_complete_attendance_integration(monkeypatch) -> None:
         == "api://11111111-1111-1111-1111-111111111111/attendance.access"
     )
     assert settings.attendance_integration.openai.model == "gpt-5-mini"
+
+
+@pytest.mark.parametrize("key", [None, "", "too-short"])
+def test_enabled_attendance_requires_persistent_signing_key_without_exposing_it(
+    monkeypatch, key
+) -> None:
+    monkeypatch.setenv("BOT_RUNTIME_MODE", "teams")
+    monkeypatch.setenv("ATTENDANCE_INTEGRATION_ENABLED", "true")
+    monkeypatch.setenv("CONNECTIONS__SERVICE_CONNECTION__SETTINGS__CLIENTID", str(uuid4()))
+    monkeypatch.setenv("CONNECTIONS__SERVICE_CONNECTION__SETTINGS__TENANTID", str(uuid4()))
+    monkeypatch.setenv(
+        "CONNECTIONS__SERVICE_CONNECTION__SETTINGS__CLIENTSECRET", "synthetic-client-secret"
+    )
+    monkeypatch.setenv("MCP_ENDPOINT", "https://attendance-mcp.example.test/mcp")
+    monkeypatch.setenv("MCP_SCOPE", "api://synthetic/attendance.access")
+    monkeypatch.setenv("TEAMS_SSO_OAUTH_CONNECTION_NAME", "synthetic-sso")
+    monkeypatch.setenv("OPENAI_API_KEY", "synthetic-provider-secret")
+    monkeypatch.setenv("OPENAI_MODEL", "synthetic-model")
+    monkeypatch.delenv("ATTENDANCE_HISTORY_SIGNING_KEY", raising=False)
+    if key is not None:
+        monkeypatch.setenv("ATTENDANCE_HISTORY_SIGNING_KEY", key)
+    with pytest.raises(ValueError) as caught:
+        Settings(_env_file=None)
+    assert "signing-key" in str(caught.value)
+    assert "synthetic-client-secret" not in str(caught.value)
+    assert "synthetic-provider-secret" not in str(caught.value)
+    if key:
+        assert key not in str(caught.value)

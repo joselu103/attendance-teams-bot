@@ -9,10 +9,17 @@ ReplyLanguage = Literal["en", "sl"]
 
 
 @dataclass(frozen=True, slots=True)
+class BotAttachment:
+    content_type: str
+    content: Mapping[str, object]
+
+
+@dataclass(frozen=True, slots=True)
 class BotResponse:
     text: str
     messages: tuple[str, ...] = ()
     request: None = None
+    attachments: tuple[BotAttachment, ...] = ()
 
     def __post_init__(self) -> None:
         messages = self.messages or (self.text,)

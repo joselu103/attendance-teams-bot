@@ -6,7 +6,7 @@ from typing import Any, Protocol, cast
 
 import structlog
 from fastapi import FastAPI, Request
-from microsoft_agents.activity import load_configuration_from_env
+from microsoft_agents.activity import Activity, Attachment, load_configuration_from_env
 from microsoft_agents.authentication.msal import MsalConnectionManager
 from microsoft_agents.hosting.core import (
     AgentApplication,
@@ -25,6 +25,8 @@ from microsoft_agents.hosting.fastapi import (
 from pydantic import SecretStr
 from starlette.responses import JSONResponse, Response
 
+from attendance_teams_bot.agent.continuation import HISTORY_VERB, ContinuationSigner, TeamsBinding
+from attendance_teams_bot.agent.contracts import BotAttachment
 from attendance_teams_bot.auth.obo import MsalOboTokenExchange
 from attendance_teams_bot.observability import (
     authentication_event,
@@ -63,6 +65,45 @@ class _Authorization(Protocol):
     ) -> object: ...
 
 
+class SdkAttendanceContext:
+    """Keep SDK activities and attachment translation behind the transport adapter."""
+
+    def __init__(self, context: TurnContext) -> None:
+        self.sdk_context = context
+
+    @property
+    def activity(self) -> Any:
+        return self.sdk_context.activity
+
+    @property
+    def history_binding(self) -> TeamsBinding | None:
+        activity = self.sdk_context.activity
+        conversation, sender = activity.conversation, activity.from_property
+        try:
+            return TeamsBinding(
+                conversation.tenant_id or "" if conversation else "",
+                sender.aad_object_id or "" if sender else "",
+                conversation.id or "" if conversation else "",
+            )
+        except ValueError:
+            return None
+
+    async def send_activity(self, text: str) -> object:
+        return await self.sdk_context.send_activity(text)
+
+    async def send_attachment(self, attachment: BotAttachment) -> object:
+        return await self.sdk_context.send_activity(
+            Activity(
+                type="message",
+                attachments=[
+                    Attachment(
+                        content_type=attachment.content_type, content=dict(attachment.content)
+                    )
+                ],
+            )
+        )
+
+
 class TeamsAuthorizationSsoTokenProvider:
     """Translate Microsoft Agents authorization results into the neutral SSO port."""
 
@@ -74,7 +115,10 @@ class TeamsAuthorizationSsoTokenProvider:
         """Retrieve a non-empty Teams SSO token or raise the neutral runtime error."""
         try:
             response = await self._authorization.get_token(
-                cast(TurnContext, context), self._auth_handler_id
+                context.sdk_context
+                if isinstance(context, SdkAttendanceContext)
+                else cast(TurnContext, context),
+                self._auth_handler_id,
             )
         except Exception as error:
             authentication_event(
@@ -221,6 +265,7 @@ def create_attendance_teams_http_app(
     oauth_connection_name: str,
     delegated_scope: str,
     storage: Storage | None = None,
+    continuation_signer: ContinuationSigner | None = None,
 ) -> FastAPI:
     """Create the authenticated Teams app that performs SSO, OBO, and attendance handling."""
     _validate_oauth_connection_name(oauth_connection_name)
@@ -241,6 +286,7 @@ def create_attendance_teams_http_app(
         authorization=authorization,
         default_connection=default_connection,
         delegated_scope=delegated_scope,
+        continuation_signer=continuation_signer,
     )
 
     adapter = CloudAdapter(connection_manager=connection_manager)
@@ -291,9 +337,11 @@ def _create_attendance_turn_handler(
     authorization: Authorization,
     default_connection: Any,
     delegated_scope: str,
+    continuation_signer: ContinuationSigner | None = None,
 ) -> SsoOboAttendanceTurnHandler:
     return SsoOboAttendanceTurnHandler(
         application=attendance_application,
+        continuation_signer=continuation_signer,
         sso_token_provider=TeamsAuthorizationSsoTokenProvider(
             authorization=authorization,
             auth_handler_id=_ATTENDANCE_AUTH_HANDLER_ID,
@@ -317,9 +365,15 @@ def _register_attendance_message_handler(
     agent_application: AgentApplication[TurnState],
     attendance_handler: SsoOboAttendanceTurnHandler,
 ) -> None:
+    @agent_application.adaptive_card.action_submit(
+        HISTORY_VERB, auth_handlers=[_ATTENDANCE_AUTH_HANDLER_ID]
+    )
+    async def on_submit(context: TurnContext, _state: TurnState, data: Any) -> None:
+        await attendance_handler.handle_submission(SdkAttendanceContext(context), data)
+
     @agent_application.activity("message", auth_handlers=[_ATTENDANCE_AUTH_HANDLER_ID])
     async def on_message(context: TurnContext, _state: TurnState) -> None:
-        await attendance_handler.handle(cast(BotServiceAuthenticatedTurnContext, context))
+        await attendance_handler.handle(SdkAttendanceContext(context))
 
 
 def _create_http_app(

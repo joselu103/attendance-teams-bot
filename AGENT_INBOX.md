@@ -1,3 +1,37 @@
+# Directive: ATTENDANCE-HISTORY-PAGINATION-001
+
+> **Status:** Completed locally by coordinator after worker usage-limit interruption.
+>
+> **Scope:** Personal and administrator attendance-event listings only. Required
+> inclusive Ljubljana dates have no maximum span; future end dates are allowed.
+> One 50-event page per request and signed Next page buttons replace window
+> splitting and all-history aggregation. Current-status/report policies are unchanged.
+>
+> **Dependencies:** Verified REST history-pagination worktree (168 tests), then
+> MCP history-pagination worktree (57 tests). REST 1.0.0 and pre-release MCP 1.3.0
+> routes, arguments, fields, auth/audit ownership and header flow remain compatible.
+>
+> **Continuation:** Persistent externally supplied ATTENDANCE_HISTORY_SIGNING_KEY
+> (at least 32 UTF-8 bytes, shared across instances), authenticated SDK binding,
+> fresh SSO/one OBO/live catalog per click, zero model calls, original-position
+> replay/restart, live data, safe invalid submissions and stop-on-send-failure.
+> No real key was read or provisioned; no external activation is claimed.
+>
+> **Evidence:** Python 3.14.2 full pytest 247 passed; coordinator independently
+> reran signer/actual SDK integration tests (71 passed). Ruff check and format
+> check passed (55 files), strict mypy passed (29 files), Compose config with
+> --env-file /dev/null passed. Final state JSON validation and git diff --check passed.
+>
+> **Delivery:** Local edits in Orca history-pagination worktree on
+> joselu103/history-pagination, base f3fb26c. Worker ctx_353f9884d211 hit its
+> usage limit after implementation and cleanup and sent no worker_done; the
+> coordinator abandoned that dispatch without deleting its resources, reviewed
+> the final source, completed records and reran required gates. Deployment,
+> Entra/OBO, SQL, audit policy, privacy/provider, signing-key provisioning and
+> real-account evidence remain blocked separately. No commit/push/PR/merge.
+
+## Historical completed directive
+
 # Directive: TEAMS-LLM-MCP-001
 
 > **Status:** Completed historical directive. Do not re-execute it. Read

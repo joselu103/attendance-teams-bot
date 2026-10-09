@@ -48,12 +48,15 @@ class AttendanceIntegrationSettings(BaseModel):
     teams_sso_oauth_connection_name: str
     timeout_seconds: float
     openai: OpenAiSettings
+    history_signing_key: SecretStr
 
 
 class Settings(BaseSettings):
     """Load runtime settings and keep attendance integration disabled unless fully configured."""
 
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+    model_config = SettingsConfigDict(
+        env_file=".env", env_file_encoding="utf-8", hide_input_in_errors=True
+    )
 
     log_environment: Literal["local", "staging", "production"] = Field(
         default="local",
@@ -75,6 +78,10 @@ class Settings(BaseSettings):
         validation_alias="TEAMS_SSO_OAUTH_CONNECTION_NAME",
     )
     openai_api_key: SecretStr | None = Field(default=None, validation_alias="OPENAI_API_KEY")
+    history_signing_key: SecretStr | None = Field(
+        default=None,
+        validation_alias="ATTENDANCE_HISTORY_SIGNING_KEY",
+    )
     openai_model: str | None = Field(default=None, validation_alias="OPENAI_MODEL")
     mcp_timeout_seconds: float = Field(
         default=10.0,
@@ -111,7 +118,8 @@ class Settings(BaseSettings):
             raise ValueError("enabled attendance integration requires teams runtime mode")
         if self.attendance_integration_enabled and self.attendance_integration is None:
             raise ValueError(
-                "enabled attendance integration requires Teams, MCP, and OpenAI configuration"
+                "enabled attendance integration requires Teams, MCP, OpenAI, "
+                "and persistent history signing-key configuration"
             )
         return self
 
@@ -142,6 +150,7 @@ class Settings(BaseSettings):
             or self.teams_sso_oauth_connection_name is None
             or self.openai_api_key is None
             or self.openai_model is None
+            or self.history_signing_key is None
         ):
             return None
 
@@ -159,7 +168,11 @@ class Settings(BaseSettings):
         if endpoint.scheme != "https" and not is_loopback:
             return None
 
+        if len(self.history_signing_key.get_secret_value().encode()) < 32:
+            return None
+
         return AttendanceIntegrationSettings(
+            history_signing_key=self.history_signing_key,
             endpoint=endpoint,
             delegated_scope=delegated_scope,
             teams_sso_oauth_connection_name=oauth_connection_name,

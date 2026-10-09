@@ -177,7 +177,10 @@ async def test_ambiguous_numeric_date_is_a_pre_auth_model_clarification() -> Non
         ]
     )
     response = await subject.handle(message="show 6/8", mcp_access_token=SecretStr("token"))
-    assert response.text == "Please clarify the attendance date range you want to view."
+    assert (
+        response.text
+        == "Please restate the complete attendance period with both start and end dates."
+    )
     assert len(model.requests) == 1 and not session.calls
 
 
@@ -273,3 +276,122 @@ async def test_unavailable_greeting_failure_outcomes_are_classified_without_sens
     ]
     assert "must-not-log" not in repr(events)
     assert "token-b" not in repr(events)
+
+
+@pytest.mark.anyio
+async def test_history_requests_one_complete_multiyear_page_only() -> None:
+    selection = ToolCall(
+        "one",
+        SELF_ATTENDANCE_TOOL,
+        {"start_date": "2020-01-01", "end_date": "2030-12-31", "reply_language": "en"},
+    )
+    first = page().model_copy(update={"next_offset": 50})
+    subject, _, session = agent(
+        [
+            selection,
+            FinalResponse("ignored", "en", presentation=PresentationPlan("Attendance", None)),
+        ],
+        FakeSession(pages=[first]),
+    )
+    from dataclasses import replace
+
+    from attendance_teams_bot.agent.continuation import ContinuationSigner, TeamsBinding
+
+    subject = replace(
+        subject,
+        continuation_signer=ContinuationSigner(SecretStr("synthetic-test-signing-key-32-bytes")),
+    )
+    decision = await subject.pre_auth_decision(message="2020 through 2030")
+    response = await subject.handle_selected(
+        message="2020 through 2030",
+        selection=decision,
+        mcp_access_token=SecretStr("token"),
+        binding=TeamsBinding("tenant", "user", "chat"),
+    )
+    assert session.calls == [
+        {
+            "name": SELF_ATTENDANCE_TOOL,
+            "start_date": "2020-01-01",
+            "end_date": "2030-12-31",
+            "limit": 50,
+            "offset": 0,
+        }
+    ]
+    assert "2030" in response.text
+    assert "More results" in response.messages[-1]
+    assert "End of results" not in response.messages[-1]
+
+
+@pytest.mark.anyio
+async def test_continuation_is_direct_live_catalog_and_never_calls_model() -> None:
+    from attendance_teams_bot.agent.continuation import HistoryContinuation, TeamsBinding
+
+    query = HistoryContinuation(
+        "self",
+        date(2020, 1, 1),
+        date(2030, 12, 31),
+        50,
+        "en",
+        TeamsBinding("tenant", "user", "chat"),
+    )
+    subject, model, session = agent(
+        [], FakeSession(pages=[page().model_copy(update={"offset": 50})])
+    )
+    response = await subject.handle_continuation(
+        query=query, mcp_access_token=SecretStr("fresh-token")
+    )
+    assert session.calls == [
+        {
+            "name": SELF_ATTENDANCE_TOOL,
+            "start_date": "2020-01-01",
+            "end_date": "2030-12-31",
+            "limit": 50,
+            "offset": 50,
+        }
+    ]
+    assert not model.requests
+    assert "Final page" in response.messages[-1]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {"start_date": "2026-08-01", "reply_language": "en"},
+        {"end_date": "2026-08-31", "reply_language": "en"},
+        {"start_date": "2026-08-31", "end_date": "2026-08-01", "reply_language": "en"},
+        {"start_date": "not-a-date", "end_date": "2026-08-01", "reply_language": "en"},
+    ],
+)
+async def test_missing_invalid_or_reversed_boundaries_restate_whole_period_before_mcp(
+    arguments,
+) -> None:
+    subject, model, session = agent([ToolCall("selection", SELF_ATTENDANCE_TOOL, arguments)])
+    response = await subject.pre_auth_decision(message="show attendance")
+    assert (
+        response.text
+        == "Please restate the complete attendance period with both start and end dates."
+    )
+    assert not session.calls and len(model.requests) == 1
+
+
+@pytest.mark.anyio
+async def test_clear_relative_period_resolves_from_ljubljana_reference_and_displays_dates() -> None:
+    subject, model, session = agent(
+        [
+            ToolCall(
+                "selection",
+                SELF_ATTENDANCE_TOOL,
+                {"start_date": "2026-07-01", "end_date": "2026-07-31", "reply_language": "en"},
+            ),
+            FinalResponse("ignored", "en", presentation=PresentationPlan("Attendance", None)),
+        ]
+    )
+    response = await subject.handle(message="last month", mcp_access_token=SecretStr("token"))
+    assert model.requests[0].reference_date == date(2026, 8, 15)
+    assert model.requests[0].timezone == "Europe/Ljubljana"
+    assert (
+        session.calls[0]["start_date"] == "2026-07-01"
+        and session.calls[0]["end_date"] == "2026-07-31"
+    )
+    assert "2026-07-01" in response.text and "2026-07-31" in response.text

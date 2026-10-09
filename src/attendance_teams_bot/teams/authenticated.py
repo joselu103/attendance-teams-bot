@@ -3,12 +3,22 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Protocol, cast
 
 import structlog
 from pydantic import SecretStr
 
-from attendance_teams_bot.agent.contracts import BotResponse, SelectedAttendanceAction
+from attendance_teams_bot.agent.continuation import (
+    HISTORY_VERB,
+    ContinuationSigner,
+    HistoryContinuation,
+    TeamsBinding,
+)
+from attendance_teams_bot.agent.contracts import (
+    BotAttachment,
+    BotResponse,
+    SelectedAttendanceAction,
+)
 from attendance_teams_bot.auth.obo import DelegatedAuthenticationUnavailable
 from attendance_teams_bot.observability import (
     OperationLifecycle,
@@ -40,6 +50,15 @@ class AttendanceApplication(Protocol):
         mcp_access_token: SecretStr,
         selection: SelectedAttendanceAction,
         display_name: str | None = None,
+        binding: TeamsBinding | None = None,
+    ) -> BotResponse: ...
+
+    async def handle_continuation(
+        self,
+        *,
+        query: HistoryContinuation,
+        mcp_access_token: SecretStr,
+        display_name: str | None = None,
     ) -> BotResponse: ...
 
 
@@ -63,6 +82,10 @@ class BotServiceAuthenticatedTurnContext(Protocol):
     def activity(self) -> TurnActivity: ...
 
     async def send_activity(self, text: str) -> object: ...
+
+
+class AttachmentTurnContext(BotServiceAuthenticatedTurnContext, Protocol):
+    async def send_attachment(self, attachment: BotAttachment) -> object: ...
 
 
 class SsoTokenProvider(Protocol):
@@ -89,9 +112,16 @@ class SsoOboAttendanceTurnHandler:
     application: AttendanceApplication
     sso_token_provider: SsoTokenProvider
     obo_token_exchange: OboTokenExchange
+    continuation_signer: ContinuationSigner | None = None
 
     async def handle(self, context: BotServiceAuthenticatedTurnContext) -> None:
         """Process personal text turns only, obtaining SSO and OBO tokens before delegation."""
+        if (
+            context.activity.type == "message"
+            and getattr(context.activity, "value", None) is not None
+        ):
+            await self.handle_submission(context, getattr(context.activity, "value", None))
+            return
         if context.activity.type != "message" or context.activity.text is None:
             return
         conversation = context.activity.conversation
@@ -176,7 +206,10 @@ class SsoOboAttendanceTurnHandler:
             lifecycle.step_completed(step=step)
 
             step = "attendance_application"
+            binding = getattr(context, "history_binding", None)
+            extra = {"binding": binding} if isinstance(binding, TeamsBinding) else {}
             response = await self.application.handle_selected(
+                **extra,
                 message=message,
                 mcp_access_token=token_b,
                 selection=decision,
@@ -194,6 +227,45 @@ class SsoOboAttendanceTurnHandler:
         except Exception as error:
             lifecycle.fail(error, step=step)
             raise
+
+    async def handle_submission(
+        self,
+        context: BotServiceAuthenticatedTurnContext,
+        data: object,
+    ) -> None:
+        """Validate opaque signed data before SSO; malformed submissions never reach a model."""
+        conversation = context.activity.conversation
+        if conversation is None or conversation.conversation_type != "personal":
+            await self._reject_nonpersonal(context)
+            return
+        try:
+            binding = getattr(context, "history_binding", None)
+            if (
+                context.activity.type != "message"
+                or context.activity.text
+                or not isinstance(data, dict)
+                or set(data) != {"verb", "continuation"}
+                or data["verb"] != HISTORY_VERB
+                or not isinstance(binding, TeamsBinding)
+                or self.continuation_signer is None
+            ):
+                raise ValueError
+            query = self.continuation_signer.verify(data["continuation"], binding)
+        except ValueError:
+            await context.send_activity(
+                "This page button is invalid. Please restate the complete attendance period."
+            )
+            return
+        try:
+            token_a = await self.sso_token_provider.get_token(context)
+            token_b = await self.obo_token_exchange.exchange(token_a)
+        except RuntimeError, DelegatedAuthenticationUnavailable:
+            await context.send_activity(_SAFE_AUTHENTICATION_REPLY)
+            return
+        response = await self.application.handle_continuation(
+            query=query, mcp_access_token=token_b, display_name=self._display_name(context)
+        )
+        await self._send_response(context, response)
 
     async def _reply_for_authentication_failure(
         self,
@@ -230,6 +302,22 @@ class SsoOboAttendanceTurnHandler:
                     correlation_id=str(current_correlation_id()),
                     completed_messages=completed,
                     total_messages=len(response.messages),
+                    error_type=type(error).__name__,
+                )
+                raise
+            completed += 1
+        for attachment in response.attachments:
+            sender = cast(AttachmentTurnContext, context)
+            try:
+                await sender.send_attachment(attachment)
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                _LOGGER.error(
+                    "teams_reply_send_failed",
+                    correlation_id=str(current_correlation_id()),
+                    completed_messages=completed,
+                    total_messages=len(response.messages) + len(response.attachments),
                     error_type=type(error).__name__,
                 )
                 raise

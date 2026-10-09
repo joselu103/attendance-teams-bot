@@ -23,6 +23,11 @@ confidential employee data in Teams replies. Ask a short clarification only when
 intent or date range is genuinely ambiguous, and report no-data, denial, and
 backend failures clearly.
 
-The initial surface is read-only, personal-chat attendance requests in bounded date
-ranges. Do not add write capabilities before the read-only identity,
+History uses explicit/resolved inclusive periods without a maximum span and
+one page of up to 50 events per turn. Signed button continuations bypass both
+model calls; render dates, factual groups and more/final-page wording in code.
+Require the complete period again when boundaries are missing or ambiguous.
+Send the separate Next page card only after every text message succeeds.
+
+The initial surface is read-only, personal-chat attendance requests. Do not add write capabilities before the read-only identity,
 authorization, and audit path is verified end to end.

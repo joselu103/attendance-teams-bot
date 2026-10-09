@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Literal, Self
 
-from pydantic import BaseModel, ConfigDict, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 ATTENDANCE_MCP_CONTRACT_MAJOR = "1"
 ATTENDANCE_MCP_CONTRACT_HEADER = "X-Attendance-MCP-Contract-Version"
@@ -28,8 +28,6 @@ class ListMyAttendanceArguments(BaseModel):
     def validate_range(self) -> Self:
         if self.start_date > self.end_date:
             raise ValueError("end date precedes start date")
-        if (self.end_date - self.start_date).days > 30:
-            raise ValueError("date range exceeds 31 inclusive days")
         return self
 
 
@@ -57,12 +55,12 @@ class AttendanceEvent(BaseModel):
 class AttendanceEventPage(BaseModel):
     """Represent one offset-based page returned by the requester attendance tool."""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     items: tuple[AttendanceEvent, ...]
-    limit: int
-    offset: int
-    next_offset: int | None
+    limit: int = Field(strict=True, ge=1, le=100)
+    offset: int = Field(strict=True, ge=0)
+    next_offset: int | None = Field(strict=True, ge=0)
 
 
 class ResolvedEmployee(BaseModel):

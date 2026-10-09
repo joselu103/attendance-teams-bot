@@ -18,3 +18,10 @@ mode explicitly unauthenticated and never expose it as a Bot Service endpoint.
 The real attendance route remains disabled until the approved Entra, deployment,
 certificate, identity, authorization, audit, privacy, and end-to-end gates have
 direct evidence.
+
+History buttons bind only authenticated SDK tenant, AAD user and conversation
+metadata, never activity.from.id or a model/user identity. Validate signed data
+before retrieval; every valid click obtains current SSO credentials, performs
+one OBO exchange and live MCP admission, and leaves authorization to REST.
+Enabled attendance requires an externally supplied persistent history signing
+key shared across replicas; never generate, read or provision a real secret.
