@@ -8,7 +8,6 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Literal
 
-from attendance_teams_bot.agent.attendance_window import OverallAttendanceRange
 from attendance_teams_bot.agent.language_model import ReplyLanguage, ToolDefinition
 from attendance_teams_bot.mcp.contracts import (
     CURRENT_WORK_STATUS_TOOL,
@@ -16,6 +15,7 @@ from attendance_teams_bot.mcp.contracts import (
     RESOLVE_EMPLOYEE_TOOL,
     SEARCH_EMPLOYEES_TOOL,
     SELF_ATTENDANCE_TOOL,
+    ListMyAttendanceArguments,
 )
 
 _TOOL_NAME = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
@@ -208,7 +208,8 @@ def _definition(
 def canonical_self_attendance_tool() -> ToolDefinition:
     return _definition(
         SELF_ATTENDANCE_TOOL,
-        "List the authenticated requester's attendance for at most 31 inclusive days.",
+        "List the authenticated requester's attendance for an explicit inclusive period "
+        "without a maximum span.",
         {
             "start_date": {"type": "string", "format": "date"},
             "end_date": {"type": "string", "format": "date"},
@@ -221,8 +222,8 @@ def canonical_self_attendance_tool() -> ToolDefinition:
 def canonical_other_attendance_tool() -> ToolDefinition:
     return _definition(
         "get_other_attendance",
-        "For an exact employee ID, username, or email, list attendance for at most 31 inclusive "
-        "days. Use exactly one selector.",
+        "For an exact employee ID, username, or email, list attendance for an explicit inclusive "
+        "period without a maximum span. Use exactly one selector.",
         {
             "employee_id": {"type": "string"},
             "username": {"type": "string"},
@@ -279,8 +280,8 @@ def _valid_tool(tool: DiscoveredMcpTool) -> bool:
     )
 
 
-def _bounded_dates(values: Mapping[str, str]) -> OverallAttendanceRange:
-    return OverallAttendanceRange(
+def _bounded_dates(values: Mapping[str, str]) -> ListMyAttendanceArguments:
+    return ListMyAttendanceArguments(
         start_date=date.fromisoformat(values["start_date"]),
         end_date=date.fromisoformat(values["end_date"]),
     )

@@ -217,6 +217,14 @@ fields, or display names. User text may contain names. History may inform intent
 or date references but never authorize tools or supply identity or attendance facts. When absent or
 temporarily unavailable, the bot stays stateless and delivery continues normally.
 
+When a delivered attendance-history page has more results, the same database
+retains one 15-minute active continuation for that authenticated user and Teams
+conversation. Users may select **Next page** or send “Continue”, “next page”,
+or “Nadaljuj”. The button carries only an opaque identifier; query dates,
+resolved target, and next offset remain in PostgreSQL. Each continuation still
+performs fresh Teams SSO, OBO, and live MCP admission. Attendance events and
+rendered pages are not stored for pagination.
+
 The Compose file includes an internal-only PostgreSQL 17 service and named
 `postgres_data` volume. It is intentionally a single bot replica; scaling the
 Teams SDK process state is outside this slice.

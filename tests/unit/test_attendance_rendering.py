@@ -12,7 +12,6 @@ from attendance_teams_bot.agent.rendering import (
     CatalogUnavailablePresentation,
     ClarificationPresentation,
     CurrentAttendancePresentation,
-    EventResultPresentation,
     GuidancePresentation,
     InvalidRequestPresentation,
     SafeHistoryPresentation,
@@ -57,11 +56,11 @@ def _present_events(*events: AttendanceEvent, language: ReplyLanguage = "en") ->
     return (
         AttendanceResultPresenter()
         .present(
-            EventResultPresentation(
+            SafeHistoryPresentation(
                 events=events,
-                records_omitted=False,
                 language=language,
                 display_name=None,
+                plan=None,
             )
         )
         .text
@@ -76,11 +75,13 @@ def test_presentation_groups_dates_orders_events_and_hides_sensitive_fields() ->
 
     assert result == "\n\n".join(
         (
-            "**Attendance: August 10, 2026–August 11, 2026**",
+            "**Part 1 of 1**",
+            "**Attendance**",
             "**Monday, August 10, 2026**",
             "- 10:00–18:00: Office",
             "**Tuesday, August 11, 2026**",
             "- 11:00–18:00: Office",
+            "**End of results**",
         )
     )
     assert "+00:00" not in result
@@ -95,7 +96,7 @@ def test_presentation_localizes_types_active_and_escaped_values() -> None:
         language="sl",
     )
 
-    assert "**Prisotnost: 10 avgust 2026–10 avgust 2026**" in result
+    assert "**Prisotnost**" in result
     assert "- 10:00–Prisoten (v teku): Delo od doma *(Aktivno)*" in result
     assert "- Začetni čas ni na voljo–18:00: \\*Other\\*" in result
 
@@ -145,33 +146,32 @@ def test_presentation_separates_date_blocks_and_keeps_same_day_events_contiguous
     )
 
     assert result == (
-        "**Attendance: August 10, 2026–August 11, 2026**\n\n"
+        "**Part 1 of 1**\n\n**Attendance**\n\n"
         "**Monday, August 10, 2026**\n\n"
         "- 10:00–18:00: Office\n"
         "- 11:00–18:00: Office\n\n"
         "**Tuesday, August 11, 2026**\n\n"
-        "- 10:00–18:00: Office"
+        "- 10:00–18:00: Office\n\n**End of results**"
     )
 
 
-def test_presentation_reports_no_data_and_character_budget_omissions() -> None:
+def test_presentation_reports_no_data_and_keeps_every_event_in_a_history_page() -> None:
     presenter = AttendanceResultPresenter()
-
     no_data = presenter.present(
-        EventResultPresentation(events=(), records_omitted=False, language="sl", display_name=None)
+        SafeHistoryPresentation(events=(), language="sl", display_name=None, plan=None)
     )
-    events = tuple(_event(index, location="x" * 160) for index in range(2_000))
-    omitted = presenter.present(
-        EventResultPresentation(
-            events=events, records_omitted=False, language="en", display_name=None
+    response = presenter.present(
+        SafeHistoryPresentation(
+            events=tuple(_event(index) for index in range(50)),
+            language="en",
+            display_name=None,
+            plan=None,
         )
     )
-
     assert no_data.text == "Za to obdobje ni evidentiranih dogodkov prisotnosti."
-    assert len(omitted.text) <= MAX_REPLY_CHARACTERS
-    assert "additional records were omitted" in omitted.text
-    assert "older" not in omitted.text
-    assert "newer" not in omitted.text
+    assert all(len(message) <= MAX_REPLY_CHARACTERS for message in response.messages)
+    assert "\n".join(response.messages).count("10:00–18:00: Office") == 50
+    assert "omitted" not in "\n".join(response.messages)
 
 
 @pytest.mark.parametrize(
@@ -179,7 +179,7 @@ def test_presentation_reports_no_data_and_character_budget_omissions() -> None:
     [
         (
             ClarificationPresentation(language="en", display_name=None),
-            "Please clarify the attendance date range you want to view.",
+            "Please restate the complete attendance period with both start and end dates.",
         ),
         (
             GuidancePresentation(intent="unsupported", language="sl", display_name=None),
@@ -187,7 +187,7 @@ def test_presentation_reports_no_data_and_character_budget_omissions() -> None:
         ),
         (
             InvalidRequestPresentation(language="sl", display_name=None),
-            "Prosimo, navedite obdobje največ 31 dni.",
+            "Prosimo, navedite veljavno obdobje prisotnosti z začetnim in končnim datumom.",
         ),
         (
             ToolFailurePresentation(code="FORBIDDEN", language="sl", display_name=None),

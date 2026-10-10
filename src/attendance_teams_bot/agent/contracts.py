@@ -3,9 +3,18 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
+
+if TYPE_CHECKING:
+    from attendance_teams_bot.agent.continuation import HistoryContinuation
 
 ReplyLanguage = Literal["en", "sl"]
+
+
+@dataclass(frozen=True, slots=True)
+class BotAttachment:
+    content_type: str
+    content: Mapping[str, object]
 
 
 @dataclass(frozen=True, slots=True)
@@ -14,6 +23,9 @@ class BotResponse:
     messages: tuple[str, ...] = ()
     assistant_memory: str | None = None
     request: None = None
+    attachments: tuple[BotAttachment, ...] = ()
+    continuation: HistoryContinuation | None = None
+    continuation_complete: bool = False
 
     def __post_init__(self) -> None:
         messages = self.messages or (self.text,)

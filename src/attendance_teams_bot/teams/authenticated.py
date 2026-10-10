@@ -1,13 +1,20 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import Protocol, cast
+from uuid import UUID
 
 import structlog
 from pydantic import SecretStr
 
+from attendance_teams_bot.agent.continuation import (
+    HistoryContinuation,
+    continuation_card,
+    is_typed_continuation,
+)
 from attendance_teams_bot.agent.contracts import BotResponse, SelectedAttendanceAction
 from attendance_teams_bot.auth.obo import DelegatedAuthenticationUnavailable
 from attendance_teams_bot.memory.database import (
@@ -53,10 +60,19 @@ class AttendanceApplication(Protocol):
         history: tuple[ChatMessage, ...] = (),
     ) -> BotResponse: ...
 
+    async def handle_continuation(
+        self,
+        *,
+        query: HistoryContinuation,
+        mcp_access_token: SecretStr,
+        display_name: str | None = None,
+    ) -> BotResponse: ...
+
 
 class TurnConversation(Protocol):
     conversation_type: str | None
     tenant_id: str | None
+    id: str | None
 
 
 class TurnSender(Protocol):
@@ -76,6 +92,10 @@ class BotServiceAuthenticatedTurnContext(Protocol):
     def activity(self) -> TurnActivity: ...
 
     async def send_activity(self, text: str) -> object: ...
+
+
+class AttachmentTurnContext(BotServiceAuthenticatedTurnContext, Protocol):
+    async def send_attachment(self, attachment: object) -> object: ...
 
 
 class SsoTokenProvider(Protocol):
@@ -145,6 +165,10 @@ class SsoOboAttendanceTurnHandler:
     ) -> None:
         display_name = self._display_name(context)
         session_id = self._session_id(context)
+        conversation_id = self._conversation_id(context)
+        if session_id and conversation_id and is_typed_continuation(message):
+            await self._handle_continuation(context, session_id, conversation_id, None)
+            return
         history = await self.memory.get_chat_history(session_id) if session_id else ()
         decision = await self.application.pre_auth_decision(
             message=message, display_name=display_name, history=history
@@ -152,6 +176,7 @@ class SsoOboAttendanceTurnHandler:
         if isinstance(decision, BotResponse):
             await self._send_response(context, decision)
             await self._save_delivered_exchange(session_id, message, decision)
+            await self._store_delivered_continuation(session_id, conversation_id, context, decision)
             return
         correlation_id = current_correlation_id()
         logger = _LOGGER.bind(correlation_id=str(correlation_id))
@@ -205,6 +230,7 @@ class SsoOboAttendanceTurnHandler:
             step = "teams_reply_delivery"
             await self._send_response(context, response)
             await self._save_delivered_exchange(session_id, message, response)
+            await self._store_delivered_continuation(session_id, conversation_id, context, response)
             lifecycle.succeed(step=step)
         except asyncio.CancelledError:
             if not lifecycle.terminal:
@@ -267,8 +293,96 @@ class SsoOboAttendanceTurnHandler:
             getattr(conversation, "tenant_id", None), getattr(sender, "aad_object_id", None)
         )
 
+    @staticmethod
+    def _conversation_id(context: BotServiceAuthenticatedTurnContext) -> str | None:
+        conversation = context.activity.conversation
+        value = getattr(conversation, "id", None)
+        if not isinstance(value, str) or not value.strip() or len(value) > 512:
+            return None
+        return hashlib.sha256(f"teams-continuation:v1:{value}".encode()).hexdigest()
+
     async def _save_delivered_exchange(
         self, session_id: str | None, message: str, response: BotResponse
     ) -> None:
         if session_id is not None and response.assistant_memory is not None:
             await self.memory.save_exchange(session_id, message, response.assistant_memory)
+
+    async def _store_delivered_continuation(
+        self,
+        session_id: str | None,
+        conversation_id: str | None,
+        context: BotServiceAuthenticatedTurnContext,
+        response: BotResponse,
+    ) -> None:
+        if session_id is None or conversation_id is None or not response.continuation_complete:
+            return
+        identifier = await self.memory.replace_continuation(
+            session_id, conversation_id, response.continuation
+        )
+        if identifier is not None and response.continuation is not None:
+            await cast(AttachmentTurnContext, context).send_attachment(
+                continuation_card(identifier, response.continuation.language)
+            )
+
+    async def handle_submission(
+        self, context: BotServiceAuthenticatedTurnContext, data: object
+    ) -> None:
+        """Use the same active continuation record as typed next-page requests."""
+        if not isinstance(data, dict) or set(data) != {"verb", "continuation_id"}:
+            await context.send_activity(
+                "This page button is invalid. Please restate the attendance period."
+            )
+            return
+        try:
+            identifier = UUID(str(data["continuation_id"]))
+        except ValueError:
+            await context.send_activity(
+                "This page button is invalid. Please restate the attendance period."
+            )
+            return
+        session_id, conversation_id = self._session_id(context), self._conversation_id(context)
+        if session_id is None or conversation_id is None:
+            await context.send_activity(
+                "There is no active next page. Please restate the attendance period."
+            )
+            return
+        await self._handle_continuation(context, session_id, conversation_id, identifier)
+
+    async def _handle_continuation(
+        self,
+        context: BotServiceAuthenticatedTurnContext,
+        session_id: str,
+        conversation_id: str,
+        identifier: UUID | None,
+    ) -> None:
+        claimed = await self.memory.claim_continuation(session_id, conversation_id, identifier)
+        if claimed is None:
+            await context.send_activity(
+                "There is no available next page. Please restate the attendance period."
+            )
+            return
+        try:
+            token_a = await self.sso_token_provider.get_token(context)
+            token_b = await self.obo_token_exchange.exchange(token_a)
+            response = await self.application.handle_continuation(
+                query=claimed.query,
+                mcp_access_token=token_b,
+                display_name=self._display_name(context),
+            )
+            await self._send_response(context, response)
+            if not response.continuation_complete:
+                await self.memory.release_continuation(claimed, session_id, conversation_id)
+                return
+            identifier = await self.memory.finish_continuation(
+                claimed, session_id, conversation_id, response.continuation
+            )
+            if identifier is not None and response.continuation is not None:
+                await cast(AttachmentTurnContext, context).send_attachment(
+                    continuation_card(identifier, response.continuation.language)
+                )
+        except asyncio.CancelledError:
+            await self.memory.release_continuation(claimed, session_id, conversation_id)
+            raise
+        except Exception:
+            await self.memory.release_continuation(claimed, session_id, conversation_id)
+            raise

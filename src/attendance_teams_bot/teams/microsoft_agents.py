@@ -7,7 +7,7 @@ from typing import Any, Protocol, cast
 
 import structlog
 from fastapi import FastAPI, Request
-from microsoft_agents.activity import load_configuration_from_env
+from microsoft_agents.activity import Activity, Attachment, load_configuration_from_env
 from microsoft_agents.authentication.msal import MsalConnectionManager
 from microsoft_agents.hosting.core import (
     AgentApplication,
@@ -18,6 +18,7 @@ from microsoft_agents.hosting.core import (
     TurnContext,
     TurnState,
 )
+from microsoft_agents.hosting.core.app._routes.route_rank import RouteRank
 from microsoft_agents.hosting.fastapi import (
     CloudAdapter,
     jwt_authorization_decorator,
@@ -26,6 +27,8 @@ from microsoft_agents.hosting.fastapi import (
 from pydantic import SecretStr
 from starlette.responses import JSONResponse, Response
 
+from attendance_teams_bot.agent.continuation import HISTORY_VERB
+from attendance_teams_bot.agent.contracts import BotAttachment
 from attendance_teams_bot.auth.obo import MsalOboTokenExchange
 from attendance_teams_bot.memory.database import (
     PostgresConversationMemory,
@@ -69,6 +72,32 @@ class _Authorization(Protocol):
     ) -> object: ...
 
 
+class SdkAttendanceContext:
+    """Translate SDK activity and attachment APIs behind the neutral turn port."""
+
+    def __init__(self, context: TurnContext) -> None:
+        self.sdk_context = context
+
+    @property
+    def activity(self) -> Any:
+        return self.sdk_context.activity
+
+    async def send_activity(self, text: str) -> object:
+        return await self.sdk_context.send_activity(text)
+
+    async def send_attachment(self, attachment: BotAttachment) -> object:
+        return await self.sdk_context.send_activity(
+            Activity(
+                type="message",
+                attachments=[
+                    Attachment(
+                        content_type=attachment.content_type, content=dict(attachment.content)
+                    )
+                ],
+            )
+        )
+
+
 class TeamsAuthorizationSsoTokenProvider:
     """Translate Microsoft Agents authorization results into the neutral SSO port."""
 
@@ -78,9 +107,13 @@ class TeamsAuthorizationSsoTokenProvider:
 
     async def get_token(self, context: BotServiceAuthenticatedTurnContext) -> SecretStr:
         """Retrieve a non-empty Teams SSO token or raise the neutral runtime error."""
+        # Authorization keeps the SSO token in the SDK TurnContext's per-turn state.
+        # The neutral wrapper deliberately exposes only messaging primitives, so unwrap it
+        # at this SDK-only boundary before asking Authorization for the cached token.
+        sdk_context = context.sdk_context if isinstance(context, SdkAttendanceContext) else context
         try:
             response = await self._authorization.get_token(
-                cast(TurnContext, context), self._auth_handler_id
+                cast(TurnContext, sdk_context), self._auth_handler_id
             )
         except Exception as error:
             authentication_event(
@@ -328,9 +361,17 @@ def _register_attendance_message_handler(
     agent_application: AgentApplication[TurnState],
     attendance_handler: SsoOboAttendanceTurnHandler,
 ) -> None:
+    @agent_application.adaptive_card.action_submit(
+        HISTORY_VERB,
+        auth_handlers=[_ATTENDANCE_AUTH_HANDLER_ID],
+        rank=RouteRank.FIRST,
+    )
+    async def on_submit(context: TurnContext, _state: TurnState, data: Any) -> None:
+        await attendance_handler.handle_submission(SdkAttendanceContext(context), data)
+
     @agent_application.activity("message", auth_handlers=[_ATTENDANCE_AUTH_HANDLER_ID])
     async def on_message(context: TurnContext, _state: TurnState) -> None:
-        await attendance_handler.handle(cast(BotServiceAuthenticatedTurnContext, context))
+        await attendance_handler.handle(SdkAttendanceContext(context))
 
 
 def _create_http_app(
