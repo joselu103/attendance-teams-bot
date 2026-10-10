@@ -5,6 +5,7 @@ from uuid import uuid4
 import pytest
 from microsoft_agents.activity import TokenResponse
 from microsoft_agents.hosting.core import Authorization
+from microsoft_agents.hosting.core.app._routes.route_rank import RouteRank
 from pydantic import SecretStr
 from starlette.responses import Response
 from structlog.testing import capture_logs
@@ -159,8 +160,9 @@ def test_attendance_factory_configures_sso_and_forwards_callback_to_turn_handler
         def adaptive_card(self):
             return self
 
-        def action_submit(self, verb: str, *, auth_handlers: list[str]):
+        def action_submit(self, verb: str, *, auth_handlers: list[str], rank: RouteRank):
             recorded["submit_verb"] = verb
+            recorded["submit_rank"] = rank
             return lambda function: function
 
         def activity(self, activity_type: str, *, auth_handlers: list[str]):
@@ -199,6 +201,7 @@ def test_attendance_factory_configures_sso_and_forwards_callback_to_turn_handler
     assert recorded["auth_type"] == "UserAuthorization"
     assert recorded["connection"] == "attendance-teams-sso"
     assert recorded["route_auth_handlers"] == ["attendance-teams-sso"]
+    assert recorded["submit_rank"] is RouteRank.FIRST
 
 
 def test_attendance_factory_rejects_a_blank_oauth_connection_name() -> None:

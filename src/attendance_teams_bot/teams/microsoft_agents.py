@@ -18,6 +18,7 @@ from microsoft_agents.hosting.core import (
     TurnContext,
     TurnState,
 )
+from microsoft_agents.hosting.core.app._routes.route_rank import RouteRank
 from microsoft_agents.hosting.fastapi import (
     CloudAdapter,
     jwt_authorization_decorator,
@@ -360,15 +361,17 @@ def _register_attendance_message_handler(
     agent_application: AgentApplication[TurnState],
     attendance_handler: SsoOboAttendanceTurnHandler,
 ) -> None:
-    @agent_application.activity("message", auth_handlers=[_ATTENDANCE_AUTH_HANDLER_ID])
-    async def on_message(context: TurnContext, _state: TurnState) -> None:
-        await attendance_handler.handle(SdkAttendanceContext(context))
-
     @agent_application.adaptive_card.action_submit(
-        HISTORY_VERB, auth_handlers=[_ATTENDANCE_AUTH_HANDLER_ID]
+        HISTORY_VERB,
+        auth_handlers=[_ATTENDANCE_AUTH_HANDLER_ID],
+        rank=RouteRank.FIRST,
     )
     async def on_submit(context: TurnContext, _state: TurnState, data: Any) -> None:
         await attendance_handler.handle_submission(SdkAttendanceContext(context), data)
+
+    @agent_application.activity("message", auth_handlers=[_ATTENDANCE_AUTH_HANDLER_ID])
+    async def on_message(context: TurnContext, _state: TurnState) -> None:
+        await attendance_handler.handle(SdkAttendanceContext(context))
 
 
 def _create_http_app(
