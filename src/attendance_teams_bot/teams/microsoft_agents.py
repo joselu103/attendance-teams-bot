@@ -106,9 +106,13 @@ class TeamsAuthorizationSsoTokenProvider:
 
     async def get_token(self, context: BotServiceAuthenticatedTurnContext) -> SecretStr:
         """Retrieve a non-empty Teams SSO token or raise the neutral runtime error."""
+        # Authorization keeps the SSO token in the SDK TurnContext's per-turn state.
+        # The neutral wrapper deliberately exposes only messaging primitives, so unwrap it
+        # at this SDK-only boundary before asking Authorization for the cached token.
+        sdk_context = context.sdk_context if isinstance(context, SdkAttendanceContext) else context
         try:
             response = await self._authorization.get_token(
-                cast(TurnContext, context), self._auth_handler_id
+                cast(TurnContext, sdk_context), self._auth_handler_id
             )
         except Exception as error:
             authentication_event(

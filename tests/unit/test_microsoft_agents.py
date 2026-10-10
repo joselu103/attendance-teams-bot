@@ -1,7 +1,10 @@
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
+from microsoft_agents.activity import TokenResponse
+from microsoft_agents.hosting.core import Authorization
 from pydantic import SecretStr
 from starlette.responses import Response
 from structlog.testing import capture_logs
@@ -10,6 +13,7 @@ from attendance_teams_bot.agent.contracts import BotResponse
 from attendance_teams_bot.settings import TeamsConnectionSettings
 from attendance_teams_bot.teams import microsoft_agents
 from attendance_teams_bot.teams.microsoft_agents import (
+    SdkAttendanceContext,
     TeamsAuthorizationSsoTokenProvider,
     create_attendance_teams_http_app,
     normalize_oauth_invoke_response,
@@ -79,6 +83,44 @@ async def test_sso_provider_reads_a_token_from_the_sdk_authorization_boundary() 
     token = await token_provider.get_token(
         FakeTurnContext(FakeActivity(type="message", text="Show my attendance"))
     )
+    assert token == SecretStr("teams-token")
+
+
+@pytest.mark.anyio
+async def test_sso_provider_uses_the_original_sdk_context_for_token_lookup() -> None:
+    """The SDK authorization cache requires TurnContext state not exposed by the wrapper."""
+
+    auth_handler_id = "teams-sso"
+    raw_context = SimpleNamespace(
+        activity=SimpleNamespace(channel_id="msteams", from_property=SimpleNamespace(id="user-id")),
+        turn_state={},
+    )
+
+    class FakeAuthorizationHandler:
+        async def get_refreshed_token(
+            self,
+            context: object,
+            exchange_connection: object,
+            scopes: object,
+        ) -> TokenResponse:
+            assert context is raw_context
+            assert exchange_connection is None
+            assert scopes is None
+            return TokenResponse(token="teams-token")
+
+    authorization = object.__new__(Authorization)
+    authorization._handlers = {auth_handler_id: FakeAuthorizationHandler()}
+    authorization._default_handler_id = auth_handler_id
+    raw_context.turn_state[Authorization._cache_key(raw_context, auth_handler_id)] = TokenResponse(
+        token="cached-token"
+    )
+
+    token_provider = TeamsAuthorizationSsoTokenProvider(
+        authorization=authorization, auth_handler_id=auth_handler_id
+    )
+
+    token = await token_provider.get_token(SdkAttendanceContext(raw_context))
+
     assert token == SecretStr("teams-token")
 
 
