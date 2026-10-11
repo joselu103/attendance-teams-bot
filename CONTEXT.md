@@ -9,6 +9,12 @@ from Attendance CRMT without becoming an attendance authority.
 A requester-scoped record of work, break, or leave time supplied by Attendance CRMT.
 _Avoid_: punch, timesheet entry
 
+**Daily segment**:
+A display-only portion of a completed positive-duration attendance event, bounded
+by Europe/Ljubljana calendar days and the requested history period. It does not
+replace or alter the authoritative attendance event.
+_Avoid_: split event, derived attendance record
+
 **Attendance type**:
 The user-facing localized label for an attendance event's supplied `punch_type`.
 _Avoid_: status, category

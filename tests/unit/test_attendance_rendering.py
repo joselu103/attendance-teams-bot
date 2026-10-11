@@ -1,4 +1,4 @@
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta, timezone
 
 import pytest
 
@@ -186,6 +186,109 @@ def test_presentation_separates_date_blocks_and_keeps_same_day_events_contiguous
     assert "*(Daily Total: 15h 00m)*" in result
     assert "* 🗓️ **Tue, Aug 11, 2026**" in result
     assert "**Part" not in result
+
+
+def test_presentation_splits_multiday_events_into_local_daily_segments() -> None:
+    result = (
+        AttendanceResultPresenter()
+        .present(
+            SafeHistoryPresentation(
+                events=(
+                    _event(
+                        1,
+                        punch_type="Remote work",
+                        checked_in_at=datetime(2026, 5, 22, 8, tzinfo=timezone(timedelta(hours=2))),
+                        checked_out_at=datetime(
+                            2026, 5, 23, 16, tzinfo=timezone(timedelta(hours=2))
+                        ),
+                    ),
+                ),
+                language="en",
+                display_name=None,
+                plan=None,
+                start_date=date(2026, 5, 22),
+                end_date=date(2026, 5, 23),
+            )
+        )
+        .text
+    )
+
+    assert "Fri, May 22, 2026**\n  * `08:00–24:00` — 🏠 Remote work" in result
+    assert "Sat, May 23, 2026**\n  * `00:00–16:00` — 🏠 Remote work" in result
+    assert result.count("*(Daily Total: 16h 00m)*") == 2
+
+
+def test_presentation_clips_multiday_events_to_the_requested_period() -> None:
+    result = (
+        AttendanceResultPresenter()
+        .present(
+            SafeHistoryPresentation(
+                events=(
+                    _event(
+                        1,
+                        checked_in_at=datetime(
+                            2026, 5, 21, 20, tzinfo=timezone(timedelta(hours=2))
+                        ),
+                        checked_out_at=datetime(
+                            2026, 5, 23, 4, tzinfo=timezone(timedelta(hours=2))
+                        ),
+                    ),
+                ),
+                language="en",
+                display_name=None,
+                plan=None,
+                start_date=date(2026, 5, 22),
+                end_date=date(2026, 5, 22),
+            )
+        )
+        .text
+    )
+
+    assert "Fri, May 22, 2026" in result
+    assert "Thu, May 21, 2026" not in result
+    assert "Sat, May 23, 2026" not in result
+    assert "`00:00–24:00`" in result
+    assert "*(Daily Total: 24h 00m)*" in result
+
+
+def test_presentation_uses_elapsed_time_and_offsets_for_dst_fallback() -> None:
+    result = _present_events(
+        _event(
+            1,
+            checked_in_at=datetime(2026, 10, 25, 2, 30, tzinfo=timezone(timedelta(hours=2))),
+            checked_out_at=datetime(2026, 10, 25, 2, 30, tzinfo=timezone(timedelta(hours=1))),
+        )
+    )
+
+    assert "`02:30 UTC+02:00–02:30 UTC+01:00`" in result
+    assert "*(Daily Total: 1h 00m)*" in result
+
+
+def test_presentation_uses_elapsed_time_for_dst_spring_forward() -> None:
+    result = _present_events(
+        _event(
+            1,
+            checked_in_at=datetime(2026, 3, 29, 1, 30, tzinfo=timezone(timedelta(hours=1))),
+            checked_out_at=datetime(2026, 3, 29, 3, 30, tzinfo=timezone(timedelta(hours=2))),
+        )
+    )
+
+    assert "`01:30–03:30`" in result
+    assert "*(Daily Total: 1h 00m)*" in result
+
+
+def test_presentation_preserves_nonpositive_events_without_splitting() -> None:
+    result = _present_events(
+        _event(
+            1,
+            checked_in_at=datetime(2026, 5, 22, 16, tzinfo=timezone(timedelta(hours=2))),
+            checked_out_at=datetime(2026, 5, 22, 8, tzinfo=timezone(timedelta(hours=2))),
+        )
+    )
+
+    assert result.count("  * `") == 1
+    assert "`16:00–08:00`" in result
+    assert "*(Daily Total: 0h 00m)*" in result
 
 
 def test_presentation_reports_no_data_and_keeps_every_event_in_a_history_page() -> None:

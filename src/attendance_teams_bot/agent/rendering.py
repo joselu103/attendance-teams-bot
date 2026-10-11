@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Literal
 from zoneinfo import ZoneInfo
 
@@ -68,6 +68,17 @@ class SafeHistoryPresentation:
     end_date: date | None = None
     has_more: bool = False
     page_number: int = 1
+
+
+@dataclass(frozen=True, slots=True)
+class _HistoryDisplayEntry:
+    """A display-only portion of one authoritative attendance event."""
+
+    event: AttendanceEvent
+    checked_in_at: datetime | None
+    checked_out_at: datetime | None
+    day: date | None
+    ends_at_day_boundary: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -298,21 +309,21 @@ _PUNCH_TYPE_ICONS = {
 }
 
 
-def _render_attendance_event(event: AttendanceEvent, language: ReplyLanguage) -> str:
-    if event.checked_in_at is None and event.checked_out_at is None:
+def _render_attendance_event(entry: _HistoryDisplayEntry, language: ReplyLanguage) -> str:
+    if entry.checked_in_at is None and entry.checked_out_at is None:
         time_range = _copy(language, "Time unavailable", "Čas ni na voljo")
-    elif event.checked_in_at is None:
+    elif entry.checked_in_at is None:
         start = _copy(language, "Start time unavailable", "Začetni čas ni na voljo")
-        time_range = f"{start}–{_time(event.checked_out_at)}"
-    elif event.checked_out_at is None:
+        time_range = f"{start}–{_time(entry.checked_out_at)}"
+    elif entry.checked_out_at is None:
         present = _copy(language, "In progress", "V teku")
-        time_range = f"{_time(event.checked_in_at)}–{present}"
+        time_range = f"{_time(entry.checked_in_at)}–{present}"
     else:
-        time_range = f"{_time(event.checked_in_at)}–{_time(event.checked_out_at)}"
-    attendance_type = _attendance_type(event.punch_type, language)
-    icon = _attendance_icon(event.punch_type)
+        time_range = _time_range(entry)
+    attendance_type = _attendance_type(entry.event.punch_type, language)
+    icon = _attendance_icon(entry.event.punch_type)
     result = f"  * `{time_range}` — " + (f"{icon} " if icon else "") + attendance_type
-    if event.checked_in_at is None or event.checked_out_at is None:
+    if entry.checked_in_at is None or entry.checked_out_at is None:
         result += _copy(
             language,
             " *(Not included in daily total)*",
@@ -338,7 +349,8 @@ def _safe_plan_text(value: str, limit: int) -> bool:
 
 def _history_batch(presentation: SafeHistoryPresentation) -> BotResponse:
     prefix = _history_header(presentation)
-    if not presentation.events:
+    entries = _history_display_entries(presentation)
+    if not entries:
         return BotResponse(
             "\n".join(
                 (
@@ -352,9 +364,9 @@ def _history_batch(presentation: SafeHistoryPresentation) -> BotResponse:
                 )
             )
         )
-    groups: defaultdict[date | None, list[AttendanceEvent]] = defaultdict(list)
-    for event in presentation.events:
-        groups[_event_date(event)].append(event)
+    groups: defaultdict[date | None, list[_HistoryDisplayEntry]] = defaultdict(list)
+    for entry in entries:
+        groups[entry.day].append(entry)
     blocks = [
         _history_day_block(day, groups[day], presentation.language)
         for day in sorted(day for day in groups if day is not None)
@@ -463,6 +475,75 @@ def _event_date(event: AttendanceEvent) -> date | None:
     return timestamp.astimezone(_REPLY_TIMEZONE).date() if timestamp is not None else None
 
 
+def _history_display_entries(
+    presentation: SafeHistoryPresentation,
+) -> tuple[_HistoryDisplayEntry, ...]:
+    entries: list[_HistoryDisplayEntry] = []
+    for event in presentation.events:
+        if (
+            event.checked_in_at is None
+            or event.checked_out_at is None
+            or not _is_after(event.checked_out_at, event.checked_in_at)
+        ):
+            entries.append(
+                _HistoryDisplayEntry(
+                    event,
+                    event.checked_in_at,
+                    event.checked_out_at,
+                    _event_date(event),
+                )
+            )
+            continue
+        entries.extend(_split_history_event(event, presentation.start_date, presentation.end_date))
+    return tuple(entries)
+
+
+def _split_history_event(
+    event: AttendanceEvent, start_date: date | None, end_date: date | None
+) -> tuple[_HistoryDisplayEntry, ...]:
+    assert event.checked_in_at is not None and event.checked_out_at is not None
+    interval_start = event.checked_in_at.astimezone(_REPLY_TIMEZONE)
+    interval_end = event.checked_out_at.astimezone(_REPLY_TIMEZONE)
+    if start_date is not None and end_date is not None:
+        period_start = datetime.combine(start_date, time.min, tzinfo=_REPLY_TIMEZONE)
+        period_end = datetime.combine(
+            end_date + timedelta(days=1), time.min, tzinfo=_REPLY_TIMEZONE
+        )
+        if _is_before(interval_start, period_start):
+            interval_start = period_start
+        if _is_before(period_end, interval_end):
+            interval_end = period_end
+    if not _is_before(interval_start, interval_end):
+        return ()
+
+    entries: list[_HistoryDisplayEntry] = []
+    current = interval_start
+    while _is_before(current, interval_end):
+        next_day = datetime.combine(
+            current.date() + timedelta(days=1), time.min, tzinfo=_REPLY_TIMEZONE
+        )
+        segment_end = interval_end if _is_before(interval_end, next_day) else next_day
+        entries.append(
+            _HistoryDisplayEntry(
+                event,
+                current,
+                segment_end,
+                current.date(),
+                ends_at_day_boundary=segment_end == next_day,
+            )
+        )
+        current = segment_end
+    return tuple(entries)
+
+
+def _is_before(left: datetime, right: datetime) -> bool:
+    return left.astimezone(UTC) < right.astimezone(UTC)
+
+
+def _is_after(left: datetime, right: datetime) -> bool:
+    return _is_before(right, left)
+
+
 def _history_header(presentation: SafeHistoryPresentation) -> str:
     title = _copy(
         presentation.language,
@@ -499,26 +580,26 @@ def _history_footer(language: ReplyLanguage, *, has_more: bool = False) -> str:
 
 
 def _history_day_block(
-    day: date | None, events: list[AttendanceEvent], language: ReplyLanguage
+    day: date | None, entries: list[_HistoryDisplayEntry], language: ReplyLanguage
 ) -> str:
     heading = (
         _short_format_date(day, language)
         if day is not None
         else _copy(language, "Date unavailable", "Datum ni na voljo")
     )
-    ordered_events = _sort_events(events)
+    ordered_entries = _sort_entries(entries)
     total = sum(
         (
-            event.checked_out_at.astimezone(UTC) - event.checked_in_at.astimezone(UTC)
-            for event in ordered_events
-            if event.checked_in_at is not None and event.checked_out_at is not None
+            entry.checked_out_at.astimezone(UTC) - entry.checked_in_at.astimezone(UTC)
+            for entry in ordered_entries
+            if entry.checked_in_at is not None and entry.checked_out_at is not None
         ),
         timedelta(),
     )
     return "\n".join(
         (
             f"* 🗓️ **{heading}**",
-            *(_render_attendance_event(event, language) for event in ordered_events),
+            *(_render_attendance_event(entry, language) for entry in ordered_entries),
             "  *("
             + _copy(
                 language,
@@ -530,12 +611,12 @@ def _history_day_block(
     )
 
 
-def _sort_events(events: list[AttendanceEvent]) -> list[AttendanceEvent]:
+def _sort_entries(entries: list[_HistoryDisplayEntry]) -> list[_HistoryDisplayEntry]:
     return sorted(
-        events,
-        key=lambda event: (
-            event.checked_in_at or event.checked_out_at or datetime.max.replace(tzinfo=UTC),
-            event.attendance_event_id,
+        entries,
+        key=lambda entry: (
+            entry.checked_in_at or entry.checked_out_at or datetime.max.replace(tzinfo=UTC),
+            entry.event.attendance_event_id,
         ),
     )
 
@@ -573,6 +654,22 @@ def _format_duration(value: timedelta) -> str:
 def _time(value: datetime | None) -> str:
     assert value is not None
     return value.astimezone(_REPLY_TIMEZONE).strftime("%H:%M")
+
+
+def _time_range(entry: _HistoryDisplayEntry) -> str:
+    assert entry.checked_in_at is not None and entry.checked_out_at is not None
+    start = _time(entry.checked_in_at)
+    end = "24:00" if entry.ends_at_day_boundary else _time(entry.checked_out_at)
+    start_local = entry.checked_in_at.astimezone(_REPLY_TIMEZONE)
+    end_local = entry.checked_out_at.astimezone(_REPLY_TIMEZONE)
+    if (
+        not entry.ends_at_day_boundary
+        and start == end
+        and start_local.utcoffset() != end_local.utcoffset()
+    ):
+        start = f"{start} UTC{start_local.strftime('%z')[:3]}:{start_local.strftime('%z')[3:]}"
+        end = f"{end} UTC{end_local.strftime('%z')[:3]}:{end_local.strftime('%z')[3:]}"
+    return f"{start}–{end}"
 
 
 def _attendance_type(value: str | None, language: ReplyLanguage) -> str:
