@@ -191,9 +191,22 @@ post-result model receives only a reply-safe view: history dates and record
 presence, or current status categories and counts; names, timestamps, event
 types, identifiers, notes, locations, tokens, and raw records stay in code.
 The model may provide only a validated nonfactual title and context; code owns
-attendance facts, translation, chronology, and final message chunks. Guidance
+attendance facts, translation, chronology, and final message chunks. History uses
+a fixed localized calendar-record header, period and Ljubljana timezone, type
+icons, chronological day groups and daily totals in hours and minutes. Totals sum
+every closed interval, including breaks and leave; entries missing either time
+are displayed and explicitly excluded. Totals cover the entries on the current
+API page, which can end partway through a day. Guidance
 uses fixed English or Slovenian copy selected by a no-auth model intent, with no
-attendance access. Reply batches mark their parts and finish; delivery stops
+attendance access. Factual reports omit personal greetings and message-part counters;
+guidance replies may use the Teams display name as a greeting only.
+History shows Page N without an unknown total; the authenticated continuation
+stores the next page number independently of model memory. Teams message splits
+preserve complete day groups, with the header only in the first message and the
+next-page prompt or end marker only in the last. The existing Next page button
+and typed `next` remain available. On startup the bot adds the cursor page-number
+column; legacy cursors without a known page number are cleared, and users can
+restate their period. Delivery stops
 after a failed send and logs only the correlation ID, progress count, and error
 type. Images, cards, files, and durable language preferences are intentionally
 deferred to issues #22 and #21.

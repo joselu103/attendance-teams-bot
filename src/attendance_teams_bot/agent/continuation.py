@@ -27,6 +27,7 @@ class HistoryContinuation:
     offset: int
     language: ReplyLanguage
     target: int | None = None
+    page_number: int = 2
 
     def __post_init__(self) -> None:
         if (
@@ -37,6 +38,8 @@ class HistoryContinuation:
             or self.end_date < self.start_date
             or type(self.offset) is not int
             or self.offset < 1
+            or type(self.page_number) is not int
+            or self.page_number < 2
         ):
             raise ValueError("invalid history context")
         if self.scope == "self" and self.target is not None:

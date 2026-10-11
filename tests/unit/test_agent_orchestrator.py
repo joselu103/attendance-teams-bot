@@ -137,7 +137,7 @@ async def test_one_validated_tool_call_sends_minimal_projection_and_immutable_re
         ]
     )
     response = await subject.handle(message="Pokaži", mcp_access_token=SecretStr("token"))
-    assert "**Prisotnost**" in response.text and "secret note" not in response.text
+    assert "**Evidenca prisotnosti**" in response.text and "secret note" not in response.text
     assert len(session.calls) == 1
     assert len(model.requests) == 2
     projection = model.requests[1].tool_results[0].result
@@ -309,8 +309,9 @@ async def test_history_requests_one_complete_multiyear_page_only() -> None:
         }
     ]
     assert "2030" in response.text
-    assert "More results" in response.messages[-1]
-    assert "End of results" not in response.messages[-1]
+    assert 'Type "next" for the next page.' in response.messages[-1]
+    assert "End of results." not in response.messages[-1]
+    assert response.continuation is not None and response.continuation.page_number == 2
 
 
 @pytest.mark.anyio
@@ -340,7 +341,27 @@ async def test_continuation_is_direct_live_catalog_and_never_calls_model() -> No
         }
     ]
     assert not model.requests
-    assert "Final page" in response.messages[-1]
+    assert "📅 **Attendance Record** (Page 2)" in response.messages[-1]
+    assert "End of results." in response.messages[-1]
+
+
+@pytest.mark.anyio
+async def test_continuation_advances_saved_page_number_without_model() -> None:
+    from attendance_teams_bot.agent.continuation import HistoryContinuation
+
+    query = HistoryContinuation(
+        "self", date(2020, 1, 1), date(2030, 12, 31), 100, "en", page_number=3
+    )
+    subject, model, _ = agent(
+        [], FakeSession(pages=[page().model_copy(update={"offset": 100, "next_offset": 150})])
+    )
+    response = await subject.handle_continuation(
+        query=query, mcp_access_token=SecretStr("fresh-token")
+    )
+    assert "(Page 3)" in response.text
+    assert response.continuation is not None
+    assert response.continuation.page_number == 4
+    assert not model.requests
 
 
 @pytest.mark.anyio

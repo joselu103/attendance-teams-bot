@@ -296,6 +296,7 @@ class AttendanceAgent:
                             date.fromisoformat(str(result["start_date"])),
                             date.fromisoformat(str(result["end_date"])),
                             result.get("next_offset") is not None,
+                            1,
                         )
                     )
                 else:
@@ -334,13 +335,14 @@ class AttendanceAgent:
                         rendering.start_date,
                         rendering.end_date,
                         rendering.has_more,
+                        rendering.page_number,
                     )
                 else:
                     rendering = CurrentAttendancePresentation(
                         rendering.status_names, language, display_name, final.presentation
                     )
                 response = self.presenter.present(rendering)
-                continuation = self._continuation(result, language, policy.kind)
+                continuation = self._continuation(result, language, policy.kind, 1)
                 return BotResponse(
                     response.text,
                     response.messages,
@@ -417,10 +419,14 @@ class AttendanceAgent:
                         query.start_date,
                         query.end_date,
                         result["next_offset"] is not None,
+                        query.page_number,
                     )
                 )
                 continuation = self._continuation(
-                    result, language, "self" if query.scope == "self" else "other"
+                    result,
+                    language,
+                    "self" if query.scope == "self" else "other",
+                    query.page_number,
                 )
                 return BotResponse(
                     response.text,
@@ -441,7 +447,11 @@ class AttendanceAgent:
             return self._unavailable(language, display_name)
 
     def _continuation(
-        self, result: Mapping[str, object], language: ReplyLanguage, kind: str
+        self,
+        result: Mapping[str, object],
+        language: ReplyLanguage,
+        kind: str,
+        current_page_number: int,
     ) -> HistoryContinuation | None:
         offset = result.get("next_offset")
         if offset is None:
@@ -456,6 +466,7 @@ class AttendanceAgent:
             offset,
             language,
             target if type(target) is int else None,
+            current_page_number + 1,
         )
         return query
 
