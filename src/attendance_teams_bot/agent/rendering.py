@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Literal
 from zoneinfo import ZoneInfo
 
@@ -67,6 +67,7 @@ class SafeHistoryPresentation:
     start_date: date | None = None
     end_date: date | None = None
     has_more: bool = False
+    page_number: int = 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -151,8 +152,8 @@ class AttendanceResultPresenter:
         elif isinstance(presentation, UnavailablePresentation):
             text = _localized_safe_reply(UNAVAILABLE_REPLY, presentation.language)
         else:
-            return BotResponse(text=_localized_safe_reply(UNAVAILABLE_REPLY, presentation.language))
-        return _response(text, presentation.language, presentation.display_name)
+            text = _localized_safe_reply(UNAVAILABLE_REPLY, presentation.language)
+        return _guidance_response(text, presentation.language, presentation.display_name)
 
 
 def _employee_candidates(
@@ -221,6 +222,42 @@ _WEEKDAYS: dict[ReplyLanguage, tuple[str, ...]] = {
     "en": ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"),
     "sl": ("ponedeljek", "torek", "sreda", "četrtek", "petek", "sobota", "nedelja"),
 }
+_SHORT_MONTHS: dict[ReplyLanguage, tuple[str, ...]] = {
+    "en": (
+        "Jan",
+        "Feb",
+        "Mar",
+        "Apr",
+        "May",
+        "Jun",
+        "Jul",
+        "Aug",
+        "Sep",
+        "Oct",
+        "Nov",
+        "Dec",
+    ),
+    "sl": (
+        "jan.",
+        "feb.",
+        "mar.",
+        "apr.",
+        "maj",
+        "jun.",
+        "jul.",
+        "avg.",
+        "sep.",
+        "okt.",
+        "nov.",
+        "dec.",
+    ),
+}
+_SHORT_WEEKDAYS: dict[ReplyLanguage, tuple[str, ...]] = {
+    "en": ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"),
+    "sl": ("pon", "tor", "sre", "čet", "pet", "sob", "ned"),
+}
+_HISTORY_DIVIDER = "─────────────────────────────────────────"
+_TEAMS_LINE_BREAK = "<br>"
 # One row per database label. The renderer uses the same row in either direction.
 _PUNCH_TYPE_EQUIVALENTS: tuple[tuple[str, str], ...] = (
     ("Delo na firmi", "Office"),
@@ -244,6 +281,21 @@ _ENGLISH_PUNCH_TYPE_ALIASES: tuple[tuple[str, str], ...] = (
     ("work from home", "Remote work"),
     ("break", "Lunch break"),
 )
+_PUNCH_TYPE_ICONS = {
+    "Office": "🏢",
+    "Remote work": "🏠",
+    "Customer site": "🤝",
+    "Lunch break": "🍽️",
+    "Leave": "🌴",
+    "Sick leave": "🤒",
+    "Childcare leave": "👶",
+    "Emergency leave": "⚠️",
+    "Unpaid leave": "💳",
+    "Blood donation leave": "🩸",
+    "Accompaniment leave": "🤝",
+    "Paternity leave": "👨‍🍼",
+    "Maternity leave": "🤰",
+}
 
 
 def _render_attendance_event(event: AttendanceEvent, language: ReplyLanguage) -> str:
@@ -253,14 +305,19 @@ def _render_attendance_event(event: AttendanceEvent, language: ReplyLanguage) ->
         start = _copy(language, "Start time unavailable", "Začetni čas ni na voljo")
         time_range = f"{start}–{_time(event.checked_out_at)}"
     elif event.checked_out_at is None:
-        present = _copy(language, "Present (In Progress)", "Prisoten (v teku)")
+        present = _copy(language, "In progress", "V teku")
         time_range = f"{_time(event.checked_in_at)}–{present}"
     else:
         time_range = f"{_time(event.checked_in_at)}–{_time(event.checked_out_at)}"
     attendance_type = _attendance_type(event.punch_type, language)
-    result = f"- {time_range}: {attendance_type}"
-    if event.checked_in_at is not None and event.checked_out_at is None:
-        result += " *(Active)*" if language == "en" else " *(Aktivno)*"
+    icon = _attendance_icon(event.punch_type)
+    result = f"  * `{time_range}` — " + (f"{icon} " if icon else "") + attendance_type
+    if event.checked_in_at is None or event.checked_out_at is None:
+        result += _copy(
+            language,
+            " *(Not included in daily total)*",
+            " *(Ni vključen v dnevni seštevek)*",
+        )
     return result
 
 
@@ -280,78 +337,36 @@ def _safe_plan_text(value: str, limit: int) -> bool:
 
 
 def _history_batch(presentation: SafeHistoryPresentation) -> BotResponse:
-    if presentation.plan is not None and not valid_presentation_plan(presentation.plan):
-        return BotResponse(_localized_safe_reply(UNAVAILABLE_REPLY, presentation.language))
-    period = (
-        f"{presentation.start_date.isoformat()} – {presentation.end_date.isoformat()} "
-        + _copy(
-            presentation.language, "(Europe/Ljubljana, inclusive)", "(Europe/Ljubljana, vključno)"
-        )
-        if presentation.start_date and presentation.end_date
-        else ""
-    )
+    prefix = _history_header(presentation)
     if not presentation.events:
-        return _response(
-            _copy(
-                presentation.language,
-                "No attendance events were found for that date range."
-                + (" " + period if period else ""),
-                "Za to obdobje ni evidentiranih dogodkov prisotnosti."
-                + (" " + period if period else ""),
+        return BotResponse(
+            "\n".join(
+                (
+                    prefix,
+                    _copy(
+                        presentation.language,
+                        "No attendance entries found.",
+                        "Ni najdenih evidenc prisotnosti.",
+                    ),
+                    _history_footer(presentation.language),
+                )
             )
-            + (
-                "\n\n**" + _copy(presentation.language, "Final page", "Zadnja stran") + "**"
-                if period
-                else ""
-            ),
-            presentation.language,
-            presentation.display_name,
         )
     groups: defaultdict[date | None, list[AttendanceEvent]] = defaultdict(list)
     for event in presentation.events:
         groups[_event_date(event)].append(event)
     blocks = [
-        f"**{_format_date(day, presentation.language, weekday=True)}**\n\n"
-        + "\n".join(
-            _render_attendance_event(event, presentation.language)
-            for event in _sort_events(groups[day])
-        )
+        _history_day_block(day, groups[day], presentation.language)
         for day in sorted(day for day in groups if day is not None)
     ]
     if None in groups:
-        blocks.append(
-            f"**{_copy(presentation.language, 'Date unavailable', 'Datum ni na voljo')}**\n\n"
-            + "\n".join(
-                _render_attendance_event(event, presentation.language)
-                for event in _sort_events(groups[None])
-            )
-        )
-    title = (
-        presentation.plan.title
-        if presentation.plan
-        else _copy(presentation.language, "Attendance", "Prisotnost")
-    )
-    prefix = f"**{_safe_text(title)}**"
-    if period:
-        prefix += "\n\n" + period
-    if presentation.plan and presentation.plan.context:
-        prefix += "\n\n" + _safe_text(presentation.plan.context)
+        blocks.append(_history_day_block(None, groups[None], presentation.language))
     response = _ordered_batch(
         prefix,
         blocks,
         presentation.language,
-        presentation.display_name,
-        suffix=_copy(
-            presentation.language,
-            "More results — use Next page.",
-            "Več rezultatov — izberite Naslednja stran.",
-        )
-        if presentation.has_more
-        else (
-            _copy(presentation.language, "Final page", "Zadnja stran")
-            if presentation.start_date
-            else None
-        ),
+        suffix=_history_footer(presentation.language, has_more=presentation.has_more),
+        first_block_separator="\n",
     )
     return response or BotResponse(_localized_safe_reply(UNAVAILABLE_REPLY, presentation.language))
 
@@ -360,14 +375,12 @@ def _current_batch(presentation: CurrentAttendancePresentation) -> BotResponse:
     if presentation.plan is None or not valid_presentation_plan(presentation.plan):
         return BotResponse(_localized_safe_reply(UNAVAILABLE_REPLY, presentation.language))
     if not presentation.status_names:
-        return _response(
+        return BotResponse(
             _copy(
                 presentation.language,
                 "No current attendance records were found.",
                 "Trenutnih evidenc prisotnosti ni.",
-            ),
-            presentation.language,
-            presentation.display_name,
+            )
         )
     prefix = f"**{_safe_text(presentation.plan.title)}**"
     if presentation.plan.context:
@@ -388,7 +401,7 @@ def _current_batch(presentation: CurrentAttendancePresentation) -> BotResponse:
                 group = candidate
         if group != heading:
             blocks.append(group)
-    response = _ordered_batch(prefix, blocks, presentation.language, presentation.display_name)
+    response = _ordered_batch(prefix, blocks, presentation.language)
     return response or BotResponse(_localized_safe_reply(UNAVAILABLE_REPLY, presentation.language))
 
 
@@ -396,26 +409,21 @@ def _ordered_batch(
     prefix: str,
     blocks: list[str],
     language: ReplyLanguage,
-    display_name: str | None,
     *,
     suffix: str | None = None,
+    first_block_separator: str = "\n\n",
 ) -> BotResponse | None:
-    """Pack complete fact blocks and mark every part plus the batch end."""
-    suffix = (
-        "\n\n**" + (suffix or ("Konec rezultatov" if language == "sl" else "End of results")) + "**"
-    )
-    reserve = len("**Part 9999 of 9999**\n\n") + len(suffix)
+    """Pack complete fact blocks while keeping the batch header and footer singular."""
+    suffix = "\n\n" + (suffix or _history_footer(language))
+    reserve = len(suffix)
     capacity = MAX_REPLY_CHARACTERS - reserve
     if capacity < 1:
         return None
-    name = _safe_display_name(display_name)
-    if name:
-        greeting = "Pozdravljeni" if language == "sl" else "Hello"
-        prefix = f"{greeting}, {name}!\n\n{prefix}"
     bodies: list[str] = []
     current = prefix
     for block in blocks:
-        candidate = current + "\n\n" + block
+        separator = first_block_separator if current == prefix else "\n\n"
+        candidate = current + separator + block
         if len(candidate) <= capacity:
             current = candidate
         elif current != prefix:
@@ -429,11 +437,8 @@ def _ordered_batch(
         bodies.append(current)
     if not bodies:
         return None
-    total = len(bodies)
-    part = "Del " if language == "sl" else "Part "
-    of = " od " if language == "sl" else " of "
     messages = tuple(
-        f"**{part}{index}{of}{total}**\n\n{body}" + (suffix if index == total else "")
+        body + (suffix if index == len(bodies) else "")
         for index, body in enumerate(bodies, start=1)
     )
     if any(len(message) > MAX_REPLY_CHARACTERS for message in messages):
@@ -450,7 +455,7 @@ def _current_status(value: str, language: ReplyLanguage) -> str:
         "absence": ("Absent", "Odsotni"),
         "no_status": ("No status", "Ni statusa"),
     }
-    return labels.get(value.casefold(), (value, value))[1 if language == "sl" else 0]
+    return _copy(language, *labels.get(value.casefold(), (value, value)))
 
 
 def _event_date(event: AttendanceEvent) -> date | None:
@@ -458,21 +463,111 @@ def _event_date(event: AttendanceEvent) -> date | None:
     return timestamp.astimezone(_REPLY_TIMEZONE).date() if timestamp is not None else None
 
 
+def _history_header(presentation: SafeHistoryPresentation) -> str:
+    title = _copy(
+        presentation.language,
+        f"📅 **Attendance Record** (Page {presentation.page_number})",
+        f"📅 **Evidenca prisotnosti** (Stran {presentation.page_number})",
+    )
+    if presentation.start_date is not None and presentation.end_date is not None:
+        period = _copy(
+            presentation.language,
+            f"Period: {presentation.start_date.isoformat()} to {presentation.end_date.isoformat()}",
+            f"Obdobje: {presentation.start_date.isoformat()} "
+            f"do {presentation.end_date.isoformat()}",
+        )
+        timezone = _copy(
+            presentation.language,
+            "Timezone: Europe/Ljubljana",
+            "Časovni pas: Europe/Ljubljana",
+        )
+        return _TEAMS_LINE_BREAK.join((title, period, timezone, _HISTORY_DIVIDER))
+    return _TEAMS_LINE_BREAK.join((title, _HISTORY_DIVIDER))
+
+
+def _history_footer(language: ReplyLanguage, *, has_more: bool = False) -> str:
+    return _TEAMS_LINE_BREAK.join(
+        (
+            _HISTORY_DIVIDER,
+            _copy(
+                language,
+                'Type "next" for the next page.' if has_more else "End of results.",
+                'Za naslednjo stran vnesite "naslednja".' if has_more else "Konec rezultatov.",
+            ),
+        )
+    )
+
+
+def _history_day_block(
+    day: date | None, events: list[AttendanceEvent], language: ReplyLanguage
+) -> str:
+    heading = (
+        _short_format_date(day, language)
+        if day is not None
+        else _copy(language, "Date unavailable", "Datum ni na voljo")
+    )
+    ordered_events = _sort_events(events)
+    total = sum(
+        (
+            event.checked_out_at.astimezone(UTC) - event.checked_in_at.astimezone(UTC)
+            for event in ordered_events
+            if event.checked_in_at is not None and event.checked_out_at is not None
+        ),
+        timedelta(),
+    )
+    return "\n".join(
+        (
+            f"* 🗓️ **{heading}**",
+            *(_render_attendance_event(event, language) for event in ordered_events),
+            "  *("
+            + _copy(
+                language,
+                f"Daily Total: {_format_duration(total)}",
+                f"Dnevni seštevek: {_format_duration(total)}",
+            )
+            + ")*",
+        )
+    )
+
+
 def _sort_events(events: list[AttendanceEvent]) -> list[AttendanceEvent]:
     return sorted(
         events,
         key=lambda event: (
-            event.checked_in_at or event.checked_out_at or datetime.max.replace(tzinfo=None),
+            event.checked_in_at or event.checked_out_at or datetime.max.replace(tzinfo=UTC),
             event.attendance_event_id,
         ),
     )
 
 
 def _format_date(value: date, language: ReplyLanguage, *, weekday: bool = False) -> str:
-    day = f"{value.day} {_MONTHS[language][value.month - 1]} {value.year}"
-    if language == "en":
-        day = f"{_MONTHS[language][value.month - 1]} {value.day}, {value.year}"
+    day = _copy(
+        language,
+        f"{_MONTHS[language][value.month - 1]} {value.day}, {value.year}",
+        f"{value.day} {_MONTHS[language][value.month - 1]} {value.year}",
+    )
     return f"{_WEEKDAYS[language][value.weekday()]}, {day}" if weekday else day
+
+
+def _short_format_date(value: date, language: ReplyLanguage) -> str:
+    return _copy(
+        language,
+        (
+            f"{_SHORT_WEEKDAYS[language][value.weekday()]}, "
+            f"{_SHORT_MONTHS[language][value.month - 1]} {value.day}, {value.year}"
+        ),
+        (
+            f"{_SHORT_WEEKDAYS[language][value.weekday()]}, {value.day}. "
+            f"{_SHORT_MONTHS[language][value.month - 1]} {value.year}"
+        ),
+    )
+
+
+def _format_duration(value: timedelta) -> str:
+    seconds = max(0, int(value.total_seconds()))
+    hours, remainder = divmod(seconds, 3_600)
+    minutes = remainder // 60
+    return f"{hours}h {minutes:02d}m"
 
 
 def _time(value: datetime | None) -> str:
@@ -486,13 +581,26 @@ def _attendance_type(value: str | None, language: ReplyLanguage) -> str:
     normalized = " ".join(value.split()).casefold()
     for slovene, english in _PUNCH_TYPE_EQUIVALENTS:
         if normalized in {slovene.casefold(), english.casefold()}:
-            return english if language == "en" else slovene
+            return _copy(language, english, slovene)
     for alias, english in _ENGLISH_PUNCH_TYPE_ALIASES:
         if normalized == alias:
             for slovene, canonical_english in _PUNCH_TYPE_EQUIVALENTS:
                 if canonical_english == english:
-                    return canonical_english if language == "en" else slovene
+                    return _copy(language, canonical_english, slovene)
     return _safe_text(value) or _copy(language, "Unspecified attendance", "Nedoločena prisotnost")
+
+
+def _attendance_icon(value: str | None) -> str | None:
+    if value is None or not value.strip():
+        return None
+    normalized = " ".join(value.split()).casefold()
+    for slovene, english in _PUNCH_TYPE_EQUIVALENTS:
+        if normalized in {slovene.casefold(), english.casefold()}:
+            return _PUNCH_TYPE_ICONS[english]
+    for alias, english in _ENGLISH_PUNCH_TYPE_ALIASES:
+        if normalized == alias:
+            return _PUNCH_TYPE_ICONS[english]
+    return None
 
 
 def _safe_text(value: str | None) -> str:
@@ -521,22 +629,12 @@ def _guidance_copy(intent: GuidanceIntent, language: ReplyLanguage) -> str:
     )
 
 
-def _response(text: str, language: ReplyLanguage, display_name: str | None) -> BotResponse:
+def _guidance_response(text: str, language: ReplyLanguage, display_name: str | None) -> BotResponse:
     name = _safe_display_name(display_name)
     if name:
-        greeting = "Pozdravljeni" if language == "sl" else "Hello"
-        text = f"{greeting}, {name}!\n\n{text}"
+        greeting = _copy(language, "Hello", "Pozdravljeni")
+        text = f"{greeting}, {name}{_TEAMS_LINE_BREAK}{text}"
     return BotResponse(text=text)
-
-
-def _response_batch(
-    messages: tuple[str, ...], language: ReplyLanguage, display_name: str | None
-) -> BotResponse:
-    name = _safe_display_name(display_name)
-    if name:
-        greeting = "Pozdravljeni" if language == "sl" else "Hello"
-        messages = (f"{greeting}, {name}!\n\n{messages[0]}", *messages[1:])
-    return BotResponse.batch(messages)
 
 
 def _safe_display_name(value: str | None) -> str | None:
@@ -552,8 +650,6 @@ def _safe_display_name(value: str | None) -> str | None:
 
 
 def _localized_safe_reply(text: str, language: ReplyLanguage) -> str:
-    if language == "en":
-        return text
     slovene = {
         UNAVAILABLE_REPLY: "Podatki o prisotnosti trenutno niso na voljo. Poskusite znova pozneje.",
         INVALID_REQUEST_REPLY: (
@@ -573,7 +669,7 @@ def _localized_safe_reply(text: str, language: ReplyLanguage) -> str:
         TOOL_FAILURE_REPLIES["AUTHENTICATION_REQUIRED"]: "Prijavite se in poskusite znova.",
         TOOL_FAILURE_REPLIES["TOKEN_INVALID"]: "Prijavite se in poskusite znova.",
     }
-    return slovene.get(text, slovene[UNAVAILABLE_REPLY])
+    return _copy(language, text, slovene.get(text, slovene[UNAVAILABLE_REPLY]))
 
 
 def _copy(language: ReplyLanguage, english: str, slovene: str) -> str:

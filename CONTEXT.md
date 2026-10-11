@@ -42,6 +42,17 @@ A bot-owned contract fixing one action's permitted fields, omissions,
 localization, renderer, and tests.
 _Avoid_: prompt convention, source schema
 
+**Guidance reply**:
+A non-factual conversational reply that may greet the user with their unverified
+Teams display name before giving safe guidance, clarification, selection, or
+failure information.
+_Avoid_: attendance report, identity evidence
+
+**Report reply**:
+A factual attendance or current-status presentation rendered from a reply-safe
+projection. It never includes a personal greeting.
+_Avoid_: guidance reply, attendance authority
+
 **Reply-safe projection**:
 The minimized typed result view eligible for model context and Teams rendering.
 It excludes internal IDs, notes, locations, and other source-only fields.
@@ -74,6 +85,7 @@ _Avoid_: result cache, authorization grant, signed query
 The short exclusive claim preventing two button clicks or typed requests from
 retrieving the same next page concurrently.
 _Avoid_: distributed attendance lock, retry queue
+
 
 ## MCP catalog policy
 

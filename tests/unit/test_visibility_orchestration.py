@@ -158,7 +158,7 @@ async def test_exact_selector_is_resolved_then_internal_id_only_drives_history()
     )
     assert (
         await agent.handle(message="alice@example.test", mcp_access_token=SecretStr("token"))
-    ).text.startswith("**Part 1 of 1**\n\n**Attendance**")
+    ).text.startswith("📅 **Attendance Record** (Page 1)")
     assert session.calls == [
         ("resolve_employee", {"email": "alice@example.test"}),
         (
@@ -304,7 +304,7 @@ async def test_current_status_fetches_all_pages_and_hides_unknown_before_model()
     )
     assert (
         await agent.handle(message="Office", mcp_access_token=SecretStr("token"))
-    ).text.startswith("**Part 1 of 1**\n\n**Current attendance**\n\n**Office**\n- Ada")
+    ).text.startswith("**Current attendance**\n\n**Office**\n- Ada")
     assert [call[1] for call in session.calls] == [
         {"statuses": ["office"], "limit": 50, "offset": 0},
         {"statuses": ["office"], "limit": 50, "offset": 50},
@@ -333,9 +333,7 @@ async def test_current_status_uses_the_rest_contract_first_and_last_name_fields(
         message="Who is in the office?", mcp_access_token=SecretStr("token")
     )
 
-    assert response.text.startswith(
-        "**Part 1 of 1**\n\n**Current attendance**\n\n**Office**\n- Ada Lovelace"
-    )
+    assert response.text.startswith("**Current attendance**\n\n**Office**\n- Ada Lovelace")
 
 
 @pytest.mark.anyio
@@ -351,7 +349,7 @@ async def test_current_status_without_a_filter_omits_status_and_fetches_every_pa
 
     assert (
         await agent.handle(message="Who is working?", mcp_access_token=SecretStr("token"))
-    ).text.startswith("**Part 1 of 1**\n\n**Current attendance**\n\n**Office**\n- Ada")
+    ).text.startswith("**Current attendance**\n\n**Office**\n- Ada")
     assert [call[1] for call in session.calls] == [
         {"limit": 50, "offset": 0},
         {"limit": 50, "offset": 50},

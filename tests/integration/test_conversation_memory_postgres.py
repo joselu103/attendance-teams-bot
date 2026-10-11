@@ -209,7 +209,9 @@ async def test_active_continuation_is_leased_then_advanced_or_cleared() -> None:
     assert await memory.start()
     session, conversation = f"synthetic-{uuid4()}", f"conversation-{uuid4()}"
     first = HistoryContinuation("self", date(2026, 1, 1), date(2026, 1, 31), 50, "en")
-    second = HistoryContinuation("self", date(2026, 1, 1), date(2026, 1, 31), 100, "en")
+    second = HistoryContinuation(
+        "self", date(2026, 1, 1), date(2026, 1, 31), 100, "en", page_number=3
+    )
     try:
         identifier = await memory.replace_continuation(session, conversation, first)
         assert identifier is not None

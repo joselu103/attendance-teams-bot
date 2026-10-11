@@ -25,6 +25,7 @@ from microsoft_agents.hosting.fastapi import (
     start_agent_process,
 )
 from pydantic import SecretStr
+from starlette.requests import ClientDisconnect
 from starlette.responses import JSONResponse, Response
 
 from attendance_teams_bot.agent.continuation import HISTORY_VERB
@@ -398,7 +399,10 @@ def _create_http_app(
     @app.post("/api/messages", response_model=None)
     @jwt_authorization_decorator  # type: ignore[untyped-decorator]
     async def messages_handler(request: Request) -> Response | None:
-        activity = await request.json() if oauth_connection_name is not None else None
+        try:
+            activity = await request.json() if oauth_connection_name is not None else None
+        except ClientDisconnect:
+            return Response(status_code=204)
         response = await start_agent_process(request, agent_application, adapter)
         if oauth_connection_name is None:
             return response

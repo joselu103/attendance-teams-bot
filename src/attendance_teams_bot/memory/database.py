@@ -374,6 +374,7 @@ class PostgresConversationMemory:
                         start_date DATE NOT NULL,
                         end_date DATE NOT NULL,
                         next_offset INTEGER NOT NULL CHECK (next_offset > 0),
+                        next_page_number INTEGER NOT NULL DEFAULT 2 CHECK (next_page_number > 1),
                         language TEXT NOT NULL CHECK (language IN ('en', 'sl')),
                         target BIGINT,
                         expires_at TIMESTAMPTZ NOT NULL,
@@ -386,6 +387,19 @@ class PostgresConversationMemory:
                 await connection.execute(
                     "CREATE INDEX IF NOT EXISTS active_continuations_expires_idx "
                     "ON active_continuations (expires_at)"
+                )
+                await connection.execute(
+                    "ALTER TABLE active_continuations ADD COLUMN IF NOT EXISTS "
+                    "next_page_number INTEGER CHECK (next_page_number > 1)"
+                )
+                # Old cursors cannot establish which page was last delivered.
+                await connection.execute(
+                    "DELETE FROM active_continuations WHERE next_page_number IS NULL"
+                )
+                await connection.execute(
+                    "ALTER TABLE active_continuations "
+                    "ALTER COLUMN next_page_number SET DEFAULT 2, "
+                    "ALTER COLUMN next_page_number SET NOT NULL"
                 )
 
     async def _replace_continuation_transaction(
@@ -413,12 +427,13 @@ class PostgresConversationMemory:
                 """
                 INSERT INTO active_continuations
                     (id, session_id, conversation_id, scope, start_date, end_date, next_offset,
-                     language, target, expires_at, lease, lease_expires_at)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9,
-                        NOW() + ($10 * INTERVAL '1 second'), NULL, NULL)
+                     next_page_number, language, target, expires_at, lease, lease_expires_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+                        NOW() + ($11 * INTERVAL '1 second'), NULL, NULL)
                 ON CONFLICT (session_id, conversation_id) DO UPDATE SET
                     id = EXCLUDED.id, scope = EXCLUDED.scope, start_date = EXCLUDED.start_date,
                     end_date = EXCLUDED.end_date, next_offset = EXCLUDED.next_offset,
+                    next_page_number = EXCLUDED.next_page_number,
                     language = EXCLUDED.language, target = EXCLUDED.target,
                     expires_at = EXCLUDED.expires_at, lease = NULL, lease_expires_at = NULL
                 """,
@@ -429,6 +444,7 @@ class PostgresConversationMemory:
                 query.start_date,
                 query.end_date,
                 query.offset,
+                query.page_number,
                 query.language,
                 query.target,
                 CONTINUATION_TTL_SECONDS,
@@ -474,6 +490,7 @@ class PostgresConversationMemory:
                     row["next_offset"],
                     row["language"],
                     row["target"],
+                    row["next_page_number"],
                 ),
             )
 
@@ -500,16 +517,17 @@ class PostgresConversationMemory:
             result = await connection.execute(
                 """
                 UPDATE active_continuations SET id = $1, scope = $2, start_date = $3, end_date = $4,
-                    next_offset = $5, language = $6, target = $7,
-                    expires_at = NOW() + ($8 * INTERVAL '1 second'), lease = NULL,
+                    next_offset = $5, next_page_number = $6, language = $7, target = $8,
+                    expires_at = NOW() + ($9 * INTERVAL '1 second'), lease = NULL,
                     lease_expires_at = NULL
-                WHERE id = $9 AND session_id = $10 AND conversation_id = $11 AND lease = $12
+                WHERE id = $10 AND session_id = $11 AND conversation_id = $12 AND lease = $13
                 """,
                 identifier,
                 query.scope,
                 query.start_date,
                 query.end_date,
                 query.offset,
+                query.page_number,
                 query.language,
                 query.target,
                 CONTINUATION_TTL_SECONDS,

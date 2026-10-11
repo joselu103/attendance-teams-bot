@@ -1,3 +1,4 @@
+import inspect
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 from uuid import uuid4
@@ -7,6 +8,7 @@ from microsoft_agents.activity import TokenResponse
 from microsoft_agents.hosting.core import Authorization
 from microsoft_agents.hosting.core.app._routes.route_rank import RouteRank
 from pydantic import SecretStr
+from starlette.requests import Request
 from starlette.responses import Response
 from structlog.testing import capture_logs
 
@@ -63,6 +65,32 @@ async def test_connectivity_route_handles_blank_and_trimmed_messages() -> None:
     assert blank.sent_texts == ["Please send a message so I can help."]
     assert handler.messages == ["Hello"]
     assert message.sent_texts == ["safe reply"]
+
+
+@pytest.mark.anyio
+async def test_authenticated_route_ignores_a_client_disconnect_before_the_request_body() -> None:
+    class FakeConnectionManager:
+        def get_default_connection_configuration(self) -> dict[str, object]:
+            return {}
+
+    app = microsoft_agents._create_http_app(
+        connection_manager=FakeConnectionManager(),
+        agent_application=object(),
+        adapter=object(),
+        oauth_connection_name="attendance-teams-sso",
+    )
+    endpoint = next(route.endpoint for route in app.routes if route.path == "/api/messages")
+
+    async def receive() -> dict[str, str]:
+        return {"type": "http.disconnect"}
+
+    request = Request(
+        {"type": "http", "method": "POST", "path": "/api/messages", "headers": []}, receive
+    )
+
+    response = await inspect.unwrap(endpoint)(request)
+
+    assert response.status_code == 204
 
 
 class FakeTokenResponse:
