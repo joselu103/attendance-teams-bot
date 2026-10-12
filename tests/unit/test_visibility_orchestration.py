@@ -78,6 +78,10 @@ class Model:
 
     async def complete(self, request: ModelRequest) -> ToolCall | FinalResponse:
         self.requests.append(request)
+        if request.pre_auth_guidance and self.turns and isinstance(self.turns[0], ToolCall):
+            language = self.turns[0].arguments.get("reply_language", "en")
+            assert language in {"en", "sl"}
+            return FinalResponse("attendance", language, "attendance_needed")
         return self.turns.pop(0)
 
 
@@ -172,8 +176,8 @@ async def test_exact_selector_is_resolved_then_internal_id_only_drives_history()
             },
         ),
     ]
-    assert "note" not in repr(model.requests[1].tool_results[0].result)
-    assert "employee_id" not in repr(model.requests[1].tool_results[0].result)
+    assert "note" not in repr(model.requests[2].tool_results[0].result)
+    assert "employee_id" not in repr(model.requests[2].tool_results[0].result)
 
 
 @pytest.mark.anyio
@@ -229,9 +233,10 @@ async def test_authenticated_model_calls_share_one_history_snapshot_and_current_
         history=history,
     )
 
-    assert len(model.requests) == 2
+    assert len(model.requests) == 3
     assert all(request.history == history for request in model.requests)
     assert [request.user_message for request in model.requests] == [
+        "show my attendance",
         "show my attendance",
         "show my attendance",
     ]
@@ -309,7 +314,7 @@ async def test_current_status_fetches_all_pages_and_hides_unknown_before_model()
         {"statuses": ["office"], "limit": 50, "offset": 0},
         {"statuses": ["office"], "limit": 50, "offset": 50},
     ]
-    assert model.requests[1].tool_results[0].result["statuses"] == [
+    assert model.requests[2].tool_results[0].result["statuses"] == [
         {"status": "office", "count": 1}
     ]
     assert "as_of" not in repr(session.calls)
@@ -354,7 +359,7 @@ async def test_current_status_without_a_filter_omits_status_and_fetches_every_pa
         {"limit": 50, "offset": 0},
         {"limit": 50, "offset": 50},
     ]
-    assert "status" not in model.requests[1].tool_results[0].result
+    assert "status" not in model.requests[2].tool_results[0].result
 
 
 def test_current_status_groups_follow_the_business_status_order() -> None:
@@ -451,7 +456,7 @@ async def test_rejects_multiple_selectors_unknown_status_and_internal_ids_in_rep
         ]
     )
     assert (
-        "temporarily unavailable"
+        "valid attendance request"
         in (await agent.handle(message="x", mcp_access_token=SecretStr("token"))).text
     )
     assert not session.calls
@@ -465,7 +470,7 @@ async def test_rejects_multiple_selectors_unknown_status_and_internal_ids_in_rep
         ]
     )
     assert (
-        "temporarily unavailable"
+        "valid attendance request"
         in (await agent.handle(message="x", mcp_access_token=SecretStr("token"))).text
     )
     agent, _, _ = subject(
@@ -552,4 +557,4 @@ async def test_name_search_renders_candidates_and_requires_a_later_selection() -
         "Reply with the listed username or email."
     )
     assert session.calls == [("search_employees", {"query": "Tinkara", "limit": 10})]
-    assert len(model.requests) == 1
+    assert len(model.requests) == 2

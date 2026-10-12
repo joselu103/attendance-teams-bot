@@ -33,6 +33,10 @@ class FakeModel:
 
     async def complete(self, request: ModelRequest) -> ToolCall | FinalResponse:
         self.requests.append(request)
+        if request.pre_auth_guidance and self.turns and isinstance(self.turns[0], ToolCall):
+            language = self.turns[0].arguments.get("reply_language", "en")
+            assert language in {"en", "sl"}
+            return FinalResponse("attendance", language, "attendance_needed")
         return self.turns.pop(0)
 
 
@@ -139,10 +143,11 @@ async def test_one_validated_tool_call_sends_minimal_projection_and_immutable_re
     response = await subject.handle(message="Pokaži", mcp_access_token=SecretStr("token"))
     assert "**Evidenca prisotnosti**" in response.text and "secret note" not in response.text
     assert len(session.calls) == 1
-    assert len(model.requests) == 2
-    projection = model.requests[1].tool_results[0].result
+    assert len(model.requests) == 3
+    assert model.requests[0].tools == ()
+    projection = model.requests[2].tool_results[0].result
     assert "note" not in repr(projection) and "employee_id" not in repr(projection)
-    assert model.requests[1].tools == ()
+    assert model.requests[1].tools
 
 
 @pytest.mark.anyio
@@ -164,7 +169,7 @@ async def test_failure_returns_localized_safe_reply_without_additional_model_or_
     subject, model, session = agent([call()], FakeSession(failure_on=1))
     response = await subject.handle(message="show", mcp_access_token=SecretStr("token"))
     assert response.text == "Podatki o prisotnosti trenutno niso na voljo. Poskusite znova pozneje."
-    assert len(session.calls) == 1 and len(model.requests) == 1
+    assert len(session.calls) == 1 and len(model.requests) == 2
 
 
 @pytest.mark.anyio
@@ -378,12 +383,9 @@ async def test_missing_invalid_or_reversed_boundaries_restate_whole_period_befor
     arguments,
 ) -> None:
     subject, model, session = agent([ToolCall("selection", SELF_ATTENDANCE_TOOL, arguments)])
-    response = await subject.pre_auth_decision(message="show attendance")
-    assert (
-        response.text
-        == "Please restate the complete attendance period with both start and end dates."
-    )
-    assert not session.calls and len(model.requests) == 1
+    response = await subject.handle(message="show attendance", mcp_access_token=SecretStr("token"))
+    assert response.text == "Please provide a valid attendance request."
+    assert not session.calls and len(model.requests) == 2
 
 
 @pytest.mark.anyio

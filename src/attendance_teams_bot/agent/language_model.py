@@ -8,17 +8,23 @@ from typing import Literal, Protocol
 from attendance_teams_bot.memory.models import ChatMessage
 
 ReplyLanguage = Literal["en", "sl"]
-GuidanceKind = Literal["greeting", "attendance_clarification", "attendance_scope_guidance"]
+GuidanceKind = Literal[
+    "greeting",
+    "attendance_clarification",
+    "attendance_scope_guidance",
+    "attendance_needed",
+]
 
 
 @dataclass(frozen=True, slots=True)
 class ToolDefinition:
-    """A bot-owned model tool; provider and MCP metadata never enter this type."""
+    """A bounded model tool whose remote metadata is opaque to the bot."""
 
     name: str
     description: str
     input_schema: Mapping[str, object]
     annotations: Mapping[str, object] = field(default_factory=dict)
+    meta: Mapping[str, object] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)

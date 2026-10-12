@@ -53,8 +53,15 @@ class Clarification:
 
 @dataclass(frozen=True, slots=True)
 class SelectedAttendanceAction:
-    """A bot-validated pre-auth action, awaiting live MCP catalog admission."""
+    """A bot-validated action selected from the live authenticated catalog."""
 
     name: str
     arguments: Mapping[str, object]
+    language: ReplyLanguage
+
+
+@dataclass(frozen=True, slots=True)
+class AttendanceNeeded:
+    """A tool-free pre-auth sentinel; authentication has not happened yet."""
+
     language: ReplyLanguage

@@ -65,9 +65,10 @@ class StreamableHttpAttendanceSession:
                 description = getattr(tool, "description", None)
                 input_schema = getattr(tool, "inputSchema", None)
                 annotations = getattr(tool, "annotations", None)
+                meta = getattr(tool, "meta", getattr(tool, "_meta", None))
                 if isinstance(annotations, ToolAnnotations):
                     annotations = annotations.model_dump(exclude_none=True)
-                tools.append(DiscoveredMcpTool(name, description, input_schema, annotations))
+                tools.append(DiscoveredMcpTool(name, description, input_schema, annotations, meta))
         except Exception as error:
             lifecycle.fail(error)
             raise

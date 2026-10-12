@@ -15,7 +15,7 @@ from attendance_teams_bot.agent.continuation import (
     continuation_card,
     is_typed_continuation,
 )
-from attendance_teams_bot.agent.contracts import BotResponse, SelectedAttendanceAction
+from attendance_teams_bot.agent.contracts import AttendanceNeeded, BotResponse
 from attendance_teams_bot.auth.obo import DelegatedAuthenticationUnavailable
 from attendance_teams_bot.memory.database import (
     ConversationMemory,
@@ -48,14 +48,14 @@ class AttendanceApplication(Protocol):
         message: str,
         display_name: str | None = None,
         history: tuple[ChatMessage, ...] = (),
-    ) -> BotResponse | SelectedAttendanceAction: ...
+    ) -> BotResponse | AttendanceNeeded: ...
 
     async def handle_selected(
         self,
         *,
         message: str,
         mcp_access_token: SecretStr,
-        selection: SelectedAttendanceAction,
+        selection: AttendanceNeeded,
         display_name: str | None = None,
         history: tuple[ChatMessage, ...] = (),
     ) -> BotResponse: ...
