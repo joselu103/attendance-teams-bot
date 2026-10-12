@@ -76,14 +76,12 @@ class AttendanceModel:
     async def complete(self, request: ModelRequest) -> ToolCall | FinalResponse:
         self.requests.append(request)
         if request.pre_auth_guidance:
+            return FinalResponse("attendance", "en", "attendance_needed")
+        if not request.tool_results:
             return ToolCall(
                 "selection",
                 SELF_ATTENDANCE_TOOL,
-                {
-                    "start_date": "2026-08-10",
-                    "end_date": "2026-08-12",
-                    "reply_language": "en",
-                },
+                {"start_date": "2026-08-10", "end_date": "2026-08-12"},
             )
         return FinalResponse("Attendance found", "en")
 

@@ -12,10 +12,8 @@ from zoneinfo import ZoneInfo
 import structlog
 from pydantic import SecretStr
 
-from attendance_teams_bot.agent.continuation import (
-    HistoryContinuation,
-)
-from attendance_teams_bot.agent.contracts import BotResponse, SelectedAttendanceAction
+from attendance_teams_bot.agent.continuation import HistoryContinuation
+from attendance_teams_bot.agent.contracts import AttendanceNeeded, BotResponse
 from attendance_teams_bot.agent.date_resolver import has_ambiguous_numeric_date
 from attendance_teams_bot.agent.language_model import (
     FinalResponse,
@@ -24,14 +22,10 @@ from attendance_teams_bot.agent.language_model import (
     ModelRequest,
     PresentationPlan,
     ReplyLanguage,
+    ToolCall,
     ToolResultView,
 )
-from attendance_teams_bot.agent.mcp_catalog import (
-    DiscoveredMcpTool,
-    ToolPolicy,
-    admit_mcp_catalog,
-    pre_auth_tool_policies,
-)
+from attendance_teams_bot.agent.mcp_catalog import DiscoveredMcpTool, ToolPolicy, admit_mcp_catalog
 from attendance_teams_bot.agent.rendering import (
     AttendanceResultPresenter,
     CurrentAttendancePresentation,
@@ -148,8 +142,8 @@ class AttendanceAgent:
         message: str,
         display_name: str | None = None,
         history: tuple[ChatMessage, ...] = (),
-    ) -> BotResponse | SelectedAttendanceAction:
-        """Route without credentials using only bot-owned attendance action definitions."""
+    ) -> BotResponse | AttendanceNeeded:
+        """Route without credentials using no tools and no attendance capability metadata."""
         language: ReplyLanguage = "en"
         correlation_id = self.correlation_id_factory()
         try:
@@ -158,12 +152,13 @@ class AttendanceAgent:
                     message,
                     self.reference_date_factory(),
                     "Europe/Ljubljana",
-                    tuple(policy.definition for policy in pre_auth_tool_policies()),
+                    (),
                     display_name=display_name,
                     pre_auth_guidance=True,
                     history=history,
                 )
             )
+            _LOGGER.info("LLM turn", turn=turn)
             if isinstance(turn, FinalResponse):
                 if (
                     turn.guidance_kind is None
@@ -173,6 +168,8 @@ class AttendanceAgent:
                     return self._unavailable_with_outcome(
                         language, display_name, correlation_id, "malformed_final"
                     )
+                if turn.guidance_kind == "attendance_needed":
+                    return AttendanceNeeded(turn.language)
                 if turn.guidance_kind == "greeting":
                     intent: GuidanceIntent = "greeting"
                 elif turn.guidance_kind == "attendance_clarification":
@@ -185,37 +182,9 @@ class AttendanceAgent:
                 return BotResponse(
                     response.text, response.messages, _guidance_memory(intent, turn.language)
                 )
-            policy = next(
-                (item for item in pre_auth_tool_policies() if item.definition.name == turn.name),
-                None,
+            return self._unavailable_with_outcome(
+                language, display_name, correlation_id, "pre_auth_tool_call"
             )
-            if policy is None:
-                return self._unavailable_with_outcome(
-                    language, display_name, correlation_id, "invalid_tool_selection"
-                )
-            validated = policy.validate_arguments(turn.arguments)
-            if policy.kind in {"self", "other"}:
-                date_values = {
-                    key: turn.arguments[key]
-                    for key in ("start_date", "end_date", "reply_language")
-                    if key in turn.arguments
-                }
-                date_policy = pre_auth_tool_policies()[0]
-                if date_policy.validate_arguments(
-                    date_values
-                ) is None or has_ambiguous_numeric_date(message):
-                    raw_language = turn.arguments.get("reply_language")
-                    if raw_language not in ("en", "sl"):
-                        return self._unavailable(language, display_name)
-                    return self.presenter.present(
-                        GuidancePresentation("date_ambiguous", raw_language, display_name)
-                    )
-            if validated is None:
-                return self._unavailable_with_outcome(
-                    language, display_name, correlation_id, "invalid_tool_selection"
-                )
-            _, language = validated
-            return SelectedAttendanceAction(turn.name, dict(turn.arguments), language)
         except asyncio.CancelledError:
             raise
         except LanguageModelUnavailable as error:
@@ -232,11 +201,11 @@ class AttendanceAgent:
         *,
         message: str,
         mcp_access_token: SecretStr,
-        selection: SelectedAttendanceAction,
+        selection: AttendanceNeeded,
         display_name: str | None = None,
         history: tuple[ChatMessage, ...] = (),
     ) -> BotResponse:
-        """Authenticate, rediscover, and execute a pre-auth selection only if still admitted."""
+        """Authenticate, discover, select, and execute exactly one admitted action."""
         return await self._handle_authenticated(
             message=message,
             mcp_access_token=mcp_access_token,
@@ -250,7 +219,7 @@ class AttendanceAgent:
         *,
         message: str,
         mcp_access_token: SecretStr,
-        selection: SelectedAttendanceAction,
+        selection: AttendanceNeeded,
         display_name: str | None = None,
         history: tuple[ChatMessage, ...] = (),
     ) -> BotResponse:
@@ -265,17 +234,34 @@ class AttendanceAgent:
                     return self._unavailable_with_outcome(
                         language, display_name, correlation_id, "catalog_rejected"
                     )
-                policy = catalog.selected_tool(selection.name)
+                turn = await self.language_model.complete(
+                    ModelRequest(
+                        message,
+                        self.reference_date_factory(),
+                        "Europe/Ljubljana",
+                        catalog.model_tools,
+                        history=history,
+                    )
+                )
+                if not isinstance(turn, ToolCall):
+                    return self._unavailable_with_outcome(
+                        language, display_name, correlation_id, "missing_tool_selection"
+                    )
+                policy = catalog.selected_tool(turn.name)
                 if policy is None:
                     return self._unavailable_with_outcome(
                         language, display_name, correlation_id, "selection_not_admitted"
                     )
-                validated = policy.validate_arguments(selection.arguments)
+                validated = policy.validate_arguments(turn.arguments)
                 if validated is None:
                     return self.presenter.present(
                         InvalidRequestPresentation(language, display_name)
                     )
-                arguments, language = validated
+                arguments, _ = validated
+                if policy.kind in {"self", "other"} and has_ambiguous_numeric_date(message):
+                    return self.presenter.present(
+                        GuidancePresentation("date_ambiguous", language, display_name)
+                    )
                 result = await self._execute(session, policy, arguments)
                 if isinstance(result, EmployeeSuggestionPage):
                     return self.presenter.present(

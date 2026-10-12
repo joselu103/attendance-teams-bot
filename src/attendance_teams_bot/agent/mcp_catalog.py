@@ -50,6 +50,7 @@ class DiscoveredMcpTool:
     description: object
     input_schema: object
     annotations: object
+    meta: object = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,6 +61,9 @@ class ToolPolicy:
     def validate_arguments(
         self, arguments: Mapping[str, object]
     ) -> tuple[dict[str, object], ReplyLanguage] | None:
+        # Older providers may return this bot-only field; it is never advertised
+        # to a provider or forwarded to MCP.
+        arguments = {key: value for key, value in arguments.items() if key != "reply_language"}
         if self.kind == "current":
             return self._validate_current_arguments(arguments)
         if not all(
@@ -68,16 +72,10 @@ class ToolPolicy:
         ):
             return None
         values = {key: value for key, value in arguments.items() if isinstance(value, str)}
-        raw_language = values.get("reply_language")
-        if raw_language == "en":
-            language: ReplyLanguage = "en"
-        elif raw_language == "sl":
-            language = "sl"
-        else:
-            return None
+        language: ReplyLanguage = "en"
         try:
             if self.kind == "self":
-                if set(arguments) != {"start_date", "end_date", "reply_language"}:
+                if set(arguments) != {"start_date", "end_date"}:
                     return None
                 bounded = _bounded_dates(values)
                 return (
@@ -88,7 +86,7 @@ class ToolPolicy:
                     language,
                 )
             if self.kind == "other":
-                required = {"start_date", "end_date", "reply_language"}
+                required = {"start_date", "end_date"}
                 selectors = {
                     key: values[key]
                     for key in ("employee_id", "username", "email")
@@ -115,7 +113,7 @@ class ToolPolicy:
                     language,
                 )
             if self.kind == "search":
-                if set(arguments) != {"query", "reply_language"} or not values["query"].strip():
+                if set(arguments) != {"query"} or not values["query"].strip():
                     return None
                 return ({"query": values["query"].strip(), "limit": 10}, language)
         except KeyError, ValueError:
@@ -125,12 +123,10 @@ class ToolPolicy:
     def _validate_current_arguments(
         arguments: Mapping[str, object],
     ) -> tuple[dict[str, object], ReplyLanguage] | None:
-        language = arguments.get("reply_language")
-        if language not in {"en", "sl"}:
-            return None
-        if set(arguments) == {"reply_language"}:
+        language: ReplyLanguage = "en"
+        if not arguments:
             return {}, language
-        if set(arguments) != {"statuses", "reply_language"}:
+        if set(arguments) != {"statuses"}:
             return None
         statuses = arguments["statuses"]
         if (
@@ -158,113 +154,69 @@ class AdmittedMcpCatalog:
 
 
 def pre_auth_tool_policies() -> tuple[ToolPolicy, ...]:
-    """Return bot-owned actions for the untrusted, unauthenticated model decision."""
-    return (
-        ToolPolicy(canonical_self_attendance_tool(), "self"),
-        ToolPolicy(canonical_other_attendance_tool(), "other"),
-        ToolPolicy(canonical_current_attendance_tool(), "current"),
-        ToolPolicy(canonical_employee_search_tool(), "search"),
-    )
+    """Pre-auth routing intentionally has no tool definitions."""
+    return ()
 
 
 def admit_mcp_catalog(discovered_tools: Sequence[DiscoveredMcpTool]) -> AdmittedMcpCatalog | None:
-    remote: dict[str, Mapping[str, object]] = {}
+    remote: dict[str, DiscoveredMcpTool] = {}
     for tool in discovered_tools:
         if not isinstance(tool.name, str) or tool.name not in _ALLOWED_READ_ONLY_TOOL_NAMES:
             continue
         if tool.name in remote or not _valid_tool(tool):
             return None
-        remote[tool.name] = tool.input_schema  # type: ignore[assignment]
-    if not _compatible_self(remote.get(SELF_ATTENDANCE_TOOL)):
+        remote[tool.name] = tool
+    if not _compatible_self(_schema(remote.get(SELF_ATTENDANCE_TOOL))):
         return None
-    policies = [ToolPolicy(canonical_self_attendance_tool(), "self")]
-    if _compatible_resolver(remote.get(RESOLVE_EMPLOYEE_TOOL)) and _compatible_other(
-        remote.get(OTHER_ATTENDANCE_TOOL)
+    policies = [ToolPolicy(_remote_definition(remote[SELF_ATTENDANCE_TOOL]), "self")]
+    if _compatible_resolver(_schema(remote.get(RESOLVE_EMPLOYEE_TOOL))) and _compatible_other(
+        _schema(remote.get(OTHER_ATTENDANCE_TOOL))
     ):
-        policies.append(ToolPolicy(canonical_other_attendance_tool(), "other"))
-    if _compatible_current(remote.get(CURRENT_WORK_STATUS_TOOL)):
-        policies.append(ToolPolicy(canonical_current_attendance_tool(), "current"))
-    if _compatible_search(remote.get(SEARCH_EMPLOYEES_TOOL)):
-        policies.append(ToolPolicy(canonical_employee_search_tool(), "search"))
+        policies.append(ToolPolicy(_other_definition(remote), "other"))
+    if _compatible_current(_schema(remote.get(CURRENT_WORK_STATUS_TOOL))):
+        policies.append(ToolPolicy(_remote_definition(remote[CURRENT_WORK_STATUS_TOOL]), "current"))
+    if _compatible_search(_schema(remote.get(SEARCH_EMPLOYEES_TOOL))):
+        policies.append(ToolPolicy(_remote_definition(remote[SEARCH_EMPLOYEES_TOOL]), "search"))
     return AdmittedMcpCatalog(frozenset(remote), tuple(policies))
 
 
-def _definition(
-    name: str, description: str, properties: dict[str, object], required: list[str]
-) -> ToolDefinition:
+def _schema(tool: DiscoveredMcpTool | None) -> Mapping[str, object] | None:
+    if tool is None or not isinstance(tool.input_schema, Mapping):
+        return None
+    return tool.input_schema
+
+
+def _remote_definition(tool: DiscoveredMcpTool) -> ToolDefinition:
+    """Pass admitted server metadata through untouched to the provider boundary."""
+    assert isinstance(tool.name, str)
+    assert isinstance(tool.description, str)
+    assert isinstance(tool.input_schema, Mapping)
+    assert isinstance(tool.annotations, Mapping)
+    meta = tool.meta if isinstance(tool.meta, Mapping) else {}
+    return ToolDefinition(tool.name, tool.description, tool.input_schema, tool.annotations, meta)
+
+
+def _other_definition(remote: Mapping[str, DiscoveredMcpTool]) -> ToolDefinition:
+    """Expose the bot-owned composite only when both authoritative source tools exist."""
+    resolver, attendance = remote[RESOLVE_EMPLOYEE_TOOL], remote[OTHER_ATTENDANCE_TOOL]
+    assert isinstance(resolver.description, str) and isinstance(attendance.description, str)
     return ToolDefinition(
-        name,
-        description,
+        "get_other_attendance",
+        f"{resolver.description}\n{attendance.description}",
         {
             "type": "object",
-            "properties": properties,
-            "required": required,
+            "properties": {
+                "employee_id": {"type": "string"},
+                "username": {"type": "string"},
+                "email": {"type": "string"},
+                "start_date": {"type": "string", "format": "date"},
+                "end_date": {"type": "string", "format": "date"},
+            },
+            "required": ["start_date", "end_date"],
             "additionalProperties": False,
         },
         {"readOnlyHint": True},
-    )
-
-
-def canonical_self_attendance_tool() -> ToolDefinition:
-    return _definition(
-        SELF_ATTENDANCE_TOOL,
-        "List the authenticated requester's attendance for an explicit inclusive period "
-        "without a maximum span.",
-        {
-            "start_date": {"type": "string", "format": "date"},
-            "end_date": {"type": "string", "format": "date"},
-            "reply_language": {"type": "string", "enum": ["en", "sl"]},
-        },
-        ["start_date", "end_date", "reply_language"],
-    )
-
-
-def canonical_other_attendance_tool() -> ToolDefinition:
-    return _definition(
-        "get_other_attendance",
-        "For an exact employee ID, username, or email, list attendance for an explicit inclusive "
-        "period without a maximum span. Use exactly one selector.",
-        {
-            "employee_id": {"type": "string"},
-            "username": {"type": "string"},
-            "email": {"type": "string"},
-            "start_date": {"type": "string", "format": "date"},
-            "end_date": {"type": "string", "format": "date"},
-            "reply_language": {"type": "string", "enum": ["en", "sl"]},
-        },
-        ["start_date", "end_date", "reply_language"],
-    )
-
-
-def canonical_current_attendance_tool() -> ToolDefinition:
-    return _definition(
-        CURRENT_WORK_STATUS_TOOL,
-        "List current workforce attendance, optionally filtered to one or more approved statuses; "
-        "server time is authoritative.",
-        {
-            "statuses": {
-                "type": "array",
-                "items": {"type": "string", "enum": sorted(_STATUS)},
-                "minItems": 1,
-                "maxItems": len(_STATUS),
-                "uniqueItems": True,
-            },
-            "reply_language": {"type": "string", "enum": ["en", "sl"]},
-        },
-        ["reply_language"],
-    )
-
-
-def canonical_employee_search_tool() -> ToolDefinition:
-    return _definition(
-        SEARCH_EMPLOYEES_TOOL,
-        "Find up to ten directory-safe employee candidates by name. Do not request attendance "
-        "until the user explicitly selects a listed username, email, or ID in a new message.",
-        {
-            "query": {"type": "string"},
-            "reply_language": {"type": "string", "enum": ["en", "sl"]},
-        },
-        ["query", "reply_language"],
+        {"source_tools": (resolver.meta, attendance.meta)},
     )
 
 
@@ -277,6 +229,7 @@ def _valid_tool(tool: DiscoveredMcpTool) -> bool:
         and isinstance(tool.input_schema, Mapping)
         and isinstance(tool.annotations, Mapping)
         and tool.annotations.get("readOnlyHint") is True
+        and (tool.meta is None or isinstance(tool.meta, Mapping))
     )
 
 

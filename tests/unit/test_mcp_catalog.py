@@ -4,7 +4,6 @@ from attendance_teams_bot.agent.mcp_catalog import (
     _ALLOWED_READ_ONLY_TOOL_NAMES,
     DiscoveredMcpTool,
     admit_mcp_catalog,
-    canonical_self_attendance_tool,
 )
 from attendance_teams_bot.mcp.contracts import SELF_ATTENDANCE_TOOL
 
@@ -42,14 +41,16 @@ def allowed_catalog() -> tuple[DiscoveredMcpTool, ...]:
     )
 
 
-def test_admission_exposes_only_the_canonical_requester_tool() -> None:
+def test_admission_passes_server_metadata_through_for_the_requester_tool() -> None:
     catalog = admit_mcp_catalog(allowed_catalog())
 
     assert catalog is not None
-    assert catalog.model_tools == (canonical_self_attendance_tool(),)
+    definition = catalog.model_tools[0]
+    assert definition.description == "Remote description"
+    assert definition.input_schema is catalog.policies[0].definition.input_schema
     assert catalog.selected_tool(SELF_ATTENDANCE_TOOL) is not None
     assert catalog.selected_tool("list_employees") is None
-    assert "Remote description" not in repr(catalog.model_tools)
+    assert definition.input_schema["properties"] == compatible_tool().input_schema["properties"]
 
 
 @pytest.mark.parametrize(
@@ -95,7 +96,7 @@ def test_admission_ignores_unknown_discovery_entries_but_retains_allowed_entries
 
     assert catalog is not None
     assert catalog.admitted_tool_names == frozenset({SELF_ATTENDANCE_TOOL})
-    assert catalog.model_tools == (canonical_self_attendance_tool(),)
+    assert catalog.model_tools[0].description == "Remote description"
 
 
 def test_admission_rejects_duplicate_or_invalid_allowed_entries() -> None:
@@ -144,9 +145,10 @@ def test_current_status_admits_only_category_tool_without_exposing_as_of() -> No
     policy = catalog.selected_tool("get_current_work_status")
     assert policy is not None
     assert catalog.selected_tool("get_current_attendance") is None
-    assert "as_of" not in policy.definition.input_schema["properties"]
-    assert policy.validate_arguments({"reply_language": "en"}) == ({}, "en")
-    assert policy.validate_arguments(
-        {"statuses": ["office", "remote"], "reply_language": "en"}
-    ) == ({"statuses": ("office", "remote")}, "en")
+    assert "as_of" in policy.definition.input_schema["properties"]
+    assert policy.validate_arguments({}) == ({}, "en")
+    assert policy.validate_arguments({"statuses": ["office", "remote"]}) == (
+        {"statuses": ("office", "remote")},
+        "en",
+    )
     assert policy.validate_arguments({"status": "office", "reply_language": "en"}) is None

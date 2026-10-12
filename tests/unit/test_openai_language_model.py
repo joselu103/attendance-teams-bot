@@ -126,7 +126,7 @@ async def test_openai_pre_auth_guidance_includes_display_name_and_requires_scope
             "What is the weather?",
             date(2026, 8, 15),
             "Europe/Ljubljana",
-            (ToolDefinition("attendance", "owned", {"type": "object"}),),
+            (),
             display_name="Unverified Ada",
             pre_auth_guidance=True,
         )
@@ -139,6 +139,28 @@ async def test_openai_pre_auth_guidance_includes_display_name_and_requires_scope
     assert "Unverified Ada" in prompt and "Do not answer unrelated knowledge questions" in prompt
     schema = completion.requests[0]["response_format"]["json_schema"]["schema"]
     assert schema["required"] == ["markdown", "language", "guidance_kind"]
+    assert "tools" not in completion.requests[0]
+
+
+@pytest.mark.anyio
+async def test_openai_preserves_discovered_metadata_in_the_provider_request() -> None:
+    completion = FakeCompletion(
+        Completion((Choice(Message('{"markdown":"Done","language":"en"}')),))
+    )
+    schema = {"type": "object", "properties": {"start_date": {"type": "string"}}}
+    examples = {"examples": [{"start_date": "2026-08-01"}]}
+    await OpenAiLanguageModel(completion, "test").complete(
+        ModelRequest(
+            "show",
+            date(2026, 8, 15),
+            "Europe/Ljubljana",
+            (ToolDefinition("remote", "Server text", schema, {"readOnlyHint": True}, examples),),
+        )
+    )
+    tool = completion.requests[0]["tools"][0]
+    assert tool["function"]["description"] == "Server text"
+    assert tool["function"]["parameters"] is schema
+    assert tool["_meta"] is examples
 
 
 @pytest.mark.anyio
