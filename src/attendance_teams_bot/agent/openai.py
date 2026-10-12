@@ -131,7 +131,8 @@ DATE_RESOLUTION_RULES = "\n".join(
         "or year.",
         "",
         '- **Open-Ended Expressions ("since", "from", "after", "od", "odkar")**:',
-        '  - Single boundary starting queries (e.g., "from January 30", "od 30. januarja", "od včeraj"):',
+        '  - Single boundary starting queries (e.g., "from January 30", "od 30. januarja", '
+        '"od včeraj"):',
         "    -> Set `start_date` = Resolved start date.",
         "    -> Set `end_date` = Reference Date (`{reference_date}`).",
         "",
@@ -143,7 +144,8 @@ DATE_RESOLUTION_RULES = "\n".join(
         "- **Regional Date Parsing & Formats**:",
         "  - **Slovenian / European Standard (DD.MM or DD/MM)**: Numeric dates like `06.08`, "
         "`6/8`, or `6.8` MUST ALWAYS be interpreted as **Day.Month** (e.g., 6th of August).",
-        "  - **Slovenian & English Month Names**: Recognize month names and declensions in both languages "
+        "  - **Slovenian & English Month Names**: Recognize month names and declensions in "
+        "both languages "
         "(e.g., *july*, *julij*, *julija*, *januar*, *januarja*, etc.).",
         "  - **Omitted Years**: Assume the most recent non-future year relative to Reference Date "
         "(`{reference_date}`).",
@@ -165,10 +167,15 @@ OUTPUT_FORMATTING_RULES = "\n".join(
 MODE_PRE_AUTH = "\n".join(
     (
         "## MODE: PRE-AUTH ROUTING (TOOL-FREE)",
-        "- **STRICT ROUTING RULE**: DO NOT interpret dates, DO NOT evaluate date ranges, and DO NOT ask the user for clarification in this mode.",
-        "- If the user's message is asking about attendance in ANY way (even if dates seem vague or partial, e.g., 'in july', 'my attendance', 'last week'):",
-        '  -> You MUST set `guidance_kind: "attendance_needed"`. Leave `markdown` empty or minimal.',
-        "- ONLY use other guidance kinds if the request is NOT about checking attendance (e.g., a pure greeting like 'hello' -> `greeting`, or out-of-scope question -> `attendance_scope_guidance`).",
+        "- **STRICT ROUTING RULE**: DO NOT interpret dates, DO NOT evaluate date ranges, and "
+        "DO NOT ask the user for clarification in this mode.",
+        "- If the user's message is asking about attendance in ANY way (even if dates seem "
+        "vague or partial, e.g., 'in july', 'my attendance', 'last week'):",
+        '  -> You MUST set `guidance_kind: "attendance_needed"`. Leave `markdown` empty '
+        "or minimal.",
+        "- ONLY use other guidance kinds if the request is NOT about checking attendance "
+        "(e.g., a pure greeting like 'hello' -> `greeting`, or out-of-scope question -> "
+        "`attendance_scope_guidance`).",
     )
 )
 
@@ -200,16 +207,19 @@ def _system_prompt(request: ModelRequest) -> str:
         prompt_parts.append(MODE_PRE_AUTH)
     else:
         # Full mode (Tool calling or Post-Tool)
-        prompt_parts.extend([
-            TOOL_USE_RULES,
-            DATE_RESOLUTION_RULES.format(reference_date=ref_date_str),
-            OUTPUT_FORMATTING_RULES,
-        ])
-        
+        prompt_parts.extend(
+            [
+                TOOL_USE_RULES,
+                DATE_RESOLUTION_RULES.format(reference_date=ref_date_str),
+                OUTPUT_FORMATTING_RULES,
+            ]
+        )
+
         if request.tool_results:
             prompt_parts.append(MODE_POST_TOOL)
 
     return "\n\n".join(prompt_parts)
+
 
 def _as_openai_tool(tool: ToolDefinition) -> dict[str, object]:
     return {

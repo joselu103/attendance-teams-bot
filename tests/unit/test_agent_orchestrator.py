@@ -229,6 +229,9 @@ async def test_unavailable_greeting_failure_outcomes_are_classified_without_sens
     events: list[tuple[str, dict[str, object]]] = []
 
     class Logger:
+        def debug(self, event: str, **fields: object) -> None:
+            del event, fields
+
         def info(self, event: str, **fields: object) -> None:
             del event, fields
 

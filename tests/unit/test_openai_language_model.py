@@ -136,7 +136,7 @@ async def test_openai_pre_auth_guidance_includes_display_name_and_requires_scope
         "I can help with attendance.", "en", "attendance_scope_guidance"
     )
     prompt = completion.requests[0]["messages"][0]["content"]
-    assert "Unverified Ada" in prompt and "Do not answer unrelated knowledge questions" in prompt
+    assert "Unverified Ada" in prompt and "STRICT ROUTING RULE" in prompt
     schema = completion.requests[0]["response_format"]["json_schema"]["schema"]
     assert schema["required"] == ["markdown", "language", "guidance_kind"]
     assert "tools" not in completion.requests[0]
