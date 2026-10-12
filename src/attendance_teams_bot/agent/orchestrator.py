@@ -158,7 +158,6 @@ class AttendanceAgent:
                     history=history,
                 )
             )
-            _LOGGER.info("LLM turn", turn=turn)
             if isinstance(turn, FinalResponse):
                 if (
                     turn.guidance_kind is None
