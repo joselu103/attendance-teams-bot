@@ -1,3 +1,6 @@
+import socket
+import ssl
+from contextlib import asynccontextmanager
 from uuid import UUID
 
 import httpx
@@ -5,7 +8,10 @@ import pytest
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import SecretStr
+from structlog.testing import capture_logs
 
+from attendance_teams_bot.mcp import session as mcp_session
+from attendance_teams_bot.mcp.client import AttendanceMcpUnavailable, McpContractIncompatible
 from attendance_teams_bot.mcp.contracts import (
     ATTENDANCE_MCP_CONTRACT_HEADER,
     ATTENDANCE_MCP_CONTRACT_MAJOR,
@@ -123,3 +129,100 @@ async def test_authenticated_session_discovers_and_calls_with_contract_headers(
         ATTENDANCE_MCP_CONTRACT_MAJOR
     }
     assert {request[":path"] for request in requests} == {"/mcp"}
+
+
+@pytest.mark.anyio
+async def test_session_connection_logs_safe_http_status_metadata_without_url_or_secrets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request = httpx.Request("POST", "https://attendance.example/mcp?access_token=query-secret")
+    response = httpx.Response(
+        503,
+        headers={"content-type": "application/json", "content-length": "99"},
+        content=b'{"attendance_event_id": 100, "token": "response-secret"}',
+        request=request,
+    )
+
+    @asynccontextmanager
+    async def failing_streamable_client(*_args, **_kwargs):
+        raise httpx.HTTPStatusError("server error", request=request, response=response)
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(mcp_session, "streamable_http_client", failing_streamable_client)
+    factory = StreamableHttpAttendanceSessionFactory(
+        endpoint="https://attendance.example/mcp?authorization=url-secret",
+        timeout_seconds=10,
+    )
+
+    with capture_logs() as events:
+        with pytest.raises(AttendanceMcpUnavailable):
+            async with factory.open(
+                access_token=SecretStr("downstream-token"),
+                correlation_id=UUID("11111111-1111-1111-1111-111111111111"),
+            ):
+                pass
+
+    failure = events[-1]
+    assert failure["event"] == "operation_failed"
+    assert failure["error_type"] == "HTTPStatusError"
+    assert failure["input_metadata"] == {
+        "failure_class": "http_status",
+        "exception_types": ("HTTPStatusError",),
+        "http_method": "POST",
+        "http_response_content_type": "application/json",
+        "http_response_has_content_length": True,
+        "http_status_code": 503,
+    }
+    rendered = repr(events)
+    assert "attendance.example" not in rendered
+    assert "query-secret" not in rendered
+    assert "url-secret" not in rendered
+    assert "downstream-token" not in rendered
+    assert "response-secret" not in rendered
+
+
+@pytest.mark.anyio
+async def test_session_connection_classifies_nested_timeout_and_records_leaf_types(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    timeout = httpx.ReadTimeout("slow", request=httpx.Request("POST", "https://ignored"))
+
+    @asynccontextmanager
+    async def failing_streamable_client(*_args, **_kwargs):
+        raise ExceptionGroup("connection failures", [RuntimeError("ignored"), timeout])
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(mcp_session, "streamable_http_client", failing_streamable_client)
+    factory = StreamableHttpAttendanceSessionFactory(
+        endpoint="https://attendance.example/mcp", timeout_seconds=10
+    )
+
+    with capture_logs() as events:
+        with pytest.raises(AttendanceMcpUnavailable):
+            async with factory.open(
+                access_token=SecretStr("downstream-token"),
+                correlation_id=UUID("11111111-1111-1111-1111-111111111111"),
+            ):
+                pass
+
+    failure = events[-1]
+    assert failure["input_metadata"] == {
+        "failure_class": "timeout",
+        "exception_types": ("ExceptionGroup", "RuntimeError", "ReadTimeout"),
+    }
+
+
+@pytest.mark.parametrize(
+    ("error", "phase", "expected"),
+    [
+        (socket.gaierror(1, "lookup failed"), "connect", "dns"),
+        (ssl.SSLError("handshake failed"), "connect", "tls"),
+        (httpx.ConnectError("refused"), "connect", "connect"),
+        (McpContractIncompatible(), "connect", "mcp_protocol"),
+        (RuntimeError("bad initialize response"), "initialize", "initialization"),
+    ],
+)
+def test_session_connection_classifies_safe_failure_categories(
+    error: BaseException, phase: str, expected: str
+) -> None:
+    assert mcp_session._connection_failure_class(error, phase) == expected

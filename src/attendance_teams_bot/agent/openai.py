@@ -121,19 +121,18 @@ DATE_RESOLUTION_RULES = "\n".join(
         "`start_date` and `end_date`. NEVER ask for clarification when a period can be mapped "
         "to explicit dates.",
         "",
-        '- **Full Period Expressions (e.g., "v januarju", "in January", "last month", "ta '
-        'teden")**:',
-        '  - **Full Month** (e.g., "v januarju", "in January"):',
-        "    -> Set `start_date` = First day of that month (e.g., `YYYY-01-01`).",
-        "    -> Set `end_date` = Last day of that month (e.g., `YYYY-01-31`).",
+        '- **Full Period Expressions (e.g., "v januarju", "in July", "last month", "ta teden")**:',
+        '  - **Full Month** (e.g., "in July", "v juliju", "julij"):',
+        "    -> Set `start_date` = First day of that month (e.g., `YYYY-07-01`).",
+        "    -> Set `end_date` = Last day of that month (e.g., `YYYY-07-31`).",
         "    -> Determine `YYYY` using the most recent non-future year relative to Reference Date "
         "(`{reference_date}`).",
         "  - **Full Week / Year**: Map to the exact first day and last day of that specific week "
         "or year.",
         "",
         '- **Open-Ended Expressions ("since", "from", "after", "od", "odkar")**:',
-        '  - Single boundary starting queries (e.g., "from January 30", "od 30. januarja", "od '
-        'včeraj"):',
+        '  - Single boundary starting queries (e.g., "from January 30", "od 30. januarja", '
+        '"od včeraj"):',
         "    -> Set `start_date` = Resolved start date.",
         "    -> Set `end_date` = Reference Date (`{reference_date}`).",
         "",
@@ -145,15 +144,15 @@ DATE_RESOLUTION_RULES = "\n".join(
         "- **Regional Date Parsing & Formats**:",
         "  - **Slovenian / European Standard (DD.MM or DD/MM)**: Numeric dates like `06.08`, "
         "`6/8`, or `6.8` MUST ALWAYS be interpreted as **Day.Month** (e.g., 6th of August).",
-        "  - **Slovenian Month Names**: Recognize Slovenian month names and declensions (e.g., "
-        "*januar*, *januarja*, *februar*, *februarja*, etc.).",
+        "  - **Slovenian & English Month Names**: Recognize month names and declensions in "
+        "both languages "
+        "(e.g., *july*, *julij*, *julija*, *januar*, *januarja*, etc.).",
         "  - **Omitted Years**: Assume the most recent non-future year relative to Reference Date "
         "(`{reference_date}`).",
         "",
         "- **Clarification Rule**: DO NOT ask for clarification for standard periods like "
-        '"v januarju" '
-        'or "from [Date]". Immediately proceed with tool execution using the resolved `start_date` '
-        "and `end_date`.",
+        '"in July", "v januarju", or "from [Date]". Immediately proceed with tool execution using '
+        "the resolved `start_date` and `end_date`.",
     )
 )
 
@@ -168,15 +167,15 @@ OUTPUT_FORMATTING_RULES = "\n".join(
 MODE_PRE_AUTH = "\n".join(
     (
         "## MODE: PRE-AUTH ROUTING (TOOL-FREE)",
-        "- **DO NOT CALL TOOLS OR INTERPRET DATES IN THIS MODE.",
-        "- If the user request requires attendance data, return JSON with `guidance_kind: "
-        '"attendance_needed"`.',
-        "- If no attendance data is needed, return a JSON response containing `markdown`, "
-        "`language`, "
-        "and a valid `guidance_kind` (`greeting`, `attendance_clarification`, or "
+        "- **STRICT ROUTING RULE**: DO NOT interpret dates, DO NOT evaluate date ranges, and "
+        "DO NOT ask the user for clarification in this mode.",
+        "- If the user's message is asking about attendance in ANY way (even if dates seem "
+        "vague or partial, e.g., 'in july', 'my attendance', 'last week'):",
+        '  -> You MUST set `guidance_kind: "attendance_needed"`. Leave `markdown` empty '
+        "or minimal.",
+        "- ONLY use other guidance kinds if the request is NOT about checking attendance "
+        "(e.g., a pure greeting like 'hello' -> `greeting`, or out-of-scope question -> "
         "`attendance_scope_guidance`).",
-        "- Do not answer unrelated knowledge questions; guide the user back to this bot's "
-        "attendance-only scope.",
     )
 )
 
@@ -195,22 +194,29 @@ MODE_POST_TOOL = "\n".join(
 def _system_prompt(request: ModelRequest) -> str:
     ref_date_str = request.reference_date.isoformat()
 
-    # Assemble core prompt blocks with string formatting
+    # Base prompt contains header and basic boundaries
     prompt_parts = [
         PROMPT_HEADER,
         CORE_ROLE_AND_BOUNDARIES.format(
             display_name=request.display_name, reference_date=ref_date_str
         ),
-        TOOL_USE_RULES,
-        DATE_RESOLUTION_RULES.format(reference_date=ref_date_str),
-        OUTPUT_FORMATTING_RULES,
     ]
 
-    # Append conditional execution mode
+    # Conditional assembly to prevent date/tool instructions from confusing Pre-Auth mode
     if request.pre_auth_guidance:
         prompt_parts.append(MODE_PRE_AUTH)
-    elif request.tool_results:
-        prompt_parts.append(MODE_POST_TOOL)
+    else:
+        # Full mode (Tool calling or Post-Tool)
+        prompt_parts.extend(
+            [
+                TOOL_USE_RULES,
+                DATE_RESOLUTION_RULES.format(reference_date=ref_date_str),
+                OUTPUT_FORMATTING_RULES,
+            ]
+        )
+
+        if request.tool_results:
+            prompt_parts.append(MODE_POST_TOOL)
 
     return "\n\n".join(prompt_parts)
 

@@ -158,17 +158,16 @@ class AttendanceAgent:
                     history=history,
                 )
             )
+            _LOGGER.debug("LLM turn", turn=turn)
             if isinstance(turn, FinalResponse):
-                if (
-                    turn.guidance_kind is None
-                    or turn.language not in {"en", "sl"}
-                    or not is_safe_model_markdown(turn.markdown)
-                ):
+                if turn.guidance_kind is None or turn.language not in {"en", "sl"}:
                     return self._unavailable_with_outcome(
                         language, display_name, correlation_id, "malformed_final"
                     )
                 if turn.guidance_kind == "attendance_needed":
                     return AttendanceNeeded(turn.language)
+                # Pre-auth guidance is rendered from a fixed, bot-owned presentation;
+                # model Markdown is deliberately not sent to Teams in this branch.
                 if turn.guidance_kind == "greeting":
                     intent: GuidanceIntent = "greeting"
                 elif turn.guidance_kind == "attendance_clarification":

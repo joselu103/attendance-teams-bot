@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import socket
+import ssl
 from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
@@ -12,6 +14,7 @@ import httpx
 import structlog
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
+from mcp.shared.exceptions import McpError
 from mcp.types import ToolAnnotations
 from pydantic import SecretStr
 
@@ -166,14 +169,17 @@ class StreamableHttpAttendanceSessionFactory:
             ATTENDANCE_MCP_CONTRACT_HEADER: ATTENDANCE_MCP_CONTRACT_MAJOR,
         }
         downstream_error: BaseException | None = None
+        response_metadata: dict[str, object] = {}
+        phase = "connect"
         try:
             async with AsyncExitStack() as stack:
-                http_client = self._create_http_client(headers)
+                http_client = self._create_http_client(headers, response_metadata)
                 stack.push_async_callback(http_client.aclose)
                 read_stream, write_stream, _ = await stack.enter_async_context(
                     streamable_http_client(self._endpoint, http_client=http_client)
                 )
                 session = await stack.enter_async_context(ClientSession(read_stream, write_stream))
+                phase = "initialize"
                 await session.initialize()
                 lifecycle.step_completed(step="initialized")
                 try:
@@ -185,7 +191,10 @@ class StreamableHttpAttendanceSessionFactory:
             if error is downstream_error:
                 lifecycle.succeed(step="closed")
                 raise
-            lifecycle.fail(error)
+            lifecycle.fail(
+                error,
+                input_metadata=_connection_failure_metadata(error, phase, response_metadata),
+            )
             if isinstance(error, McpContractIncompatible):
                 raise
             raise AttendanceMcpUnavailable from None
@@ -197,15 +206,21 @@ class StreamableHttpAttendanceSessionFactory:
             raise
         lifecycle.succeed(step="closed")
 
-    def _create_http_client(self, headers: dict[str, str]) -> httpx.AsyncClient:
+    def _create_http_client(
+        self, headers: dict[str, str], response_metadata: dict[str, object]
+    ) -> httpx.AsyncClient:
+        async def capture_response(response: httpx.Response) -> None:
+            response_metadata.update(_safe_http_response_metadata(response))
+
         if self._http_client_factory is not None:
             client = self._http_client_factory(headers)
+            client.event_hooks.setdefault("response", []).append(capture_response)
             client.event_hooks.setdefault("response", []).append(self._validate_contract_version)
             return client
         return httpx.AsyncClient(
             headers=headers,
             timeout=httpx.Timeout(self._timeout_seconds),
-            event_hooks={"response": [self._validate_contract_version]},
+            event_hooks={"response": [capture_response, self._validate_contract_version]},
         )
 
     async def _validate_contract_version(self, response: httpx.Response) -> None:
@@ -213,6 +228,84 @@ class StreamableHttpAttendanceSessionFactory:
         match = _VERSION.fullmatch(version or "")
         if match is None or match.group("major") != ATTENDANCE_MCP_CONTRACT_MAJOR:
             raise McpContractIncompatible
+
+
+def _connection_failure_metadata(
+    error: BaseException, phase: str, response_metadata: Mapping[str, object]
+) -> dict[str, object]:
+    types = tuple(_exception_types(error))
+    metadata: dict[str, object] = {
+        "failure_class": _connection_failure_class(error, phase),
+        "exception_types": types,
+    }
+    metadata.update(response_metadata)
+    response = _http_response_from_error(error)
+    if response is not None:
+        metadata.update(_safe_http_response_metadata(response))
+    return metadata
+
+
+def _connection_failure_class(error: BaseException, phase: str) -> str:
+    errors = tuple(_walk_exceptions(error))
+    if any(isinstance(item, (httpx.TimeoutException, TimeoutError)) for item in errors):
+        return "timeout"
+    if any(isinstance(item, socket.gaierror) for item in errors):
+        return "dns"
+    if any(isinstance(item, ssl.SSLError) for item in errors):
+        return "tls"
+    if any(isinstance(item, httpx.HTTPStatusError) for item in errors):
+        return "http_status"
+    if any(isinstance(item, httpx.ConnectError) for item in errors):
+        return "connect"
+    if any(
+        isinstance(item, (McpError, McpContractIncompatible, httpx.ProtocolError))
+        for item in errors
+    ):
+        return "mcp_protocol"
+    if phase == "initialize":
+        return "initialization"
+    return "connection"
+
+
+def _exception_types(error: BaseException) -> list[str]:
+    return list(dict.fromkeys(type(item).__name__ for item in _walk_exceptions(error)))
+
+
+def _walk_exceptions(error: BaseException) -> list[BaseException]:
+    errors = [error]
+    if isinstance(error, BaseExceptionGroup):
+        for nested in error.exceptions:
+            errors.extend(_walk_exceptions(nested))
+    if error.__cause__ is not None:
+        errors.extend(_walk_exceptions(error.__cause__))
+    elif error.__context__ is not None:
+        errors.extend(_walk_exceptions(error.__context__))
+    return errors
+
+
+def _http_response_from_error(error: BaseException) -> httpx.Response | None:
+    for item in _walk_exceptions(error):
+        if isinstance(item, httpx.HTTPStatusError):
+            return item.response
+    return None
+
+
+def _safe_http_response_metadata(response: httpx.Response) -> dict[str, object]:
+    content_type = response.headers.get("content-type", "").split(";", 1)[0].lower()
+    try:
+        method = response.request.method
+    except RuntimeError:
+        method = "unavailable"
+    return {
+        "http_method": (
+            method if method in {"DELETE", "GET", "HEAD", "OPTIONS", "POST"} else "other"
+        ),
+        "http_status_code": response.status_code,
+        "http_response_content_type": (
+            content_type if content_type in {"application/json", "text/event-stream"} else "other"
+        ),
+        "http_response_has_content_length": "content-length" in response.headers,
+    }
 
 
 def _tool_result_text(content: Sequence[object]) -> str:
