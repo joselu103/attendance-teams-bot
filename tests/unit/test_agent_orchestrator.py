@@ -15,7 +15,7 @@ from attendance_teams_bot.agent.language_model import (
     ToolCall,
 )
 from attendance_teams_bot.agent.mcp_catalog import DiscoveredMcpTool
-from attendance_teams_bot.agent.orchestrator import AttendanceAgent
+from attendance_teams_bot.agent.orchestrator import AttendanceAgent, AttendanceNeeded
 from attendance_teams_bot.agent.rendering import UNAVAILABLE_REPLY
 from attendance_teams_bot.mcp.client import AttendanceToolFailure
 from attendance_teams_bot.mcp.contracts import (
@@ -202,12 +202,36 @@ async def test_pre_auth_model_guidance_is_a_code_rendered_fixed_reply() -> None:
 
 
 @pytest.mark.anyio
+async def test_pre_auth_scope_guidance_accepts_empty_markdown() -> None:
+    subject, _, session = agent([FinalResponse("", "en", "attendance_scope_guidance")])
+
+    response = await subject.handle(message="weather?", mcp_access_token=SecretStr("token"))
+
+    assert response.text == "I can show your attendance events for a specific date range."
+    assert not session.calls
+
+
+@pytest.mark.anyio
+async def test_pre_auth_attendance_needed_accepts_empty_sentinel_markdown() -> None:
+    subject, model, session = agent([FinalResponse("", "en", "attendance_needed")])
+
+    decision = await subject.pre_auth_decision(message="Show my attendance")
+
+    assert decision == AttendanceNeeded("en")
+    assert len(model.requests) == 1
+    assert not session.calls
+
+
+@pytest.mark.anyio
 async def test_unavailable_greeting_failure_outcomes_are_classified_without_sensitive_values(
     monkeypatch,
 ) -> None:
     events: list[tuple[str, dict[str, object]]] = []
 
     class Logger:
+        def info(self, event: str, **fields: object) -> None:
+            del event, fields
+
         def warning(self, event: str, **fields: object) -> None:
             events.append((event, fields))
 

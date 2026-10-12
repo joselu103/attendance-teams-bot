@@ -153,6 +153,12 @@ _LIFECYCLE_METADATA_KEYS: Final = frozenset(
         "argument_count",
         "outcome",
         "error_code",
+        "failure_class",
+        "exception_types",
+        "http_method",
+        "http_status_code",
+        "http_response_content_type",
+        "http_response_has_content_length",
     }
 )
 
