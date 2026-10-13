@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable, Mapping
 from contextlib import AbstractAsyncContextManager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime
 from typing import Protocol
 from uuid import UUID
@@ -19,13 +19,18 @@ from attendance_teams_bot.agent.language_model import (
     FinalResponse,
     LanguageModel,
     LanguageModelUnavailable,
-    ModelRequest,
-    PresentationPlan,
     ReplyLanguage,
     ToolCall,
     ToolResultView,
 )
 from attendance_teams_bot.agent.mcp_catalog import DiscoveredMcpTool, ToolPolicy, admit_mcp_catalog
+from attendance_teams_bot.agent.model_contract import (
+    delivery_memory,
+    guidance_memory,
+    pre_auth_request,
+    presentation_request,
+    selection_request,
+)
 from attendance_teams_bot.agent.rendering import (
     AttendanceResultPresenter,
     CurrentAttendancePresentation,
@@ -65,29 +70,6 @@ _CURRENT_STATUS_ORDER = ("office", "remote", "customer_site", "break", "absence"
 _LOGGER = structlog.get_logger(__name__)
 
 
-def _guidance_memory(intent: GuidanceIntent, language: ReplyLanguage) -> str:
-    english = {
-        "greeting": "I can help with attendance.",
-        "date_ambiguous": "Please clarify the attendance date range you want to view.",
-        "unsupported": "I can help with attendance requests.",
-    }
-    slovene = {
-        "greeting": "Pomagam lahko pri prisotnosti.",
-        "date_ambiguous": "Navedite obdobje prisotnosti.",
-        "unsupported": "Pomagam lahko pri zahtevah glede prisotnosti.",
-    }
-    return (slovene if language == "sl" else english)[intent]
-
-
-def _plan_memory(plan: PresentationPlan, has_continuation: bool) -> str:
-    del plan
-    return (
-        "Attendance response delivered. A history continuation is available."
-        if has_continuation
-        else "Attendance response delivered."
-    )
-
-
 class AuthenticatedMcpSession(Protocol):
     async def list_tools(self) -> tuple[DiscoveredMcpTool, ...]: ...
     async def call_tool(
@@ -123,17 +105,22 @@ class AttendanceAgent:
         display_name: str | None = None,
         history: tuple[ChatMessage, ...] = (),
     ) -> BotResponse:
-        decision = await self.pre_auth_decision(
-            message=message, display_name=display_name, history=history
+        reference_date = self.reference_date_factory()
+        decision = await self._pre_auth_decision(
+            message=message,
+            display_name=display_name,
+            history=history,
+            reference_date=reference_date,
         )
         if isinstance(decision, BotResponse):
             return decision
-        return await self.handle_selected(
+        return await self._handle_authenticated(
             message=message,
             mcp_access_token=mcp_access_token,
             selection=decision,
             display_name=display_name,
             history=history,
+            reference_date=reference_date,
         )
 
     async def pre_auth_decision(
@@ -144,21 +131,28 @@ class AttendanceAgent:
         history: tuple[ChatMessage, ...] = (),
     ) -> BotResponse | AttendanceNeeded:
         """Route without credentials using no tools and no attendance capability metadata."""
+        return await self._pre_auth_decision(
+            message=message,
+            display_name=display_name,
+            history=history,
+            reference_date=self.reference_date_factory(),
+        )
+
+    async def _pre_auth_decision(
+        self,
+        *,
+        message: str,
+        display_name: str | None,
+        history: tuple[ChatMessage, ...],
+        reference_date: date,
+    ) -> BotResponse | AttendanceNeeded:
         language: ReplyLanguage = "en"
         correlation_id = self.correlation_id_factory()
         try:
             turn = await self.language_model.complete(
-                ModelRequest(
-                    message,
-                    self.reference_date_factory(),
-                    "Europe/Ljubljana",
-                    (),
-                    display_name=display_name,
-                    pre_auth_guidance=True,
-                    history=history,
-                )
+                pre_auth_request(message=message, reference_date=reference_date, history=history)
             )
-            _LOGGER.debug("LLM turn", turn=turn)
+            _LOGGER.info("PRE-AUTH LLM RESPONSE", turn=turn)
             if isinstance(turn, FinalResponse):
                 if turn.guidance_kind is None or turn.language not in {"en", "sl"}:
                     return self._unavailable_with_outcome(
@@ -178,7 +172,7 @@ class AttendanceAgent:
                     GuidancePresentation(intent, turn.language, display_name)
                 )
                 return BotResponse(
-                    response.text, response.messages, _guidance_memory(intent, turn.language)
+                    response.text, response.messages, guidance_memory(intent, turn.language)
                 )
             return self._unavailable_with_outcome(
                 language, display_name, correlation_id, "pre_auth_tool_call"
@@ -210,6 +204,7 @@ class AttendanceAgent:
             selection=selection,
             display_name=display_name,
             history=history,
+            reference_date=self.reference_date_factory(),
         )
 
     async def _handle_authenticated(
@@ -220,6 +215,7 @@ class AttendanceAgent:
         selection: AttendanceNeeded,
         display_name: str | None = None,
         history: tuple[ChatMessage, ...] = (),
+        reference_date: date,
     ) -> BotResponse:
         language = selection.language
         correlation_id = self.correlation_id_factory()
@@ -233,14 +229,15 @@ class AttendanceAgent:
                         language, display_name, correlation_id, "catalog_rejected"
                     )
                 turn = await self.language_model.complete(
-                    ModelRequest(
-                        message,
-                        self.reference_date_factory(),
-                        "Europe/Ljubljana",
-                        catalog.model_tools,
+                    selection_request(
+                        message=message,
+                        reference_date=reference_date,
                         history=history,
+                        tools=catalog.model_tools,
                     )
                 )
+                _LOGGER.info("AUTH LLM RESPONSE", turn=turn)
+
                 if not isinstance(turn, ToolCall):
                     return self._unavailable_with_outcome(
                         language, display_name, correlation_id, "missing_tool_selection"
@@ -290,13 +287,13 @@ class AttendanceAgent:
                         status_names, language, display_name, None
                     )
                 final = await self.language_model.complete(
-                    ModelRequest(
-                        message,
-                        self.reference_date_factory(),
-                        "Europe/Ljubljana",
-                        (),
-                        (ToolResultView("execution", policy.definition.name, projection),),
+                    presentation_request(
+                        message=message,
+                        reference_date=reference_date,
                         history=history,
+                        tool_results=(
+                            ToolResultView("execution", policy.definition.name, projection),
+                        ),
                     )
                 )
                 if (
@@ -310,27 +307,13 @@ class AttendanceAgent:
                     return self._unavailable_with_outcome(
                         language, display_name, correlation_id, "malformed_final"
                     )
-                if isinstance(rendering, SafeHistoryPresentation):
-                    rendering = SafeHistoryPresentation(
-                        rendering.events,
-                        language,
-                        display_name,
-                        final.presentation,
-                        rendering.start_date,
-                        rendering.end_date,
-                        rendering.has_more,
-                        rendering.page_number,
-                    )
-                else:
-                    rendering = CurrentAttendancePresentation(
-                        rendering.status_names, language, display_name, final.presentation
-                    )
+                rendering = replace(rendering, plan=final.presentation)
                 response = self.presenter.present(rendering)
                 continuation = self._continuation(result, language, policy.kind, 1)
                 return BotResponse(
                     response.text,
                     response.messages,
-                    _plan_memory(final.presentation, continuation is not None),
+                    delivery_memory(continuation is not None),
                     attachments=response.attachments,
                     continuation=continuation,
                     continuation_complete=isinstance(rendering, SafeHistoryPresentation),
@@ -415,9 +398,7 @@ class AttendanceAgent:
                 return BotResponse(
                     response.text,
                     response.messages,
-                    "Attendance response delivered. A history continuation is available."
-                    if continuation is not None
-                    else "Attendance response delivered.",
+                    delivery_memory(continuation is not None),
                     continuation=continuation,
                     continuation_complete=True,
                 )

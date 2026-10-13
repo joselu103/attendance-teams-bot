@@ -9,6 +9,7 @@ from pydantic import SecretStr
 from attendance_teams_bot.agent.contracts import SelectedAttendanceAction
 from attendance_teams_bot.agent.language_model import (
     FinalResponse,
+    ModelMode,
     ModelRequest,
     PresentationPlan,
     ToolCall,
@@ -78,7 +79,11 @@ class Model:
 
     async def complete(self, request: ModelRequest) -> ToolCall | FinalResponse:
         self.requests.append(request)
-        if request.pre_auth_guidance and self.turns and isinstance(self.turns[0], ToolCall):
+        if (
+            request.mode is ModelMode.PRE_AUTH
+            and self.turns
+            and isinstance(self.turns[0], ToolCall)
+        ):
             language = self.turns[0].arguments.get("reply_language", "en")
             assert language in {"en", "sl"}
             return FinalResponse("attendance", language, "attendance_needed")
@@ -234,8 +239,12 @@ async def test_authenticated_model_calls_share_one_history_snapshot_and_current_
     )
 
     assert len(model.requests) == 3
-    assert all(request.history == history for request in model.requests)
-    assert [request.user_message for request in model.requests] == [
+    assert all(
+        [(message.role, message.content) for message in request.messages[1:3]]
+        == [(message.role, message.content) for message in history]
+        for request in model.requests
+    )
+    assert [request.messages[-1].content for request in model.requests] == [
         "show my attendance",
         "show my attendance",
         "show my attendance",

@@ -1,6 +1,8 @@
 # Module Map
 
-- `agent/`: LLM orchestration and tool-selection policy.
+- `agent/`: LLM orchestration and tool-selection policy. `model_contract.py` owns
+  prepared provider-neutral prompts, explicit turn modes, strict response schemas,
+  and response validation; provider adapters only translate that contract.
 - `auth/`: Entra/Teams identity and token handling.
 - `mcp/`: authenticated remote MCP client.
 - `teams/`: Teams activity adapter and response rendering.

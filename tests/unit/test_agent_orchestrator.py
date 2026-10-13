@@ -10,6 +10,7 @@ import attendance_teams_bot.agent.orchestrator as orchestrator
 from attendance_teams_bot.agent.language_model import (
     FinalResponse,
     LanguageModelUnavailable,
+    ModelMode,
     ModelRequest,
     PresentationPlan,
     ToolCall,
@@ -33,7 +34,11 @@ class FakeModel:
 
     async def complete(self, request: ModelRequest) -> ToolCall | FinalResponse:
         self.requests.append(request)
-        if request.pre_auth_guidance and self.turns and isinstance(self.turns[0], ToolCall):
+        if (
+            request.mode is ModelMode.PRE_AUTH
+            and self.turns
+            and isinstance(self.turns[0], ToolCall)
+        ):
             language = self.turns[0].arguments.get("reply_language", "en")
             assert language in {"en", "sl"}
             return FinalResponse("attendance", language, "attendance_needed")
@@ -220,6 +225,49 @@ async def test_pre_auth_attendance_needed_accepts_empty_sentinel_markdown() -> N
     assert decision == AttendanceNeeded("en")
     assert len(model.requests) == 1
     assert not session.calls
+
+
+@pytest.mark.anyio
+async def test_pre_auth_tool_call_is_rejected_without_authentication() -> None:
+    @dataclass
+    class PreAuthToolModel:
+        async def complete(self, request: ModelRequest) -> ToolCall:
+            assert request.mode is ModelMode.PRE_AUTH
+            return call()
+
+    session = FakeSession()
+    subject = AttendanceAgent(
+        PreAuthToolModel(),
+        Factory(session),
+        correlation_id_factory=lambda: UUID(int=1),
+        reference_date_factory=lambda: date(2026, 8, 15),
+    )
+
+    response = await subject.handle(message="show attendance", mcp_access_token=SecretStr("token"))
+
+    assert response.text == UNAVAILABLE_REPLY
+    assert not session.calls
+
+
+@pytest.mark.anyio
+async def test_handle_uses_one_reference_date_for_every_model_turn() -> None:
+    dates = iter((date(2026, 8, 15), date(2026, 8, 16)))
+    subject, model, _ = agent(
+        [
+            call(),
+            FinalResponse("ignored", "sl", presentation=PresentationPlan("Prisotnost", None)),
+        ]
+    )
+    subject = AttendanceAgent(
+        model,
+        subject.mcp_session_factory,
+        correlation_id_factory=lambda: UUID(int=1),
+        reference_date_factory=lambda: next(dates),
+    )
+
+    await subject.handle(message="Pokaži", mcp_access_token=SecretStr("token"))
+
+    assert [request.reference_date for request in model.requests] == [date(2026, 8, 15)] * 3
 
 
 @pytest.mark.anyio
@@ -429,7 +477,7 @@ async def test_clear_relative_period_resolves_from_ljubljana_reference_and_displ
     )
     response = await subject.handle(message="last month", mcp_access_token=SecretStr("token"))
     assert model.requests[0].reference_date == date(2026, 8, 15)
-    assert model.requests[0].timezone == "Europe/Ljubljana"
+    assert "Timezone: `Europe/Ljubljana`" in model.requests[0].messages[0].content
     assert (
         session.calls[0]["start_date"] == "2026-07-01"
         and session.calls[0]["end_date"] == "2026-07-31"
