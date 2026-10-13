@@ -173,6 +173,29 @@ async def test_failure_returns_localized_safe_reply_without_additional_model_or_
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("separator", [".", "/", "-"])
+async def test_numeric_day_month_period_executes_model_resolved_dates(separator: str) -> None:
+    subject, _, session = agent(
+        [
+            ToolCall(
+                "numeric-period",
+                SELF_ATTENDANCE_TOOL,
+                {"start_date": "2026-01-10", "end_date": "2026-01-15"},
+            ),
+            FinalResponse("ignored", "en", presentation=PresentationPlan("Attendance", None)),
+        ]
+    )
+    response = await subject.handle(
+        message=f"What is my attendance from 10{separator}01 until 15{separator}01",
+        mcp_access_token=SecretStr("token"),
+    )
+    assert len(session.calls) == 1
+    assert session.calls[0]["start_date"] == "2026-01-10"
+    assert session.calls[0]["end_date"] == "2026-01-15"
+    assert "2026-01-10" in response.text and "2026-01-15" in response.text
+
+
+@pytest.mark.anyio
 async def test_ambiguous_numeric_date_is_a_pre_auth_model_clarification() -> None:
     subject, model, session = agent(
         [

@@ -14,7 +14,6 @@ from pydantic import SecretStr
 
 from attendance_teams_bot.agent.continuation import HistoryContinuation
 from attendance_teams_bot.agent.contracts import AttendanceNeeded, BotResponse
-from attendance_teams_bot.agent.date_resolver import has_ambiguous_numeric_date
 from attendance_teams_bot.agent.language_model import (
     FinalResponse,
     LanguageModel,
@@ -256,10 +255,6 @@ class AttendanceAgent:
                         InvalidRequestPresentation(language, display_name)
                     )
                 arguments, _ = validated
-                if policy.kind in {"self", "other"} and has_ambiguous_numeric_date(message):
-                    return self.presenter.present(
-                        GuidancePresentation("date_ambiguous", language, display_name)
-                    )
                 result = await self._execute(session, policy, arguments)
                 if isinstance(result, EmployeeSuggestionPage):
                     return self.presenter.present(
