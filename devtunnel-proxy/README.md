@@ -8,13 +8,13 @@ image or editing its Container App configuration again.
 ## Start the local bot and its separate tunnel
 
 Keep the existing MCP tunnel on port 8000 unchanged. In a second terminal,
-start the Teams bot locally on port 3978, then host a separate tunnel:
+start the Teams bot locally on port 8080, then host a separate tunnel:
 
 ```bash
-devtunnel host -p 3978 --protocol http --allow-anonymous
+devtunnel host -p 8080 --protocol http --allow-anonymous
 ```
 
-Copy the resulting `https://…-3978.…devtunnels.ms` URL. The proxy receives it
+Copy the resulting `https://…-8080.…devtunnels.ms` URL. The proxy receives it
 through the `DEV_TUNNEL_URL` environment variable; use the URL without a
 trailing slash.
 
@@ -31,7 +31,7 @@ devtunnel host attendance-teams-bot-local.eun1
 ```bash
 docker build -t devtunnel-proxy:local devtunnel-proxy
 docker run --rm -p 8080:8080 \
-  -e DEV_TUNNEL_URL=https://your-tunnel-3978.example.devtunnels.ms \
+  -e DEV_TUNNEL_URL=https://your-tunnel-8080.example.devtunnels.ms \
   devtunnel-proxy:local
 ```
 
