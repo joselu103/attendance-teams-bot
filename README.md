@@ -148,9 +148,14 @@ OpenAI configuration fails startup rather than falling back to an attendance rou
 ### Bounded language-model and MCP policy
 
 The provider-neutral asynchronous `LanguageModel` boundary runs a turn-local,
-bounded agent loop; OpenAI is the first adapter. Replacing OpenAI means
-implementing `LanguageModel` and changing provider composition only—not Teams
-handling, OBO, MCP transport, or attendance policy.
+bounded agent loop. The Teams-owned `agent/model_contract.py` prepares the
+messages and strict Pydantic JSON schema for each explicit `pre_auth`,
+`selection`, or `presentation` mode; incompatible tools and result views fail
+before provider transport. OpenAI is the first adapter and only translates that
+prepared request and response. Replacing it means implementing `LanguageModel`
+and changing provider composition only—not Teams handling, OBO, MCP transport,
+attendance policy, prompts, or response validation. Untrusted display names
+remain presentation data and never enter system instructions.
 
 For each accepted personal-chat turn, the bot opens one requester-authenticated
 MCP session with token B and discovers the catalog once. It admits only the
@@ -346,7 +351,8 @@ only `CLIENTSECRET` from AWS Secrets Manager; never bake it into the image.
 
 ## Layout
 
-- `src/attendance_teams_bot/agent/`: provider-neutral model contract, OpenAI adapter, and one-shot policy.
+- `src/attendance_teams_bot/agent/`: Teams-owned model contract and prompt policy,
+  provider-neutral request types, OpenAI transport adapter, and one-shot policy.
 - `src/attendance_teams_bot/mcp/`: authenticated Streamable HTTP MCP session and contracts.
 - `src/attendance_teams_bot/local.py`: safe handler used before external adapters exist.
 - `src/attendance_teams_bot/composition.py`: local runtime dependency wiring.
