@@ -43,11 +43,11 @@ def test_settings_default_to_local_mode_without_a_dotenv_file(tmp_path, monkeypa
 def test_settings_reject_teams_mode_without_bot_service_configuration(
     tmp_path, monkeypatch
 ) -> None:
-    (tmp_path / ".env").write_text("BOT_RUNTIME_MODE=teams", encoding="utf-8")
+    (tmp_path / ".env").write_text("BOT_RUNTIME_MODE=teams-only", encoding="utf-8")
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("BOT_RUNTIME_MODE", "teams")
+    monkeypatch.setenv("BOT_RUNTIME_MODE", "teams-only")
 
-    with pytest.raises(ValidationError, match="requires Bot Service configuration"):
+    with pytest.raises(ValidationError, match="require Bot Service configuration"):
         Settings()
 
 
@@ -59,10 +59,10 @@ def test_settings_loads_complete_teams_configuration_from_one_dotenv(tmp_path, m
         "\n".join(
             [
                 "MCP_ENDPOINT=https://attendance-mcp.example.test/mcp",
-                "BOT_RUNTIME_MODE=teams",
-                f"CONNECTIONS__SERVICE_CONNECTION__SETTINGS__CLIENTID={client_id}",
-                f"CONNECTIONS__SERVICE_CONNECTION__SETTINGS__TENANTID={tenant_id}",
-                "CONNECTIONS__SERVICE_CONNECTION__SETTINGS__CLIENTSECRET=test-only-value",
+                "BOT_RUNTIME_MODE=teams-only",
+                f"BOT_APP_ID={client_id}",
+                f"BOT_TENANT_ID={tenant_id}",
+                "BOT_CLIENT_SECRET=test-only-value",
             ]
         ),
         encoding="utf-8",
@@ -72,7 +72,7 @@ def test_settings_loads_complete_teams_configuration_from_one_dotenv(tmp_path, m
 
     settings = Settings()
 
-    assert settings.mode is RuntimeMode.TEAMS
+    assert settings.mode is RuntimeMode.TEAMS_ONLY
     assert settings.teams_connection is not None
     assert settings.teams_connection.client_id == client_id
     assert settings.teams_connection.tenant_id == tenant_id
@@ -175,38 +175,44 @@ def test_database_url_rejects_malformed_network_parts_without_echoing_input(
     assert database_url not in str(error.value)
 
 
-def test_disabled_flag_suppresses_complete_attendance_configuration(monkeypatch) -> None:
-    monkeypatch.setenv("BOT_RUNTIME_MODE", "teams")
-    monkeypatch.setenv("ATTENDANCE_INTEGRATION_ENABLED", "false")
+def test_teams_only_mode_suppresses_complete_attendance_configuration(monkeypatch) -> None:
+    monkeypatch.setenv("BOT_RUNTIME_MODE", "teams-only")
     monkeypatch.setenv("MCP_ENDPOINT", "https://attendance-mcp.example.test/mcp")
-    monkeypatch.setenv("MCP_SCOPE", "api://11111111-1111-1111-1111-111111111111/attendance.access")
+    monkeypatch.setenv(
+        "ATTENDANCE_API_DELEGATED_SCOPE",
+        "api://11111111-1111-1111-1111-111111111111/attendance.access",
+    )
     monkeypatch.setenv("TEAMS_SSO_OAUTH_CONNECTION_NAME", "AttendanceTeamsSso")
-    monkeypatch.setenv("CONNECTIONS__SERVICE_CONNECTION__SETTINGS__CLIENTID", str(uuid4()))
-    monkeypatch.setenv("CONNECTIONS__SERVICE_CONNECTION__SETTINGS__TENANTID", str(uuid4()))
-    monkeypatch.setenv("CONNECTIONS__SERVICE_CONNECTION__SETTINGS__CLIENTSECRET", "test-only-value")
+    monkeypatch.setenv("BOT_APP_ID", str(uuid4()))
+    monkeypatch.setenv("BOT_TENANT_ID", str(uuid4()))
+    monkeypatch.setenv("BOT_CLIENT_SECRET", "test-only-value")
 
     assert Settings(_env_file=None).attendance_integration is None
 
 
-def test_enabled_attendance_integration_requires_teams_runtime(monkeypatch) -> None:
-    monkeypatch.setenv("BOT_RUNTIME_MODE", "local")
-    monkeypatch.setenv("ATTENDANCE_INTEGRATION_ENABLED", "true")
+def test_attendance_mode_requires_bot_service_configuration(monkeypatch) -> None:
+    monkeypatch.setenv("BOT_RUNTIME_MODE", "attendance")
     monkeypatch.setenv("MCP_ENDPOINT", "https://attendance-mcp.example.test/mcp")
-    monkeypatch.setenv("MCP_SCOPE", "api://11111111-1111-1111-1111-111111111111/attendance.access")
+    monkeypatch.setenv(
+        "ATTENDANCE_API_DELEGATED_SCOPE",
+        "api://11111111-1111-1111-1111-111111111111/attendance.access",
+    )
     monkeypatch.setenv("TEAMS_SSO_OAUTH_CONNECTION_NAME", "AttendanceTeamsSso")
 
-    with pytest.raises(ValidationError, match="requires teams runtime mode"):
+    with pytest.raises(ValidationError, match="require Bot Service configuration"):
         Settings(_env_file=None)
 
 
-def test_enabled_attendance_integration_requires_openai_configuration(monkeypatch) -> None:
-    monkeypatch.setenv("ATTENDANCE_INTEGRATION_ENABLED", "true")
-    monkeypatch.setenv("BOT_RUNTIME_MODE", "teams")
-    monkeypatch.setenv("CONNECTIONS__SERVICE_CONNECTION__SETTINGS__CLIENTID", str(uuid4()))
-    monkeypatch.setenv("CONNECTIONS__SERVICE_CONNECTION__SETTINGS__TENANTID", str(uuid4()))
-    monkeypatch.setenv("CONNECTIONS__SERVICE_CONNECTION__SETTINGS__CLIENTSECRET", "test-only-value")
+def test_attendance_mode_requires_openai_configuration(monkeypatch) -> None:
+    monkeypatch.setenv("BOT_RUNTIME_MODE", "attendance")
+    monkeypatch.setenv("BOT_APP_ID", str(uuid4()))
+    monkeypatch.setenv("BOT_TENANT_ID", str(uuid4()))
+    monkeypatch.setenv("BOT_CLIENT_SECRET", "test-only-value")
     monkeypatch.setenv("MCP_ENDPOINT", "https://attendance-mcp.example.test/mcp")
-    monkeypatch.setenv("MCP_SCOPE", "api://11111111-1111-1111-1111-111111111111/attendance.access")
+    monkeypatch.setenv(
+        "ATTENDANCE_API_DELEGATED_SCOPE",
+        "api://11111111-1111-1111-1111-111111111111/attendance.access",
+    )
     monkeypatch.setenv("TEAMS_SSO_OAUTH_CONNECTION_NAME", "AttendanceTeamsSso")
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_MODEL", raising=False)
@@ -216,13 +222,15 @@ def test_enabled_attendance_integration_requires_openai_configuration(monkeypatc
 
 
 def test_settings_build_complete_attendance_integration(monkeypatch) -> None:
-    monkeypatch.setenv("ATTENDANCE_INTEGRATION_ENABLED", "true")
-    monkeypatch.setenv("BOT_RUNTIME_MODE", "teams")
-    monkeypatch.setenv("CONNECTIONS__SERVICE_CONNECTION__SETTINGS__CLIENTID", str(uuid4()))
-    monkeypatch.setenv("CONNECTIONS__SERVICE_CONNECTION__SETTINGS__TENANTID", str(uuid4()))
-    monkeypatch.setenv("CONNECTIONS__SERVICE_CONNECTION__SETTINGS__CLIENTSECRET", "test-only-value")
+    monkeypatch.setenv("BOT_RUNTIME_MODE", "attendance")
+    monkeypatch.setenv("BOT_APP_ID", str(uuid4()))
+    monkeypatch.setenv("BOT_TENANT_ID", str(uuid4()))
+    monkeypatch.setenv("BOT_CLIENT_SECRET", "test-only-value")
     monkeypatch.setenv("MCP_ENDPOINT", "https://attendance-mcp.example.test/mcp")
-    monkeypatch.setenv("MCP_SCOPE", "api://11111111-1111-1111-1111-111111111111/attendance.access")
+    monkeypatch.setenv(
+        "ATTENDANCE_API_DELEGATED_SCOPE",
+        "api://11111111-1111-1111-1111-111111111111/attendance.access",
+    )
     monkeypatch.setenv("TEAMS_SSO_OAUTH_CONNECTION_NAME", "AttendanceTeamsSso")
     monkeypatch.setenv("OPENAI_API_KEY", "test-only-openai-key")
     monkeypatch.setenv("OPENAI_MODEL", "gpt-5-mini")

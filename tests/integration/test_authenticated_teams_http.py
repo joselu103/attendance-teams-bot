@@ -28,9 +28,9 @@ def anyio_backend() -> str:
 async def test_bot_service_only_endpoint_rejects_unsigned_requests(
     monkeypatch,
 ) -> None:
-    monkeypatch.setenv("CONNECTIONS__SERVICE_CONNECTION__SETTINGS__CLIENTID", str(uuid4()))
-    monkeypatch.setenv("CONNECTIONS__SERVICE_CONNECTION__SETTINGS__TENANTID", str(uuid4()))
-    monkeypatch.setenv("CONNECTIONS__SERVICE_CONNECTION__SETTINGS__CLIENTSECRET", token_urlsafe())
+    monkeypatch.setenv("BOT_APP_ID", str(uuid4()))
+    monkeypatch.setenv("BOT_TENANT_ID", str(uuid4()))
+    monkeypatch.setenv("BOT_CLIENT_SECRET", token_urlsafe())
     connection = Settings().teams_connection
     assert connection is not None
     app = create_bot_service_only_http_app(
@@ -51,9 +51,9 @@ async def test_bot_service_only_endpoint_rejects_unsigned_requests(
 async def test_bot_service_only_endpoint_records_a_safe_callback_lifecycle(
     monkeypatch,
 ) -> None:
-    monkeypatch.setenv("CONNECTIONS__SERVICE_CONNECTION__SETTINGS__CLIENTID", str(uuid4()))
-    monkeypatch.setenv("CONNECTIONS__SERVICE_CONNECTION__SETTINGS__TENANTID", str(uuid4()))
-    monkeypatch.setenv("CONNECTIONS__SERVICE_CONNECTION__SETTINGS__CLIENTSECRET", token_urlsafe())
+    monkeypatch.setenv("BOT_APP_ID", str(uuid4()))
+    monkeypatch.setenv("BOT_TENANT_ID", str(uuid4()))
+    monkeypatch.setenv("BOT_CLIENT_SECRET", token_urlsafe())
     connection = Settings().teams_connection
     assert connection is not None
     app = create_bot_service_only_http_app(
@@ -85,9 +85,9 @@ async def test_bot_service_only_endpoint_records_a_safe_callback_lifecycle(
 
 @pytest.mark.anyio
 async def test_bot_service_only_endpoint_exposes_a_health_probe(monkeypatch) -> None:
-    monkeypatch.setenv("CONNECTIONS__SERVICE_CONNECTION__SETTINGS__CLIENTID", str(uuid4()))
-    monkeypatch.setenv("CONNECTIONS__SERVICE_CONNECTION__SETTINGS__TENANTID", str(uuid4()))
-    monkeypatch.setenv("CONNECTIONS__SERVICE_CONNECTION__SETTINGS__CLIENTSECRET", token_urlsafe())
+    monkeypatch.setenv("BOT_APP_ID", str(uuid4()))
+    monkeypatch.setenv("BOT_TENANT_ID", str(uuid4()))
+    monkeypatch.setenv("BOT_CLIENT_SECRET", token_urlsafe())
     connection = Settings().teams_connection
     assert connection is not None
     app = create_bot_service_only_http_app(
@@ -108,9 +108,9 @@ async def test_bot_service_only_endpoint_exposes_a_health_probe(monkeypatch) -> 
 async def test_enabled_attendance_endpoint_exposes_health_and_rejects_unsigned_requests(
     monkeypatch,
 ) -> None:
-    monkeypatch.setenv("CONNECTIONS__SERVICE_CONNECTION__SETTINGS__CLIENTID", str(uuid4()))
-    monkeypatch.setenv("CONNECTIONS__SERVICE_CONNECTION__SETTINGS__TENANTID", str(uuid4()))
-    monkeypatch.setenv("CONNECTIONS__SERVICE_CONNECTION__SETTINGS__CLIENTSECRET", token_urlsafe())
+    monkeypatch.setenv("BOT_APP_ID", str(uuid4()))
+    monkeypatch.setenv("BOT_TENANT_ID", str(uuid4()))
+    monkeypatch.setenv("BOT_CLIENT_SECRET", token_urlsafe())
     connection = Settings().teams_connection
     assert connection is not None
     app = create_attendance_teams_http_app(

@@ -14,7 +14,6 @@ _LOGGER.log(
     logging.INFO,
     "application_started",
     runtime_mode=settings.mode.value,
-    attendance_integration_enabled=settings.attendance_integration_enabled,
     log_environment=settings.log_environment,
     app_version=settings.app_version,
 )

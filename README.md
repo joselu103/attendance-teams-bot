@@ -8,16 +8,17 @@ access the attendance database or implement attendance authorization rules.
 
 ## Current runtime slices
 
-The service has two deliberately separate runtime modes. The local developer
+The service has three deliberately separate runtime modes. The local developer
 entry point listens on `127.0.0.1:3978`; the container entry point listens on
 `0.0.0.0:8080` within its container network:
 
 | Mode | Purpose | Request authentication |
 | --- | --- | --- |
 | `local` (default) | Offline connectivity and activity-adapter development | None — never configure this route as a real Bot Service callback. |
-| `teams` | Bot Service-only callback foundation | Microsoft Agents SDK validates the Bot Service callback credential before application handling. |
+| `teams-only` | Bot Service-only callback foundation | Microsoft Agents SDK validates the Bot Service callback credential before application handling. |
+| `attendance` | Authenticated attendance flow | Teams SSO, OBO, MCP, and LLM configuration are required at startup. |
 
-Teams mode has two explicit, fail-closed paths:
+The `teams-only` and `attendance` modes are explicit, fail-closed paths:
 
 ```text
 Integration disabled:
@@ -89,8 +90,9 @@ env -u PYTHONPATH uv run mypy
 
 ## Configuration
 
-`BOT_RUNTIME_MODE` defaults to `local`. Set it to `teams` only for the
-single-tenant Bot Service callback runtime.
+`BOT_RUNTIME_MODE` defaults to `local`. Set it to `teams-only` for the
+single-tenant Bot Service callback runtime, or `attendance` only after all
+attendance integration prerequisites are ready.
 
 `LOG_ENV` defaults to `local`, which emits colorized DEBUG console logs. Set it
 to `staging` or `production` for single-line JSON INFO logs on stdout. Logs carry
@@ -102,13 +104,13 @@ optional local `.env` file once, validates every supported value, and passes a
 typed Teams connection to the Microsoft SDK adapter. Unknown dotenv variables
 are rejected rather than silently ignored.
 
-Teams mode requires these environment-variable names:
+The `teams-only` and `attendance` modes require these environment-variable names:
 
 ```bash
-BOT_RUNTIME_MODE=teams
-CONNECTIONS__SERVICE_CONNECTION__SETTINGS__CLIENTID=<bot-client-id>
-CONNECTIONS__SERVICE_CONNECTION__SETTINGS__TENANTID=<tenant-id>
-CONNECTIONS__SERVICE_CONNECTION__SETTINGS__CLIENTSECRET=<development-secret>
+BOT_RUNTIME_MODE=teams-only
+BOT_APP_ID=<bot-client-id>
+BOT_TENANT_ID=<tenant-id>
+BOT_CLIENT_SECRET=<development-secret>
 ```
 
 Use an untracked local `.env` file for development and a platform secret manager
@@ -119,13 +121,13 @@ for deployment. Never put real values, bearer tokens, or client secrets in
 `CLIENTSECRET` is sensitive. The Bot Service-only runtime verifies the Bot Service
 request only unless attendance integration is explicitly enabled.
 
-The enabled integration requires all of these environment-variable names in
+The `attendance` mode requires all of these environment-variable names in
 addition to the Teams connection settings:
 
 ```bash
-ATTENDANCE_INTEGRATION_ENABLED=true
+BOT_RUNTIME_MODE=attendance
 MCP_ENDPOINT=https://<attendance-mcp-host>/mcp
-MCP_SCOPE=api://<attendance-rest-api-app-id>/attendance.access
+ATTENDANCE_API_DELEGATED_SCOPE=api://<attendance-rest-api-app-id>/attendance.access
 MCP_TIMEOUT_SECONDS=10
 TEAMS_SSO_OAUTH_CONNECTION_NAME=<azure-bot-oauth-connection-name>
 OPENAI_API_KEY=<secret-openai-api-key>
@@ -141,9 +143,9 @@ Bot OAuth connection.
 `OPENAI_API_KEY` is a secret and `OPENAI_MODEL` is mandatory explicit runtime
 configuration; no production model is selected by default. Use an untracked
 local `.env` only for development and a deployment secret manager for the key.
-`ATTENDANCE_INTEGRATION_ENABLED=false` remains authoritative even if every
-Teams, MCP, and OpenAI value is present. When enabled, incomplete Teams, MCP, or
-OpenAI configuration fails startup rather than falling back to an attendance route.
+`teams-only` remains authoritative even if every MCP and OpenAI value is present.
+In `attendance` mode, incomplete Teams, MCP, or OpenAI configuration fails startup
+rather than falling back to an attendance route.
 
 ### Bounded language-model and MCP policy
 
@@ -254,8 +256,8 @@ Copy `.env.example` to an untracked `.env`, configure non-secret identifiers
 and service URLs, and provide credentials through the approved local or
 deployment secret mechanism. Compose builds and runs the Teams bot as a separate
 service; the attendance MCP adapter and REST API keep their own Compose
-deployments. Keep `ATTENDANCE_INTEGRATION_ENABLED=false` until the external
-activation gates are approved.
+deployments. Keep `BOT_RUNTIME_MODE=teams-only` until the external activation
+gates are approved.
 
 The PostgreSQL sidecar intentionally requires an externally supplied
 `POSTGRES_PASSWORD`; no credential default is committed. If memory is enabled,

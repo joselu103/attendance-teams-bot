@@ -44,10 +44,10 @@ async def test_default_runtime_composes_the_safe_local_http_app() -> None:
 
 @pytest.mark.anyio
 async def test_teams_runtime_composes_the_bot_service_only_http_app(monkeypatch) -> None:
-    monkeypatch.setenv("BOT_RUNTIME_MODE", "teams")
-    monkeypatch.setenv("CONNECTIONS__SERVICE_CONNECTION__SETTINGS__CLIENTID", str(uuid4()))
-    monkeypatch.setenv("CONNECTIONS__SERVICE_CONNECTION__SETTINGS__TENANTID", str(uuid4()))
-    monkeypatch.setenv("CONNECTIONS__SERVICE_CONNECTION__SETTINGS__CLIENTSECRET", token_urlsafe())
+    monkeypatch.setenv("BOT_RUNTIME_MODE", "teams-only")
+    monkeypatch.setenv("BOT_APP_ID", str(uuid4()))
+    monkeypatch.setenv("BOT_TENANT_ID", str(uuid4()))
+    monkeypatch.setenv("BOT_CLIENT_SECRET", token_urlsafe())
     app = create_http_app(Settings())
 
     async with AsyncClient(
@@ -62,10 +62,10 @@ async def test_teams_runtime_composes_the_bot_service_only_http_app(monkeypatch)
 def test_bot_service_only_composition_uses_its_handler(monkeypatch) -> None:
     from attendance_teams_bot import composition
 
-    monkeypatch.setenv("BOT_RUNTIME_MODE", "teams")
-    monkeypatch.setenv("CONNECTIONS__SERVICE_CONNECTION__SETTINGS__CLIENTID", str(uuid4()))
-    monkeypatch.setenv("CONNECTIONS__SERVICE_CONNECTION__SETTINGS__TENANTID", str(uuid4()))
-    monkeypatch.setenv("CONNECTIONS__SERVICE_CONNECTION__SETTINGS__CLIENTSECRET", token_urlsafe())
+    monkeypatch.setenv("BOT_RUNTIME_MODE", "teams-only")
+    monkeypatch.setenv("BOT_APP_ID", str(uuid4()))
+    monkeypatch.setenv("BOT_TENANT_ID", str(uuid4()))
+    monkeypatch.setenv("BOT_CLIENT_SECRET", token_urlsafe())
     recorded: dict[str, object] = {}
     expected_app = object()
 
@@ -85,18 +85,17 @@ def test_bot_service_only_composition_uses_its_handler(monkeypatch) -> None:
     assert isinstance(recorded["handler"], composition.BotServiceOnlyHandler)
 
 
-def test_teams_mode_composes_enabled_attendance_integration(monkeypatch) -> None:
+def test_attendance_mode_composes_enabled_attendance_integration(monkeypatch) -> None:
     from attendance_teams_bot import composition
     from attendance_teams_bot.agent.orchestrator import AttendanceAgent
     from attendance_teams_bot.mcp.session import StreamableHttpAttendanceSessionFactory
 
-    monkeypatch.setenv("BOT_RUNTIME_MODE", "teams")
-    monkeypatch.setenv("CONNECTIONS__SERVICE_CONNECTION__SETTINGS__CLIENTID", str(uuid4()))
-    monkeypatch.setenv("CONNECTIONS__SERVICE_CONNECTION__SETTINGS__TENANTID", str(uuid4()))
-    monkeypatch.setenv("CONNECTIONS__SERVICE_CONNECTION__SETTINGS__CLIENTSECRET", token_urlsafe())
-    monkeypatch.setenv("ATTENDANCE_INTEGRATION_ENABLED", "true")
+    monkeypatch.setenv("BOT_RUNTIME_MODE", "attendance")
+    monkeypatch.setenv("BOT_APP_ID", str(uuid4()))
+    monkeypatch.setenv("BOT_TENANT_ID", str(uuid4()))
+    monkeypatch.setenv("BOT_CLIENT_SECRET", token_urlsafe())
     monkeypatch.setenv("MCP_ENDPOINT", "https://attendance-mcp.example.test/mcp")
-    monkeypatch.setenv("MCP_SCOPE", "api://attendance-api/attendance.access")
+    monkeypatch.setenv("ATTENDANCE_API_DELEGATED_SCOPE", "api://attendance-api/attendance.access")
     monkeypatch.setenv("TEAMS_SSO_OAUTH_CONNECTION_NAME", "attendance-teams-sso")
     monkeypatch.setenv("OPENAI_API_KEY", "test-only-openai-key")
     monkeypatch.setenv("OPENAI_MODEL", "gpt-5-mini")

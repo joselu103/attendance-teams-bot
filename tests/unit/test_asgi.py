@@ -17,7 +17,6 @@ def test_asgi_module_configures_logging_before_runtime_composition(monkeypatch) 
         log_environment="staging",
         app_version="test-sha",
         mode=RuntimeMode.LOCAL,
-        attendance_integration_enabled=False,
     )
     calls: list[object] = []
     events: list[tuple[object, ...]] = []
@@ -48,7 +47,6 @@ def test_asgi_module_configures_logging_before_runtime_composition(monkeypatch) 
                 "application_started",
                 {
                     "runtime_mode": "local",
-                    "attendance_integration_enabled": False,
                     "log_environment": "staging",
                     "app_version": "test-sha",
                 },

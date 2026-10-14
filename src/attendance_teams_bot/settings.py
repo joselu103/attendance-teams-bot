@@ -19,7 +19,8 @@ _SIDECAR_DOTENV_KEYS = frozenset({"postgres_db", "postgres_user", "postgres_pass
 
 class RuntimeMode(StrEnum):
     LOCAL = "local"
-    TEAMS = "teams"
+    TEAMS_ONLY = "teams-only"
+    ATTENDANCE = "attendance"
 
 
 class TeamsConnectionSettings(BaseModel):
@@ -73,12 +74,11 @@ class Settings(BaseSettings):
         default=RuntimeMode.LOCAL,
         validation_alias="BOT_RUNTIME_MODE",
     )
-    attendance_integration_enabled: bool = Field(
-        default=False,
-        validation_alias="ATTENDANCE_INTEGRATION_ENABLED",
-    )
     mcp_endpoint: HttpUrl | None = Field(default=None, validation_alias="MCP_ENDPOINT")
-    mcp_scope: str | None = Field(default=None, validation_alias="MCP_SCOPE")
+    attendance_api_delegated_scope: str | None = Field(
+        default=None,
+        validation_alias="ATTENDANCE_API_DELEGATED_SCOPE",
+    )
     teams_sso_oauth_connection_name: str | None = Field(
         default=None,
         validation_alias="TEAMS_SSO_OAUTH_CONNECTION_NAME",
@@ -92,17 +92,17 @@ class Settings(BaseSettings):
         le=30,
         validation_alias="MCP_TIMEOUT_SECONDS",
     )
-    teams_client_id: UUID | None = Field(
+    bot_app_id: UUID | None = Field(
         default=None,
-        validation_alias="CONNECTIONS__SERVICE_CONNECTION__SETTINGS__CLIENTID",
+        validation_alias="BOT_APP_ID",
     )
-    teams_tenant_id: UUID | None = Field(
+    bot_tenant_id: UUID | None = Field(
         default=None,
-        validation_alias="CONNECTIONS__SERVICE_CONNECTION__SETTINGS__TENANTID",
+        validation_alias="BOT_TENANT_ID",
     )
-    teams_client_secret: SecretStr | None = Field(
+    bot_client_secret: SecretStr | None = Field(
         default=None,
-        validation_alias="CONNECTIONS__SERVICE_CONNECTION__SETTINGS__CLIENTSECRET",
+        validation_alias="BOT_CLIENT_SECRET",
     )
 
     @classmethod
@@ -151,47 +151,39 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_teams_mode(self) -> Self:
-        if self.mode is RuntimeMode.TEAMS and self.teams_connection is None:
-            raise ValueError("teams mode requires Bot Service configuration")
-        if self.attendance_integration_enabled and self.mode is not RuntimeMode.TEAMS:
-            raise ValueError("enabled attendance integration requires teams runtime mode")
-        if self.attendance_integration_enabled and self.attendance_integration is None:
-            raise ValueError(
-                "enabled attendance integration requires Teams, MCP, and OpenAI configuration"
-            )
+        if self.mode is not RuntimeMode.LOCAL and self.teams_connection is None:
+            raise ValueError("teams-only and attendance modes require Bot Service configuration")
+        if self.mode is RuntimeMode.ATTENDANCE and self.attendance_integration is None:
+            raise ValueError("attendance mode requires Teams, MCP, and OpenAI configuration")
         return self
 
     @property
     def teams_connection(self) -> TeamsConnectionSettings | None:
         """Return Teams credentials only when all three Bot Service fields are configured."""
-        if (
-            self.teams_client_id is None
-            or self.teams_tenant_id is None
-            or self.teams_client_secret is None
-        ):
+        if self.bot_app_id is None or self.bot_tenant_id is None or self.bot_client_secret is None:
             return None
 
         return TeamsConnectionSettings(
-            client_id=self.teams_client_id,
-            tenant_id=self.teams_tenant_id,
-            client_secret=self.teams_client_secret,
+            client_id=self.bot_app_id,
+            tenant_id=self.bot_tenant_id,
+            client_secret=self.bot_client_secret,
         )
 
     @property
     def attendance_integration(self) -> AttendanceIntegrationSettings | None:
         """Return a validated integration only when the explicit enablement gate is satisfied."""
-        if not self.attendance_integration_enabled:
+        if self.mode is not RuntimeMode.ATTENDANCE:
             return None
         if (
             self.mcp_endpoint is None
-            or self.mcp_scope is None
+            or self.attendance_api_delegated_scope is None
             or self.teams_sso_oauth_connection_name is None
             or self.openai_api_key is None
             or self.openai_model is None
         ):
             return None
 
-        delegated_scope = self.mcp_scope.strip()
+        delegated_scope = self.attendance_api_delegated_scope.strip()
         oauth_connection_name = self.teams_sso_oauth_connection_name.strip()
         openai_model = self.openai_model.strip()
         endpoint = self.mcp_endpoint
