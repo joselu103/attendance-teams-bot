@@ -222,6 +222,7 @@ async def test_session_connection_classifies_nested_timeout_and_records_leaf_typ
         (httpx.ConnectError("refused"), "connect", "connect"),
         (McpContractIncompatible(), "connect", "mcp_protocol"),
         (RuntimeError("bad initialize response"), "initialize", "initialization"),
+        (TypeError("tool execution failed"), "active", "operation"),
     ],
 )
 def test_session_connection_classifies_safe_failure_categories(

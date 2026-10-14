@@ -152,7 +152,7 @@ class AttendanceAgent:
             turn = await self.language_model.complete(
                 pre_auth_request(message=message, reference_date=reference_date, history=history)
             )
-            _LOGGER.info("PRE-AUTH LLM RESPONSE", turn=turn)
+            _LOGGER.debug("PRE-AUTH LLM RESPONSE", turn=turn)
             if isinstance(turn, FinalResponse):
                 if turn.guidance_kind is None or turn.language not in {"en", "sl"}:
                     return self._unavailable_with_outcome(
@@ -236,23 +236,40 @@ class AttendanceAgent:
                         tools=catalog.model_tools,
                     )
                 )
-                _LOGGER.info("AUTH LLM RESPONSE", turn=turn)
-
+                _LOGGER.debug(
+                    "authenticated_llm_response",
+                    turn=turn,
+                )
                 if not isinstance(turn, ToolCall):
                     return self._unavailable_with_outcome(
                         language, display_name, correlation_id, "missing_tool_selection"
                     )
+                _LOGGER.debug(
+                    "authenticated_tool_selection_received",
+                    tool_name=turn.name,
+                    argument_count=len(turn.arguments),
+                )
                 policy = catalog.selected_tool(turn.name)
                 if policy is None:
                     return self._unavailable_with_outcome(
                         language, display_name, correlation_id, "selection_not_admitted"
                     )
+                _LOGGER.debug(
+                    "authenticated_tool_selected",
+                    tool_name=policy.definition.name,
+                    tool_kind=policy.kind,
+                )
                 validated = policy.validate_arguments(turn.arguments)
                 if validated is None:
                     return self.presenter.present(
                         InvalidRequestPresentation(language, display_name)
                     )
                 arguments, _ = validated
+                _LOGGER.debug(
+                    "authenticated_tool_arguments_validated",
+                    tool_name=policy.definition.name,
+                    argument_count=len(arguments),
+                )
                 result = await self._execute(session, policy, arguments)
                 if isinstance(result, EmployeeSuggestionPage):
                     return self.presenter.present(

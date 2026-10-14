@@ -58,9 +58,9 @@ _TOOL_USE_RULES = "\n".join(
 _DATE_RESOLUTION_RULES = "\n".join(
     (
         "## DATE & TIME RESOLUTION RULES (SLOVENIAN ENTERPRISE STANDARD)",
-        "- **Automatic Boundary Resolution**: Every request passed to tools MUST have both "
-        "`start_date` and `end_date`. NEVER ask for clarification when a period can be mapped "
-        "to explicit dates.",
+        "- **Automatic Boundary Resolution**: Every request passed to tools that require "
+        "`start_date` and `end_date` MUST have both. NEVER ask for clarification when a "
+        "period can be mapped to explicit dates.",
         "",
         '- **Full Period Expressions (e.g., "v januarju", "in July", "last month", "ta teden")**:',
         '  - **Full Month** (e.g., "in July", "v juliju", "julij"):',
