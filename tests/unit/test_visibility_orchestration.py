@@ -64,11 +64,13 @@ def events() -> AttendanceEventPage:
                 checked_in_at=datetime(2026, 8, 1, tzinfo=UTC),
                 checked_out_at=None,
                 note="private",
+                duration_minutes=None,
             ),
         ),
         limit=50,
         offset=0,
         next_offset=None,
+        summary={"page_duration_minutes": 0, "period_duration_minutes": 425},
     )
 
 
@@ -165,9 +167,9 @@ async def test_exact_selector_is_resolved_then_internal_id_only_drives_history()
             FinalResponse("ignored", "en", presentation=PresentationPlan("Attendance", None)),
         ]
     )
-    assert (
-        await agent.handle(message="alice@example.test", mcp_access_token=SecretStr("token"))
-    ).text.startswith("📅 **Attendance Record** (Page 1)")
+    response = await agent.handle(message="alice@example.test", mcp_access_token=SecretStr("token"))
+    assert response.text.startswith("📅 **Attendance Record** (Page 1)")
+    assert "Period Total: 7h 05m" in response.text
     assert session.calls == [
         ("resolve_employee", {"email": "alice@example.test"}),
         (

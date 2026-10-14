@@ -56,6 +56,7 @@ from attendance_teams_bot.mcp.contracts import (
     SELF_ATTENDANCE_TOOL,
     AttendanceEvent,
     AttendanceEventPage,
+    AttendanceEventSummary,
     CurrentWorkStatusPage,
     EmployeeSuggestionPage,
     ResolvedEmployee,
@@ -269,6 +270,7 @@ class AttendanceAgent:
                             language,
                             display_name,
                             None,
+                            AttendanceEventSummary.model_validate(result["summary"]),
                             date.fromisoformat(str(result["start_date"])),
                             date.fromisoformat(str(result["end_date"])),
                             result.get("next_offset") is not None,
@@ -378,6 +380,7 @@ class AttendanceAgent:
                         language,
                         display_name,
                         None,
+                        AttendanceEventSummary.model_validate(result["summary"]),
                         query.start_date,
                         query.end_date,
                         result["next_offset"] is not None,
@@ -511,6 +514,7 @@ async def _attendance_page(
     return {
         "items": [event.model_dump(mode="json") for event in page.items],
         "next_offset": page.next_offset,
+        "summary": page.summary.model_dump(mode="json"),
         **arguments,
     }
 

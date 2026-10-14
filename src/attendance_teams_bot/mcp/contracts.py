@@ -43,6 +43,7 @@ class AttendanceEvent(BaseModel):
     checked_in_at: datetime | None
     checked_out_at: datetime | None
     note: str | None
+    duration_minutes: int | None = Field(strict=True, ge=0)
 
     @field_validator("checked_in_at", "checked_out_at")
     @classmethod
@@ -50,6 +51,15 @@ class AttendanceEvent(BaseModel):
         if value is not None and (value.tzinfo is None or value.utcoffset() is None):
             raise ValueError("attendance timestamps require a UTC offset")
         return value
+
+
+class AttendanceEventSummary(BaseModel):
+    """Authoritative history totals calculated by the REST service."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    page_duration_minutes: int = Field(strict=True, ge=0)
+    period_duration_minutes: int = Field(strict=True, ge=0)
 
 
 class AttendanceEventPage(BaseModel):
@@ -61,6 +71,7 @@ class AttendanceEventPage(BaseModel):
     limit: int = Field(strict=True, ge=1, le=100)
     offset: int = Field(strict=True, ge=0)
     next_offset: int | None = Field(strict=True, ge=0)
+    summary: AttendanceEventSummary
 
 
 class ResolvedEmployee(BaseModel):

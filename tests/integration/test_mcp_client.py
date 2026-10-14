@@ -76,11 +76,13 @@ def mcp_app() -> ContractHeaderApp:
                     "checked_in_at": "2026-08-10T08:00:00+02:00",
                     "checked_out_at": "2026-08-10T16:00:00+02:00",
                     "note": None,
+                    "duration_minutes": 480,
                 }
             ],
             "limit": limit,
             "offset": offset,
             "next_offset": None,
+            "summary": {"page_duration_minutes": 480, "period_duration_minutes": 480},
         }
 
     return ContractHeaderApp(server.streamable_http_app())
