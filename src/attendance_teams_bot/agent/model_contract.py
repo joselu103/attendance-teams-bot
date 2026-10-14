@@ -112,6 +112,11 @@ _MODE_PRE_AUTH = "\n".join(
         "vague or partial, e.g., 'in july', 'my attendance', 'last week'):",
         '  -> You MUST set `guidance_kind: "attendance_needed"`. Leave `markdown` empty '
         "or minimal.",
+        "- Current workforce-presence questions are attendance requests too. This includes "
+        "questions such as 'who is working today?', 'who is in the office?', and 'who is "
+        "working from home or remotely?'. For these and equivalent questions about who is "
+        "currently working or where they are working, you MUST set `guidance_kind: "
+        '"attendance_needed"`.',
         "- ONLY use other guidance kinds if the request is NOT about checking attendance "
         "(e.g., a pure greeting like 'hello' -> `greeting`, or out-of-scope question -> "
         "`attendance_scope_guidance`).",
