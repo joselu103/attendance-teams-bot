@@ -8,7 +8,12 @@ from zoneinfo import ZoneInfo
 
 from attendance_teams_bot.agent.contracts import BotResponse, ReplyLanguage
 from attendance_teams_bot.agent.language_model import PresentationPlan
-from attendance_teams_bot.mcp.contracts import AttendanceEvent, EmployeeSuggestion, McpToolErrorCode
+from attendance_teams_bot.mcp.contracts import (
+    AttendanceEvent,
+    AttendanceEventSummary,
+    EmployeeSuggestion,
+    McpToolErrorCode,
+)
 
 MAX_REPLY_CHARACTERS = 12_000
 _REPLY_TIMEZONE = ZoneInfo("Europe/Ljubljana")
@@ -64,6 +69,7 @@ class SafeHistoryPresentation:
     language: ReplyLanguage
     display_name: str | None
     plan: PresentationPlan | None
+    summary: AttendanceEventSummary
     start_date: date | None = None
     end_date: date | None = None
     has_more: bool = False
@@ -78,6 +84,7 @@ class _HistoryDisplayEntry:
     checked_in_at: datetime | None
     checked_out_at: datetime | None
     day: date | None
+    duration_minutes: int | None
     ends_at_day_boundary: bool = False
 
 
@@ -323,12 +330,12 @@ def _render_attendance_event(entry: _HistoryDisplayEntry, language: ReplyLanguag
     attendance_type = _attendance_type(entry.event.punch_type, language)
     icon = _attendance_icon(entry.event.punch_type)
     result = f"  * `{time_range}` — " + (f"{icon} " if icon else "") + attendance_type
-    if entry.checked_in_at is None or entry.checked_out_at is None:
-        result += _copy(
-            language,
-            " *(Not included in daily total)*",
-            " *(Ni vključen v dnevni seštevek)*",
-        )
+    duration = (
+        _copy(language, "unavailable", "ni na voljo")
+        if entry.duration_minutes is None
+        else _format_minutes(entry.duration_minutes)
+    )
+    result += _copy(language, f" *(Total: {duration})*", f" *(Seštevek: {duration})*")
     return result
 
 
@@ -360,7 +367,9 @@ def _history_batch(presentation: SafeHistoryPresentation) -> BotResponse:
                         "No attendance entries found.",
                         "Ni najdenih evidenc prisotnosti.",
                     ),
-                    _history_footer(presentation.language),
+                    _history_footer(
+                        presentation.language, presentation.summary, has_more=presentation.has_more
+                    ),
                 )
             )
         )
@@ -377,7 +386,9 @@ def _history_batch(presentation: SafeHistoryPresentation) -> BotResponse:
         prefix,
         blocks,
         presentation.language,
-        suffix=_history_footer(presentation.language, has_more=presentation.has_more),
+        suffix=_history_footer(
+            presentation.language, presentation.summary, has_more=presentation.has_more
+        ),
         first_block_separator="\n",
     )
     return response or BotResponse(_localized_safe_reply(UNAVAILABLE_REPLY, presentation.language))
@@ -491,6 +502,7 @@ def _history_display_entries(
                     event.checked_in_at,
                     event.checked_out_at,
                     _event_date(event),
+                    event.duration_minutes,
                 )
             )
             continue
@@ -529,6 +541,14 @@ def _split_history_event(
                 current,
                 segment_end,
                 current.date(),
+                event.duration_minutes
+                if current.astimezone(UTC) == event.checked_in_at.astimezone(UTC)
+                and segment_end.astimezone(UTC) == event.checked_out_at.astimezone(UTC)
+                else (
+                    (segment_end.astimezone(UTC) - current.astimezone(UTC)) // timedelta(minutes=1)
+                    if event.duration_minutes is not None
+                    else None
+                ),
                 ends_at_day_boundary=segment_end == next_day,
             )
         )
@@ -566,10 +586,25 @@ def _history_header(presentation: SafeHistoryPresentation) -> str:
     return _TEAMS_LINE_BREAK.join((title, _HISTORY_DIVIDER))
 
 
-def _history_footer(language: ReplyLanguage, *, has_more: bool = False) -> str:
+def _format_minutes(minutes: int) -> str:
+    return f"{minutes // 60}h {minutes % 60:02d}m"
+
+
+def _history_footer(
+    language: ReplyLanguage,
+    summary: AttendanceEventSummary | None = None,
+    *,
+    has_more: bool = False,
+) -> str:
+    total = _format_minutes(summary.period_duration_minutes) if summary is not None else None
     return _TEAMS_LINE_BREAK.join(
         (
             _HISTORY_DIVIDER,
+            *(
+                (_copy(language, f"Period Total: {total}", f"Seštevek obdobja: {total}"),)
+                if total is not None
+                else ()
+            ),
             _copy(
                 language,
                 'Type "next" for the next page.' if has_more else "End of results.",
@@ -588,25 +623,10 @@ def _history_day_block(
         else _copy(language, "Date unavailable", "Datum ni na voljo")
     )
     ordered_entries = _sort_entries(entries)
-    total = sum(
-        (
-            entry.checked_out_at.astimezone(UTC) - entry.checked_in_at.astimezone(UTC)
-            for entry in ordered_entries
-            if entry.checked_in_at is not None and entry.checked_out_at is not None
-        ),
-        timedelta(),
-    )
     return "\n".join(
         (
             f"* 🗓️ **{heading}**",
             *(_render_attendance_event(entry, language) for entry in ordered_entries),
-            "  *("
-            + _copy(
-                language,
-                f"Daily Total: {_format_duration(total)}",
-                f"Dnevni seštevek: {_format_duration(total)}",
-            )
-            + ")*",
         )
     )
 

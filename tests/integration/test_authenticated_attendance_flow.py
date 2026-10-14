@@ -133,11 +133,13 @@ class Session:
                     datetime(2026, 8, 10, 8, tzinfo=UTC),
                     datetime(2026, 8, 10, 16, tzinfo=UTC),
                     None,
+                    480,
                 ),
             ),
             limit=50,
             offset=0,
             next_offset=None,
+            summary={"page_duration_minutes": 480, "period_duration_minutes": 480},
         )
 
 

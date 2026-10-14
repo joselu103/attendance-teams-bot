@@ -20,9 +20,12 @@ from attendance_teams_bot.agent.orchestrator import AttendanceAgent, AttendanceN
 from attendance_teams_bot.agent.rendering import UNAVAILABLE_REPLY
 from attendance_teams_bot.mcp.client import AttendanceToolFailure
 from attendance_teams_bot.mcp.contracts import (
+    OTHER_ATTENDANCE_TOOL,
+    RESOLVE_EMPLOYEE_TOOL,
     SELF_ATTENDANCE_TOOL,
     AttendanceEvent,
     AttendanceEventPage,
+    AttendanceEventSummary,
     McpToolFailure,
 )
 
@@ -49,10 +52,12 @@ class FakeModel:
 class FakeSession:
     pages: list[AttendanceEventPage] = field(default_factory=list)
     failure_on: int | None = None
+    exception_on: Exception | None = None
+    tools: tuple[DiscoveredMcpTool, ...] | None = None
     calls: list[dict[str, object]] = field(default_factory=list)
 
     async def list_tools(self) -> tuple[DiscoveredMcpTool, ...]:
-        return (compatible_tool(),)
+        return self.tools or (compatible_tool(),)
 
     async def call_tool(self, *, name: str, arguments: dict[str, object]) -> AttendanceEventPage:
         self.calls.append({"name": name, **arguments})
@@ -63,6 +68,8 @@ class FakeSession:
                     message="Attendance is temporarily unavailable. Please try again shortly.",
                 )
             )
+        if self.exception_on is not None:
+            raise self.exception_on
         return self.pages.pop(0) if self.pages else page()
 
 
@@ -94,6 +101,33 @@ def compatible_tool() -> DiscoveredMcpTool:
     )
 
 
+def admin_tools() -> tuple[DiscoveredMcpTool, ...]:
+    return (
+        compatible_tool(),
+        DiscoveredMcpTool(
+            RESOLVE_EMPLOYEE_TOOL,
+            "resolver",
+            {"type": "object", "properties": {"employee_id": {}, "username": {}, "email": {}}},
+            {"readOnlyHint": True},
+        ),
+        DiscoveredMcpTool(
+            OTHER_ATTENDANCE_TOOL,
+            "history",
+            {
+                "type": "object",
+                "properties": {
+                    "employee_id": {},
+                    "start_date": {},
+                    "end_date": {},
+                    "limit": {},
+                    "offset": {},
+                },
+            },
+            {"readOnlyHint": True},
+        ),
+    )
+
+
 def page() -> AttendanceEventPage:
     return AttendanceEventPage(
         items=(
@@ -105,11 +139,13 @@ def page() -> AttendanceEventPage:
                 checked_in_at=datetime(2026, 8, 10, 8, tzinfo=UTC),
                 checked_out_at=datetime(2026, 8, 10, 16, tzinfo=UTC),
                 note="secret note",
+                duration_minutes=480,
             ),
         ),
         limit=50,
         offset=0,
         next_offset=None,
+        summary={"page_duration_minutes": 480, "period_duration_minutes": 480},
     )
 
 
@@ -147,6 +183,7 @@ async def test_one_validated_tool_call_sends_minimal_projection_and_immutable_re
     )
     response = await subject.handle(message="Pokaži", mcp_access_token=SecretStr("token"))
     assert "**Evidenca prisotnosti**" in response.text and "secret note" not in response.text
+    assert "Seštevek obdobja: 8h 00m" in response.text
     assert len(session.calls) == 1
     assert len(model.requests) == 3
     assert model.requests[0].tools == ()
@@ -173,6 +210,20 @@ async def test_failure_returns_localized_safe_reply_without_additional_model_or_
 ):
     subject, model, session = agent([call()], FakeSession(failure_on=1))
     response = await subject.handle(message="show", mcp_access_token=SecretStr("token"))
+    assert response.text == "Podatki o prisotnosti trenutno niso na voljo. Poskusite znova pozneje."
+    assert len(session.calls) == 1 and len(model.requests) == 2
+
+
+@pytest.mark.anyio
+async def test_malformed_history_metrics_from_the_session_fail_closed_without_partial_report() -> (
+    None
+):
+    subject, model, session = agent(
+        [call()], FakeSession(exception_on=ValueError("invalid metric"))
+    )
+
+    response = await subject.handle(message="show", mcp_access_token=SecretStr("token"))
+
     assert response.text == "Podatki o prisotnosti trenutno niso na voljo. Poskusite znova pozneje."
     assert len(session.calls) == 1 and len(model.requests) == 2
 
@@ -428,9 +479,15 @@ async def test_continuation_is_direct_live_catalog_and_never_calls_model() -> No
         50,
         "en",
     )
-    subject, model, session = agent(
-        [], FakeSession(pages=[page().model_copy(update={"offset": 50})])
+    fresh_page = page().model_copy(
+        update={
+            "offset": 50,
+            "summary": AttendanceEventSummary(
+                page_duration_minutes=720, period_duration_minutes=720
+            ),
+        }
     )
+    subject, model, session = agent([], FakeSession(pages=[fresh_page]))
     response = await subject.handle_continuation(
         query=query, mcp_access_token=SecretStr("fresh-token")
     )
@@ -445,6 +502,7 @@ async def test_continuation_is_direct_live_catalog_and_never_calls_model() -> No
     ]
     assert not model.requests
     assert "📅 **Attendance Record** (Page 2)" in response.messages[-1]
+    assert "Period Total: 12h 00m" in response.messages[-1]
     assert "End of results." in response.messages[-1]
 
 
@@ -464,6 +522,41 @@ async def test_continuation_advances_saved_page_number_without_model() -> None:
     assert "(Page 3)" in response.text
     assert response.continuation is not None
     assert response.continuation.page_number == 4
+    assert not model.requests
+
+
+@pytest.mark.anyio
+async def test_admin_continuation_uses_the_changed_live_total_without_model_or_cursor_cache() -> (
+    None
+):
+    from attendance_teams_bot.agent.continuation import HistoryContinuation
+
+    query = HistoryContinuation("admin", date(2026, 8, 1), date(2026, 8, 2), 50, "en", 99)
+    fresh_page = page().model_copy(
+        update={
+            "offset": 50,
+            "summary": AttendanceEventSummary(
+                page_duration_minutes=600, period_duration_minutes=600
+            ),
+        }
+    )
+    subject, model, session = agent([], FakeSession(pages=[fresh_page], tools=admin_tools()))
+
+    response = await subject.handle_continuation(
+        query=query, mcp_access_token=SecretStr("fresh-token")
+    )
+
+    assert session.calls == [
+        {
+            "name": OTHER_ATTENDANCE_TOOL,
+            "employee_id": 99,
+            "start_date": "2026-08-01",
+            "end_date": "2026-08-02",
+            "limit": 50,
+            "offset": 50,
+        }
+    ]
+    assert "Period Total: 10h 00m" in response.text
     assert not model.requests
 
 

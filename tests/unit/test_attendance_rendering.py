@@ -18,7 +18,13 @@ from attendance_teams_bot.agent.rendering import (
     ToolFailurePresentation,
     UnavailablePresentation,
 )
-from attendance_teams_bot.mcp.contracts import AttendanceEvent, McpToolErrorCode
+from attendance_teams_bot.mcp.contracts import (
+    AttendanceEvent,
+    AttendanceEventSummary,
+    McpToolErrorCode,
+)
+
+_ZERO_SUMMARY = AttendanceEventSummary(page_duration_minutes=0, period_duration_minutes=0)
 
 _TOOL_FAILURE_CODES: tuple[McpToolErrorCode, ...] = (
     "INVALID_ARGUMENT",
@@ -49,6 +55,16 @@ def _event(
         checked_in_at=checked_in_at,
         checked_out_at=checked_out_at,
         note="Internal note",
+        duration_minutes=(
+            int(
+                (checked_out_at.astimezone(UTC) - checked_in_at.astimezone(UTC)).total_seconds()
+                // 60
+            )
+            if checked_in_at is not None
+            and checked_out_at is not None
+            and checked_out_at.astimezone(UTC) >= checked_in_at.astimezone(UTC)
+            else None
+        ),
     )
 
 
@@ -61,6 +77,7 @@ def _present_events(*events: AttendanceEvent, language: ReplyLanguage = "en") ->
                 language=language,
                 display_name=None,
                 plan=None,
+                summary=_ZERO_SUMMARY,
             )
         )
         .text
@@ -81,14 +98,12 @@ def test_presentation_groups_dates_orders_events_and_hides_sensitive_fields() ->
         (
             "📅 **Attendance Record** (Page 1)<br>─────────────────────────────────────────",
             "* 🗓️ **Mon, Aug 10, 2026**",
-            "  * `10:00–18:00` — 🏢 Office",
-            "  *(Daily Total: 8h 00m)*",
+            "  * `10:00–18:00` — 🏢 Office *(Total: 8h 00m)*",
             "",
             "* 🗓️ **Tue, Aug 11, 2026**",
-            "  * `11:00–18:00` — 🏢 Office",
-            "  *(Daily Total: 7h 00m)*",
+            "  * `11:00–18:00` — 🏢 Office *(Total: 7h 00m)*",
             "",
-            "─────────────────────────────────────────<br>End of results.",
+            "─────────────────────────────────────────<br>Period Total: 0h 00m<br>End of results.",
         )
     )
     assert "+00:00" not in result
@@ -104,11 +119,9 @@ def test_presentation_localizes_types_active_and_escaped_values() -> None:
     )
 
     assert "📅 **Evidenca prisotnosti** (Stran 1)" in result
-    assert "`10:00–V teku` — 🏠 Delo od doma *(Ni vključen v dnevni seštevek)*" in result
-    assert (
-        "`Začetni čas ni na voljo–18:00` — \\*Other\\* *(Ni vključen v dnevni seštevek)*" in result
-    )
-    assert "*(Dnevni seštevek: 0h 00m)*" in result
+    assert "`10:00–V teku` — 🏠 Delo od doma *(Seštevek: ni na voljo)*" in result
+    assert "`Začetni čas ni na voljo–18:00` — \\*Other\\* *(Seštevek: ni na voljo)*" in result
+    assert "Seštevek obdobja: 0h 00m" in result
 
 
 def test_presentation_translates_only_controlled_attendance_type_aliases() -> None:
@@ -130,9 +143,9 @@ def test_daily_total_sums_breaks_and_excludes_incomplete_entries() -> None:
         _event(4, checked_in_at=None),
         _event(5, checked_in_at=None, checked_out_at=None),
     )
-    assert "*(Daily Total: 4h 15m)*" in result
+    assert "*(Total: 0h 15m)*" in result
     assert "🍽️ Lunch break" in result
-    assert result.count("Not included in daily total") == 3
+    assert result.count("Total: unavailable") == 3
     assert "08:00" not in result  # timestamps are rendered in Ljubljana time
     assert "Date unavailable" in result
 
@@ -183,7 +196,8 @@ def test_presentation_separates_date_blocks_and_keeps_same_day_events_contiguous
 
     assert "* 🗓️ **Mon, Aug 10, 2026**" in result
     assert result.count("  * `") == 3
-    assert "*(Daily Total: 15h 00m)*" in result
+    assert "*(Total: 15h 00m)*" not in result
+    assert "*(Total: 7h 00m)*" in result
     assert "* 🗓️ **Tue, Aug 11, 2026**" in result
     assert "**Part" not in result
 
@@ -206,6 +220,7 @@ def test_presentation_splits_multiday_events_into_local_daily_segments() -> None
                 language="en",
                 display_name=None,
                 plan=None,
+                summary=_ZERO_SUMMARY,
                 start_date=date(2026, 5, 22),
                 end_date=date(2026, 5, 23),
             )
@@ -215,7 +230,120 @@ def test_presentation_splits_multiday_events_into_local_daily_segments() -> None
 
     assert "Fri, May 22, 2026**\n  * `08:00–24:00` — 🏠 Remote work" in result
     assert "Sat, May 23, 2026**\n  * `00:00–16:00` — 🏠 Remote work" in result
-    assert result.count("*(Daily Total: 16h 00m)*") == 2
+    assert result.count("*(Total: 16h 00m)*") == 2
+
+
+def test_null_duration_remains_unavailable_on_split_completed_rows() -> None:
+    event = _event(
+        1,
+        checked_in_at=datetime(2026, 5, 22, 8, tzinfo=UTC),
+        checked_out_at=datetime(2026, 5, 23, 8, tzinfo=UTC),
+    ).model_copy(update={"duration_minutes": None})
+    result = _present_events(event)
+
+    assert result.count("*(Total: unavailable)*") == 2
+
+
+def test_whole_rows_trust_api_minutes_and_midnight_segments_truncate_independently() -> None:
+    whole = _event(1).model_copy(update={"duration_minutes": 123})
+    midnight = _event(
+        2,
+        checked_in_at=datetime(2026, 8, 10, 23, 59, 30, tzinfo=timezone(timedelta(hours=2))),
+        checked_out_at=datetime(2026, 8, 11, 0, 0, 30, tzinfo=timezone(timedelta(hours=2))),
+    )
+    result = (
+        AttendanceResultPresenter()
+        .present(
+            SafeHistoryPresentation(
+                events=(whole, midnight),
+                language="en",
+                display_name=None,
+                plan=None,
+                summary=AttendanceEventSummary(
+                    page_duration_minutes=124, period_duration_minutes=124
+                ),
+                start_date=date(2026, 8, 10),
+                end_date=date(2026, 8, 11),
+            )
+        )
+        .text
+    )
+
+    assert "`10:00–18:00` — 🏢 Office *(Total: 2h 03m)*" in result
+    assert result.count("*(Total: 0h 00m)*") == 2
+    assert "Period Total: 2h 04m" in result
+
+
+@pytest.mark.parametrize(
+    ("language", "total", "next_page", "old_daily"),
+    [
+        ("en", "Period Total: 7h 05m", 'Type "next" for the next page.', "Daily Total"),
+        (
+            "sl",
+            "Seštevek obdobja: 7h 05m",
+            'Za naslednjo stran vnesite "naslednja".',
+            "Dnevni seštevek",
+        ),
+    ],
+)
+def test_empty_intermediate_history_pages_keep_the_nonzero_localized_period_total(
+    language: ReplyLanguage, total: str, next_page: str, old_daily: str
+) -> None:
+    result = (
+        AttendanceResultPresenter()
+        .present(
+            SafeHistoryPresentation(
+                events=(),
+                language=language,
+                display_name=None,
+                plan=None,
+                summary=AttendanceEventSummary(
+                    page_duration_minutes=0, period_duration_minutes=425
+                ),
+                has_more=True,
+            )
+        )
+        .text
+    )
+
+    assert total in result
+    assert result.endswith(f"{total}<br>{next_page}")
+    assert old_daily not in result
+    assert "excluded" not in result
+
+
+@pytest.mark.parametrize(
+    ("language", "total"),
+    [("en", "Period Total: 8h 00m"), ("sl", "Seštevek obdobja: 8h 00m")],
+)
+def test_split_history_page_puts_one_nonzero_footer_in_its_last_message(
+    monkeypatch: pytest.MonkeyPatch, language: ReplyLanguage, total: str
+) -> None:
+    monkeypatch.setattr(rendering, "MAX_REPLY_CHARACTERS", 300)
+    null_duration = _event(1).model_copy(update={"duration_minutes": None})
+    response = AttendanceResultPresenter().present(
+        SafeHistoryPresentation(
+            events=(
+                null_duration,
+                _event(2, checked_in_at=datetime(2026, 8, 11, 8, tzinfo=UTC)),
+            ),
+            language=language,
+            display_name=None,
+            plan=None,
+            summary=AttendanceEventSummary(page_duration_minutes=480, period_duration_minutes=480),
+        )
+    )
+
+    assert len(response.messages) == 2
+    assert sum(total in message for message in response.messages) == 1
+    assert total in response.messages[-1]
+    unavailable = "Total: unavailable" if language == "en" else "Seštevek: ni na voljo"
+    assert unavailable in "\n".join(response.messages)
+
+
+def test_history_presentation_requires_an_authoritative_summary() -> None:
+    with pytest.raises(TypeError, match="summary"):
+        SafeHistoryPresentation(events=(), language="en", display_name=None, plan=None)  # type: ignore[call-arg]
 
 
 def test_presentation_clips_multiday_events_to_the_requested_period() -> None:
@@ -237,6 +365,7 @@ def test_presentation_clips_multiday_events_to_the_requested_period() -> None:
                 language="en",
                 display_name=None,
                 plan=None,
+                summary=_ZERO_SUMMARY,
                 start_date=date(2026, 5, 22),
                 end_date=date(2026, 5, 22),
             )
@@ -248,7 +377,7 @@ def test_presentation_clips_multiday_events_to_the_requested_period() -> None:
     assert "Thu, May 21, 2026" not in result
     assert "Sat, May 23, 2026" not in result
     assert "`00:00–24:00`" in result
-    assert "*(Daily Total: 24h 00m)*" in result
+    assert "*(Total: 24h 00m)*" in result
 
 
 def test_presentation_uses_elapsed_time_and_offsets_for_dst_fallback() -> None:
@@ -261,7 +390,7 @@ def test_presentation_uses_elapsed_time_and_offsets_for_dst_fallback() -> None:
     )
 
     assert "`02:30 UTC+02:00–02:30 UTC+01:00`" in result
-    assert "*(Daily Total: 1h 00m)*" in result
+    assert "*(Total: 1h 00m)*" in result
 
 
 def test_presentation_uses_elapsed_time_for_dst_spring_forward() -> None:
@@ -274,7 +403,7 @@ def test_presentation_uses_elapsed_time_for_dst_spring_forward() -> None:
     )
 
     assert "`01:30–03:30`" in result
-    assert "*(Daily Total: 1h 00m)*" in result
+    assert "*(Total: 1h 00m)*" in result
 
 
 def test_presentation_preserves_nonpositive_events_without_splitting() -> None:
@@ -288,13 +417,15 @@ def test_presentation_preserves_nonpositive_events_without_splitting() -> None:
 
     assert result.count("  * `") == 1
     assert "`16:00–08:00`" in result
-    assert "*(Daily Total: 0h 00m)*" in result
+    assert "*(Total: unavailable)*" in result
 
 
 def test_presentation_reports_no_data_and_keeps_every_event_in_a_history_page() -> None:
     presenter = AttendanceResultPresenter()
     no_data = presenter.present(
-        SafeHistoryPresentation(events=(), language="sl", display_name=None, plan=None)
+        SafeHistoryPresentation(
+            events=(), language="sl", display_name=None, plan=None, summary=_ZERO_SUMMARY
+        )
     )
     response = presenter.present(
         SafeHistoryPresentation(
@@ -302,13 +433,17 @@ def test_presentation_reports_no_data_and_keeps_every_event_in_a_history_page() 
             language="en",
             display_name=None,
             plan=None,
+            summary=_ZERO_SUMMARY,
         )
     )
     assert no_data.text == "\n".join(
         (
             "📅 **Evidenca prisotnosti** (Stran 1)<br>─────────────────────────────────────────",
             "Ni najdenih evidenc prisotnosti.",
-            "─────────────────────────────────────────<br>Konec rezultatov.",
+            (
+                "─────────────────────────────────────────<br>Seštevek obdobja: 0h 00m<br>"
+                "Konec rezultatov."
+            ),
         )
     )
     assert all(len(message) <= MAX_REPLY_CHARACTERS for message in response.messages)
@@ -389,6 +524,7 @@ def test_reports_never_greet_even_when_a_display_name_is_available() -> None:
             language="en",
             display_name="Ana Example",
             plan=None,
+            summary=_ZERO_SUMMARY,
         )
     )
     current = presenter.present(
@@ -411,6 +547,7 @@ def test_history_header_and_footer_use_forced_teams_line_breaks() -> None:
             language="en",
             display_name=None,
             plan=None,
+            summary=_ZERO_SUMMARY,
             start_date=date(2026, 1, 1),
             end_date=date(2026, 10, 10),
             has_more=True,
@@ -424,7 +561,8 @@ def test_history_header_and_footer_use_forced_teams_line_breaks() -> None:
         "─────────────────────────────────────────"
     )
     assert response.text.endswith(
-        '─────────────────────────────────────────<br>Type "next" for the next page.'
+        "─────────────────────────────────────────<br>Period Total: 0h 00m<br>"
+        'Type "next" for the next page.'
     )
 
 
@@ -437,7 +575,7 @@ def test_catalog_unavailable_reply_is_localized() -> None:
 
 
 def test_safe_history_batches_only_at_complete_chronological_date_groups(monkeypatch) -> None:
-    monkeypatch.setattr(rendering, "MAX_REPLY_CHARACTERS", 230)
+    monkeypatch.setattr(rendering, "MAX_REPLY_CHARACTERS", 260)
     response = AttendanceResultPresenter().present(
         SafeHistoryPresentation(
             events=(
@@ -447,6 +585,7 @@ def test_safe_history_batches_only_at_complete_chronological_date_groups(monkeyp
             language="en",
             display_name=None,
             plan=PresentationPlan("Attendance", "Returned records"),
+            summary=_ZERO_SUMMARY,
         )
     )
 

@@ -198,10 +198,12 @@ types, identifiers, notes, locations, tokens, and raw records stay in code.
 The model may provide only a validated nonfactual title and context; code owns
 attendance facts, translation, chronology, and final message chunks. History uses
 a fixed localized calendar-record header, period and Ljubljana timezone, type
-icons, chronological day groups and daily totals in hours and minutes. Totals sum
-every closed interval, including breaks and leave; entries missing either time
-are displayed and explicitly excluded. Totals cover the entries on the current
-API page, which can end partway through a day. Guidance
+icons, chronological day groups, and localized per-row totals. Unchanged whole
+events use the REST supplied duration; clipped daily segments use independently
+truncated UTC elapsed minutes. Missing or invalid durations display as
+unavailable. Every history page includes the REST supplied full-period total,
+including empty pages; split Teams replies include it once in the final message.
+Totals are not accumulated across live continuations. Guidance
 uses fixed English or Slovenian copy selected by a no-auth model intent, with no
 attendance access. Factual reports omit personal greetings and message-part counters;
 guidance replies may use the Teams display name as a greeting only.

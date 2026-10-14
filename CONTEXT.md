@@ -15,6 +15,18 @@ by Europe/Ljubljana calendar days and the requested history period. It does not
 replace or alter the authoritative attendance event.
 _Avoid_: split event, derived attendance record
 
+**History duration**:
+A required nullable whole-minute value supplied by the attendance authority for
+one history event. A rendered segment uses independently truncated UTC elapsed
+minutes only when clipping or day splitting changes its endpoints.
+_Avoid_: bot-calculated attendance fact
+
+**History summary**:
+The authority supplied returned-page total and clipped full-period total. The
+bot displays the period total on every history page and never accumulates it in
+continuation state or model context.
+_Avoid_: cached running total
+
 **Attendance type**:
 The user-facing localized label for an attendance event's supplied `punch_type`.
 _Avoid_: status, category
