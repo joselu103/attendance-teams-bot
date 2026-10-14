@@ -80,14 +80,16 @@ def configure_logging(*, environment: str) -> None:
     if environment not in {"local", "staging", "production"}:
         raise ValueError("LOG_ENV must be one of: local, staging, production")
 
-    renderer: structlog.types.Processor
-    minimum_level: int
-    if environment == "local":
-        renderer = structlog.dev.ConsoleRenderer(colors=True)
-        minimum_level = logging.DEBUG
-    else:
-        renderer = structlog.processors.JSONRenderer()
-        minimum_level = logging.INFO
+    is_local = environment == "local"
+
+    renderer = (
+        structlog.dev.ConsoleRenderer(colors=True)
+        if is_local
+        else structlog.processors.JSONRenderer()
+    )
+    minimum_level = logging.DEBUG if is_local else logging.INFO
+
+    logging.basicConfig(level=logging.WARNING, stream=sys.stdout, force=True)
 
     structlog.configure(
         processors=[

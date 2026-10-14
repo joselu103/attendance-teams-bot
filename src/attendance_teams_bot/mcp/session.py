@@ -181,7 +181,8 @@ class StreamableHttpAttendanceSessionFactory:
                 session = await stack.enter_async_context(ClientSession(read_stream, write_stream))
                 phase = "initialize"
                 await session.initialize()
-                lifecycle.step_completed(step="initialized")
+                phase = "active"
+                lifecycle.step_completed(step="active")
                 try:
                     yield StreamableHttpAttendanceSession(session)
                 except BaseException as error:
@@ -262,6 +263,8 @@ def _connection_failure_class(error: BaseException, phase: str) -> str:
         for item in errors
     ):
         return "mcp_protocol"
+    if phase == "active":
+        return "operation"
     if phase == "initialize":
         return "initialization"
     return "connection"
