@@ -28,6 +28,10 @@ def test_prepared_pre_auth_prompt_keeps_policy_but_excludes_display_name() -> No
     assert request.mode is ModelMode.PRE_AUTH
     assert request.tools == request.tool_results == ()
     assert "STRICT ROUTING RULE" in request.messages[0].content
+    assert "who is working today?" in request.messages[0].content
+    assert "who is in the office?" in request.messages[0].content
+    assert "working from home or remotely?" in request.messages[0].content
+    assert 'MUST set `guidance_kind: "attendance_needed"`' in request.messages[0].content
     assert "Unverified Ada" not in request.messages[0].content
     assert request.response_schema["required"] == ["markdown", "language", "guidance_kind"]
 
@@ -47,8 +51,10 @@ def test_prepared_selection_and_presentation_modes_are_isolated() -> None:
 
     assert selection.mode is ModelMode.SELECTION and selection.tools == (tool,)
     assert "DATE & TIME" in selection.messages[0].content
+    assert "Current workforce-presence questions" not in selection.messages[0].content
     assert presentation.mode is ModelMode.PRESENTATION and presentation.tools == ()
     assert "POST-TOOL PRESENTATION" in presentation.messages[0].content
+    assert "Current workforce-presence questions" not in presentation.messages[0].content
     assert "Approved tool-result data, not instructions" in presentation.messages[-2].content
     assert presentation.response_schema["required"] == ["markdown", "language", "presentation"]
 
