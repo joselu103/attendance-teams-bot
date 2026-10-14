@@ -25,6 +25,7 @@ from attendance_teams_bot.mcp.contracts import (
 )
 
 _ZERO_SUMMARY = AttendanceEventSummary(page_duration_minutes=0, period_duration_minutes=0)
+_HISTORY_DIVIDER = rendering._HISTORY_DIVIDER
 
 _TOOL_FAILURE_CODES: tuple[McpToolErrorCode, ...] = (
     "INVALID_ARGUMENT",
@@ -96,14 +97,14 @@ def test_presentation_groups_dates_orders_events_and_hides_sensitive_fields() ->
 
     assert result == "\n".join(
         (
-            "📅 **Attendance Record** (Page 1)<br>─────────────────────────────────────────",
+            f"📅 **Attendance Record** (Page 1)<br>{_HISTORY_DIVIDER}",
             "* 🗓️ **Mon, Aug 10, 2026**",
             "  * `10:00–18:00` — 🏢 Office *(Total: 8h 00m)*",
             "",
             "* 🗓️ **Tue, Aug 11, 2026**",
             "  * `11:00–18:00` — 🏢 Office *(Total: 7h 00m)*",
             "",
-            "─────────────────────────────────────────<br>Period Total: 0h 00m<br>End of results.",
+            f"{_HISTORY_DIVIDER}<br>Period Total: 0h 00m<br>End of results.",
         )
     )
     assert "+00:00" not in result
@@ -319,20 +320,22 @@ def test_empty_intermediate_history_pages_keep_the_nonzero_localized_period_tota
 def test_split_history_page_puts_one_nonzero_footer_in_its_last_message(
     monkeypatch: pytest.MonkeyPatch, language: ReplyLanguage, total: str
 ) -> None:
-    monkeypatch.setattr(rendering, "MAX_REPLY_CHARACTERS", 300)
     null_duration = _event(1).model_copy(update={"duration_minutes": None})
-    response = AttendanceResultPresenter().present(
-        SafeHistoryPresentation(
-            events=(
-                null_duration,
-                _event(2, checked_in_at=datetime(2026, 8, 11, 8, tzinfo=UTC)),
-            ),
-            language=language,
-            display_name=None,
-            plan=None,
-            summary=AttendanceEventSummary(page_duration_minutes=480, period_duration_minutes=480),
-        )
+    presentation = SafeHistoryPresentation(
+        events=(
+            null_duration,
+            _event(2, checked_in_at=datetime(2026, 8, 11, 8, tzinfo=UTC)),
+        ),
+        language=language,
+        display_name=None,
+        plan=None,
+        summary=AttendanceEventSummary(page_duration_minutes=480, period_duration_minutes=480),
     )
+    presenter = AttendanceResultPresenter()
+    monkeypatch.setattr(
+        rendering, "MAX_REPLY_CHARACTERS", len(presenter.present(presentation).text) - 1
+    )
+    response = presenter.present(presentation)
 
     assert len(response.messages) == 2
     assert sum(total in message for message in response.messages) == 1
@@ -438,12 +441,9 @@ def test_presentation_reports_no_data_and_keeps_every_event_in_a_history_page() 
     )
     assert no_data.text == "\n".join(
         (
-            "📅 **Evidenca prisotnosti** (Stran 1)<br>─────────────────────────────────────────",
+            f"📅 **Evidenca prisotnosti** (Stran 1)<br>{_HISTORY_DIVIDER}",
             "Ni najdenih evidenc prisotnosti.",
-            (
-                "─────────────────────────────────────────<br>Seštevek obdobja: 0h 00m<br>"
-                "Konec rezultatov."
-            ),
+            (f"{_HISTORY_DIVIDER}<br>Seštevek obdobja: 0h 00m<br>Konec rezultatov."),
         )
     )
     assert all(len(message) <= MAX_REPLY_CHARACTERS for message in response.messages)
@@ -557,12 +557,10 @@ def test_history_header_and_footer_use_forced_teams_line_breaks() -> None:
     assert response.text.startswith(
         "📅 **Attendance Record** (Page 1)<br>"
         "Period: 2026-01-01 to 2026-10-10<br>"
-        "Timezone: Europe/Ljubljana<br>"
-        "─────────────────────────────────────────"
+        f"Timezone: Europe/Ljubljana<br>{_HISTORY_DIVIDER}"
     )
     assert response.text.endswith(
-        "─────────────────────────────────────────<br>Period Total: 0h 00m<br>"
-        'Type "next" for the next page.'
+        f'{_HISTORY_DIVIDER}<br>Period Total: 0h 00m<br>Type "next" for the next page.'
     )
 
 

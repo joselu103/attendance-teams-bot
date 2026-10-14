@@ -274,7 +274,7 @@ _SHORT_WEEKDAYS: dict[ReplyLanguage, tuple[str, ...]] = {
     "en": ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"),
     "sl": ("pon", "tor", "sre", "čet", "pet", "sob", "ned"),
 }
-_HISTORY_DIVIDER = "─────────────────────────────────────────"
+_HISTORY_DIVIDER = "──────────────────────────────"
 _TEAMS_LINE_BREAK = "<br>"
 # One row per database label. The renderer uses the same row in either direction.
 _PUNCH_TYPE_EQUIVALENTS: tuple[tuple[str, str], ...] = (
@@ -359,7 +359,7 @@ def _history_batch(presentation: SafeHistoryPresentation) -> BotResponse:
     entries = _history_display_entries(presentation)
     if not entries:
         return BotResponse(
-            "\n".join(
+            _TEAMS_LINE_BREAK.join(
                 (
                     prefix,
                     _copy(
@@ -623,7 +623,7 @@ def _history_day_block(
         else _copy(language, "Date unavailable", "Datum ni na voljo")
     )
     ordered_entries = _sort_entries(entries)
-    return "\n".join(
+    return _TEAMS_LINE_BREAK.join(
         (
             f"* 🗓️ **{heading}**",
             *(_render_attendance_event(entry, language) for entry in ordered_entries),
