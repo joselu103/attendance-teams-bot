@@ -14,6 +14,11 @@ from pydantic import SecretStr
 
 from attendance_teams_bot.agent.continuation import HistoryContinuation
 from attendance_teams_bot.agent.contracts import AttendanceNeeded, BotResponse
+from attendance_teams_bot.agent.history_page import (
+    AttendanceHistoryExchange,
+    HistoryPageRequest,
+    HistoryPageSession,
+)
 from attendance_teams_bot.agent.language_model import (
     FinalResponse,
     LanguageModel,
@@ -35,7 +40,6 @@ from attendance_teams_bot.agent.rendering import (
     GuidanceIntent,
     GuidancePresentation,
     InvalidRequestPresentation,
-    SafeHistoryPresentation,
     ToolFailurePresentation,
     UnavailablePresentation,
 )
@@ -46,13 +50,9 @@ from attendance_teams_bot.mcp.client import (
 )
 from attendance_teams_bot.mcp.contracts import (
     CURRENT_WORK_STATUS_TOOL,
-    OTHER_ATTENDANCE_TOOL,
     RESOLVE_EMPLOYEE_TOOL,
     SEARCH_EMPLOYEES_TOOL,
     SELF_ATTENDANCE_TOOL,
-    AttendanceEvent,
-    AttendanceEventPage,
-    AttendanceEventSummary,
     CurrentWorkStatusPage,
     EmployeeSuggestionPage,
     ResolvedEmployee,
@@ -66,13 +66,8 @@ _CURRENT_STATUS_ORDER = ("office", "remote", "customer_site", "break", "absence"
 _LOGGER = structlog.get_logger(__name__)
 
 
-class AuthenticatedMcpSession(Protocol):
+class AuthenticatedMcpSession(HistoryPageSession, Protocol):
     async def list_tools(self) -> tuple[DiscoveredMcpTool, ...]: ...
-    async def call_tool(
-        self, *, name: str, arguments: Mapping[str, object]
-    ) -> (
-        AttendanceEventPage | ResolvedEmployee | CurrentWorkStatusPage | EmployeeSuggestionPage
-    ): ...
 
 
 class McpSessionFactory(Protocol):
@@ -88,6 +83,7 @@ class AttendanceAgent:
     language_model: LanguageModel
     mcp_session_factory: McpSessionFactory
     presenter: AttendanceResultPresenter = field(default_factory=AttendanceResultPresenter)
+    history_exchange: AttendanceHistoryExchange = field(default_factory=AttendanceHistoryExchange)
     correlation_id_factory: Callable[[], UUID] = current_correlation_id
     reference_date_factory: Callable[[], date] = lambda: datetime.now(
         ZoneInfo("Europe/Ljubljana")
@@ -267,40 +263,22 @@ class AttendanceAgent:
                     tool_name=policy.definition.name,
                     argument_count=len(arguments),
                 )
+                if policy.kind in {"self", "other"}:
+                    request = await self._history_page_request(session, policy, arguments, language)
+                    return await self.history_exchange.execute(session, request)
                 result = await self._execute(session, policy, arguments)
                 if isinstance(result, EmployeeSuggestionPage):
                     return self.presenter.present(
                         EmployeeCandidatesPresentation(result.items, language, display_name)
                     )
-                if policy.kind in {"self", "other"}:
-                    raw_items = result.get("items")
-                    if not isinstance(raw_items, list):
-                        raise McpContractIncompatible
-                    events = tuple(AttendanceEvent.model_validate(item) for item in raw_items)
-                    rendering: SafeHistoryPresentation | CurrentAttendancePresentation = (
-                        SafeHistoryPresentation(
-                            events,
-                            language,
-                            display_name,
-                            AttendanceEventSummary.model_validate(result["summary"]),
-                            date.fromisoformat(str(result["start_date"])),
-                            date.fromisoformat(str(result["end_date"])),
-                            result.get("next_offset") is not None,
-                            1,
-                        )
-                    )
-                else:
-                    status_names = _current_status_names(result)
-                    rendering = CurrentAttendancePresentation(status_names, language, display_name)
+                status_names = _current_status_names(result)
+                rendering = CurrentAttendancePresentation(status_names, language, display_name)
                 response = self.presenter.present(rendering)
-                continuation = self._continuation(result, language, policy.kind, 1)
                 return BotResponse(
                     response.text,
                     response.messages,
-                    delivery_memory(continuation is not None),
+                    delivery_memory(False),
                     attachments=response.attachments,
-                    continuation=continuation,
-                    continuation_complete=isinstance(rendering, SafeHistoryPresentation),
                 )
         except asyncio.CancelledError:
             raise
@@ -345,46 +323,8 @@ class AttendanceAgent:
                 name = SELF_ATTENDANCE_TOOL if query.scope == "self" else "get_other_attendance"
                 if catalog is None or catalog.selected_tool(name) is None:
                     return self._unavailable(language, display_name)
-                arguments: dict[str, object] = {
-                    "start_date": query.start_date.isoformat(),
-                    "end_date": query.end_date.isoformat(),
-                }
-                if query.scope == "admin":
-                    arguments["employee_id"] = query.target
-                result = await _attendance_page(
-                    session,
-                    SELF_ATTENDANCE_TOOL if query.scope == "self" else OTHER_ATTENDANCE_TOOL,
-                    arguments,
-                    query.offset,
-                )
-                raw_items = result["items"]
-                if not isinstance(raw_items, list):
-                    raise McpContractIncompatible
-                events = tuple(AttendanceEvent.model_validate(item) for item in raw_items)
-                response = self.presenter.present(
-                    SafeHistoryPresentation(
-                        events,
-                        language,
-                        display_name,
-                        AttendanceEventSummary.model_validate(result["summary"]),
-                        query.start_date,
-                        query.end_date,
-                        result["next_offset"] is not None,
-                        query.page_number,
-                    )
-                )
-                continuation = self._continuation(
-                    result,
-                    language,
-                    "self" if query.scope == "self" else "other",
-                    query.page_number,
-                )
-                return BotResponse(
-                    response.text,
-                    response.messages,
-                    delivery_memory(continuation is not None),
-                    continuation=continuation,
-                    continuation_complete=True,
+                return await self.history_exchange.execute(
+                    session, HistoryPageRequest.from_continuation(query)
                 )
         except asyncio.CancelledError:
             raise
@@ -395,53 +335,30 @@ class AttendanceAgent:
         except Exception:
             return self._unavailable(language, display_name)
 
-    def _continuation(
+    async def _history_page_request(
         self,
-        result: Mapping[str, object],
+        session: AuthenticatedMcpSession,
+        policy: ToolPolicy,
+        arguments: Mapping[str, object],
         language: ReplyLanguage,
-        kind: str,
-        current_page_number: int,
-    ) -> HistoryContinuation | None:
-        offset = result.get("next_offset")
-        if offset is None:
-            return None
-        if type(offset) is not int:
-            return None
-        target = result.get("employee_id")
-        query = HistoryContinuation(
-            "self" if kind == "self" else "admin",
-            date.fromisoformat(str(result["start_date"])),
-            date.fromisoformat(str(result["end_date"])),
-            offset,
-            language,
-            target if type(target) is int else None,
-            current_page_number + 1,
-        )
-        return query
+    ) -> HistoryPageRequest:
+        start_date = date.fromisoformat(str(arguments["start_date"]))
+        end_date = date.fromisoformat(str(arguments["end_date"]))
+        if policy.kind == "self":
+            return HistoryPageRequest("self", start_date, end_date, 0, language)
+        selector = {
+            key: value
+            for key, value in arguments.items()
+            if key in {"employee_id", "username", "email"}
+        }
+        resolved = await session.call_tool(name=RESOLVE_EMPLOYEE_TOOL, arguments=selector)
+        if not isinstance(resolved, ResolvedEmployee):
+            raise McpContractIncompatible
+        return HistoryPageRequest("admin", start_date, end_date, 0, language, resolved.employee_id)
 
     async def _execute(
         self, session: AuthenticatedMcpSession, policy: ToolPolicy, arguments: Mapping[str, object]
     ) -> dict[str, object] | EmployeeSuggestionPage:
-        if policy.kind == "self":
-            return await _attendance_page(session, SELF_ATTENDANCE_TOOL, arguments)
-        if policy.kind == "other":
-            selector = {
-                key: value
-                for key, value in arguments.items()
-                if key in {"employee_id", "username", "email"}
-            }
-            resolved = await session.call_tool(name=RESOLVE_EMPLOYEE_TOOL, arguments=selector)
-            if not isinstance(resolved, ResolvedEmployee):
-                raise McpContractIncompatible
-            return await _attendance_page(
-                session,
-                OTHER_ATTENDANCE_TOOL,
-                {
-                    "employee_id": resolved.employee_id,
-                    "start_date": arguments["start_date"],
-                    "end_date": arguments["end_date"],
-                },
-            )
         if policy.kind == "search":
             result = await session.call_tool(name=SEARCH_EMPLOYEES_TOOL, arguments=arguments)
             if not isinstance(result, EmployeeSuggestionPage):
@@ -473,36 +390,6 @@ class AttendanceAgent:
             fields["error_type"] = type(error).__name__
         _LOGGER.warning("attendance_agent_unavailable", **fields)
         return self._unavailable(language, display_name)
-
-
-async def _attendance_page(
-    session: AuthenticatedMcpSession,
-    tool_name: str,
-    arguments: Mapping[str, object],
-    offset: int = 0,
-) -> dict[str, object]:
-    page = await session.call_tool(
-        name=tool_name, arguments={**arguments, "limit": 50, "offset": offset}
-    )
-    if (
-        not isinstance(page, AttendanceEventPage)
-        or type(page.limit) is not int
-        or type(page.offset) is not int
-        or page.limit != 50
-        or page.offset != offset
-        or len(page.items) > 50
-        or (
-            page.next_offset is not None
-            and (type(page.next_offset) is not int or page.next_offset <= offset or not page.items)
-        )
-    ):
-        raise McpContractIncompatible
-    return {
-        "items": [event.model_dump(mode="json") for event in page.items],
-        "next_offset": page.next_offset,
-        "summary": page.summary.model_dump(mode="json"),
-        **arguments,
-    }
 
 
 async def _all_current_pages(

@@ -100,6 +100,13 @@ result. It is bound to an authenticated user and Teams conversation, and it
 supplies query shape only after fresh authorization.
 _Avoid_: result cache, authorization grant, signed query
 
+**History page request**:
+The bot-owned typed query shape for one attendance-history page: authorized
+scope, Attendance window, optional resolved administrator target, offset,
+language, and page number. It may be formed from validated action selection or
+an Active continuation; it is not an authorization grant or attendance fact.
+_Avoid_: raw MCP arguments, source query, signed query
+
 **Continuation lease**:
 The short exclusive claim preventing two button clicks or typed requests from
 retrieving the same next page concurrently.
