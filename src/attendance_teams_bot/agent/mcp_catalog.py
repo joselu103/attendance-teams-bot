@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Literal
 
+import structlog
+
 from attendance_teams_bot.agent.language_model import ReplyLanguage, ToolDefinition
 from attendance_teams_bot.mcp.contracts import (
     CURRENT_WORK_STATUS_TOOL,
@@ -17,6 +19,8 @@ from attendance_teams_bot.mcp.contracts import (
     SELF_ATTENDANCE_TOOL,
     ListMyAttendanceArguments,
 )
+
+_LOGGER = structlog.get_logger(__name__)
 
 _TOOL_NAME = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 _SELECTOR = re.compile(r"^[^\s<>`]{1,254}$")
@@ -64,6 +68,8 @@ class ToolPolicy:
         # Older providers may return this bot-only field; it is never advertised
         # to a provider or forwarded to MCP.
         arguments = {key: value for key, value in arguments.items() if key != "reply_language"}
+        _LOGGER.debug("validate_arguments", tool_kind=self.kind, arguments=arguments)
+
         if self.kind == "current":
             return self._validate_current_arguments(arguments)
         if not all(
@@ -126,18 +132,31 @@ class ToolPolicy:
         language: ReplyLanguage = "en"
         if not arguments:
             return {}, language
-        if set(arguments) != {"statuses"}:
+        if not set(arguments).issubset({"statuses", "limit", "offset"}):
             return None
-        statuses = arguments["statuses"]
-        if (
-            not isinstance(statuses, list | tuple)
-            or not statuses
-            or len(statuses) > len(_STATUS)
-            or not all(isinstance(status, str) and status in _STATUS for status in statuses)
-            or len(set(statuses)) != len(statuses)
-        ):
-            return None
-        return {"statuses": tuple(statuses)}, language
+        validated: dict[str, object] = {}
+        if "statuses" in arguments:
+            statuses = arguments["statuses"]
+            if (
+                not isinstance(statuses, list | tuple)
+                or not statuses
+                or len(statuses) > len(_STATUS)
+                or not all(isinstance(status, str) and status in _STATUS for status in statuses)
+                or len(set(statuses)) != len(statuses)
+            ):
+                return None
+            validated["statuses"] = tuple(statuses)
+        if "limit" in arguments:
+            limit = arguments["limit"]
+            if type(limit) is not int or not 1 <= limit <= 100:
+                return None
+            validated["limit"] = limit
+        if "offset" in arguments:
+            offset = arguments["offset"]
+            if type(offset) is not int or offset < 0:
+                return None
+            validated["offset"] = offset
+        return validated, language
 
 
 @dataclass(frozen=True, slots=True)

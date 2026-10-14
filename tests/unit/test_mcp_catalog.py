@@ -151,4 +151,15 @@ def test_current_status_admits_only_category_tool_without_exposing_as_of() -> No
         {"statuses": ("office", "remote")},
         "en",
     )
+    assert policy.validate_arguments({"limit": 25}) == ({"limit": 25}, "en")
+    assert policy.validate_arguments({"offset": 25}) == ({"offset": 25}, "en")
+    assert policy.validate_arguments({"statuses": ["office"], "limit": 25, "offset": 50}) == (
+        {"statuses": ("office",), "limit": 25, "offset": 50},
+        "en",
+    )
     assert policy.validate_arguments({"status": "office", "reply_language": "en"}) is None
+    assert policy.validate_arguments({"limit": True}) is None
+    assert policy.validate_arguments({"limit": 0}) is None
+    assert policy.validate_arguments({"limit": 101}) is None
+    assert policy.validate_arguments({"offset": True}) is None
+    assert policy.validate_arguments({"offset": -1}) is None

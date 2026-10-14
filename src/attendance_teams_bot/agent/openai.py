@@ -45,6 +45,7 @@ class OpenAiLanguageModel:
             if request.tools:
                 options["tools"] = [_as_openai_tool(tool) for tool in request.tools]
                 options["parallel_tool_calls"] = False
+                options["tool_choice"] = "required"
             completion = await self.completion(**options)
             return _parse_completion(completion, request)
         except LanguageModelUnavailable:

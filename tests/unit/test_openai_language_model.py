@@ -84,6 +84,7 @@ async def test_openai_translates_prepared_selection_and_preserves_metadata() -> 
     assert tool["function"]["description"] == "Server text"
     assert tool["function"]["parameters"] is schema and tool["_meta"] is examples
     assert sent["parallel_tool_calls"] is False
+    assert sent["tool_choice"] == "required"
 
 
 @pytest.mark.anyio
@@ -164,3 +165,4 @@ async def test_openai_normalizes_provider_errors_and_allows_no_tools_presentatio
     )
     assert "tools" not in completion.requests[0]
     assert "parallel_tool_calls" not in completion.requests[0]
+    assert "tool_choice" not in completion.requests[0]

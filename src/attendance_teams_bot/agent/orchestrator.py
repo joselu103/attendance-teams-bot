@@ -260,6 +260,7 @@ class AttendanceAgent:
                     tool_kind=policy.kind,
                 )
                 validated = policy.validate_arguments(turn.arguments)
+                _LOGGER.debug("validated_arguments", validated=validated)
                 if validated is None:
                     return self.presenter.present(
                         InvalidRequestPresentation(language, display_name)
