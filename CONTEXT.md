@@ -72,8 +72,9 @@ projection. It never includes a personal greeting.
 _Avoid_: guidance reply, attendance authority
 
 **Reply-safe projection**:
-The minimized typed result view eligible for model context and Teams rendering.
-It excludes internal IDs, notes, locations, and other source-only fields.
+The minimized typed result view eligible for Teams rendering. It excludes
+internal IDs, notes, locations, and other source-only fields; it is never sent
+to the model after execution.
 _Avoid_: raw tool result
 
 **Reply batch**:

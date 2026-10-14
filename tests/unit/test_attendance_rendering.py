@@ -4,7 +4,6 @@ import pytest
 
 import attendance_teams_bot.agent.rendering as rendering
 from attendance_teams_bot.agent.contracts import ReplyLanguage
-from attendance_teams_bot.agent.language_model import PresentationPlan
 from attendance_teams_bot.agent.rendering import (
     MAX_REPLY_CHARACTERS,
     TOOL_FAILURE_REPLIES,
@@ -77,7 +76,6 @@ def _present_events(*events: AttendanceEvent, language: ReplyLanguage = "en") ->
                 events=events,
                 language=language,
                 display_name=None,
-                plan=None,
                 summary=_ZERO_SUMMARY,
             )
         )
@@ -98,11 +96,9 @@ def test_presentation_groups_dates_orders_events_and_hides_sensitive_fields() ->
     assert result == "\n".join(
         (
             f"📅 **Attendance Record** (Page 1)<br>{_HISTORY_DIVIDER}",
-            "* 🗓️ **Mon, Aug 10, 2026**",
-            "  * `10:00–18:00` — 🏢 Office *(Total: 8h 00m)*",
+            "* 🗓️ **Mon, Aug 10, 2026**<br>  * `10:00–18:00` — 🏢 Office *(Total: 8h 00m)*",
             "",
-            "* 🗓️ **Tue, Aug 11, 2026**",
-            "  * `11:00–18:00` — 🏢 Office *(Total: 7h 00m)*",
+            "* 🗓️ **Tue, Aug 11, 2026**<br>  * `11:00–18:00` — 🏢 Office *(Total: 7h 00m)*",
             "",
             f"{_HISTORY_DIVIDER}<br>Period Total: 0h 00m<br>End of results.",
         )
@@ -220,7 +216,6 @@ def test_presentation_splits_multiday_events_into_local_daily_segments() -> None
                 ),
                 language="en",
                 display_name=None,
-                plan=None,
                 summary=_ZERO_SUMMARY,
                 start_date=date(2026, 5, 22),
                 end_date=date(2026, 5, 23),
@@ -229,8 +224,8 @@ def test_presentation_splits_multiday_events_into_local_daily_segments() -> None
         .text
     )
 
-    assert "Fri, May 22, 2026**\n  * `08:00–24:00` — 🏠 Remote work" in result
-    assert "Sat, May 23, 2026**\n  * `00:00–16:00` — 🏠 Remote work" in result
+    assert "Fri, May 22, 2026**<br>  * `08:00–24:00` — 🏠 Remote work" in result
+    assert "Sat, May 23, 2026**<br>  * `00:00–16:00` — 🏠 Remote work" in result
     assert result.count("*(Total: 16h 00m)*") == 2
 
 
@@ -259,7 +254,6 @@ def test_whole_rows_trust_api_minutes_and_midnight_segments_truncate_independent
                 events=(whole, midnight),
                 language="en",
                 display_name=None,
-                plan=None,
                 summary=AttendanceEventSummary(
                     page_duration_minutes=124, period_duration_minutes=124
                 ),
@@ -297,7 +291,6 @@ def test_empty_intermediate_history_pages_keep_the_nonzero_localized_period_tota
                 events=(),
                 language=language,
                 display_name=None,
-                plan=None,
                 summary=AttendanceEventSummary(
                     page_duration_minutes=0, period_duration_minutes=425
                 ),
@@ -328,7 +321,6 @@ def test_split_history_page_puts_one_nonzero_footer_in_its_last_message(
         ),
         language=language,
         display_name=None,
-        plan=None,
         summary=AttendanceEventSummary(page_duration_minutes=480, period_duration_minutes=480),
     )
     presenter = AttendanceResultPresenter()
@@ -346,7 +338,7 @@ def test_split_history_page_puts_one_nonzero_footer_in_its_last_message(
 
 def test_history_presentation_requires_an_authoritative_summary() -> None:
     with pytest.raises(TypeError, match="summary"):
-        SafeHistoryPresentation(events=(), language="en", display_name=None, plan=None)  # type: ignore[call-arg]
+        SafeHistoryPresentation(events=(), language="en", display_name=None)  # type: ignore[call-arg]
 
 
 def test_presentation_clips_multiday_events_to_the_requested_period() -> None:
@@ -367,7 +359,6 @@ def test_presentation_clips_multiday_events_to_the_requested_period() -> None:
                 ),
                 language="en",
                 display_name=None,
-                plan=None,
                 summary=_ZERO_SUMMARY,
                 start_date=date(2026, 5, 22),
                 end_date=date(2026, 5, 22),
@@ -426,24 +417,21 @@ def test_presentation_preserves_nonpositive_events_without_splitting() -> None:
 def test_presentation_reports_no_data_and_keeps_every_event_in_a_history_page() -> None:
     presenter = AttendanceResultPresenter()
     no_data = presenter.present(
-        SafeHistoryPresentation(
-            events=(), language="sl", display_name=None, plan=None, summary=_ZERO_SUMMARY
-        )
+        SafeHistoryPresentation(events=(), language="sl", display_name=None, summary=_ZERO_SUMMARY)
     )
     response = presenter.present(
         SafeHistoryPresentation(
             events=tuple(_event(index) for index in range(50)),
             language="en",
             display_name=None,
-            plan=None,
             summary=_ZERO_SUMMARY,
         )
     )
     assert no_data.text == "\n".join(
         (
-            f"📅 **Evidenca prisotnosti** (Stran 1)<br>{_HISTORY_DIVIDER}",
-            "Ni najdenih evidenc prisotnosti.",
-            (f"{_HISTORY_DIVIDER}<br>Seštevek obdobja: 0h 00m<br>Konec rezultatov."),
+            f"📅 **Evidenca prisotnosti** (Stran 1)<br>{_HISTORY_DIVIDER}<br>"
+            "Ni najdenih evidenc prisotnosti.<br>"
+            f"{_HISTORY_DIVIDER}<br>Seštevek obdobja: 0h 00m<br>Konec rezultatov.",
         )
     )
     assert all(len(message) <= MAX_REPLY_CHARACTERS for message in response.messages)
@@ -523,7 +511,6 @@ def test_reports_never_greet_even_when_a_display_name_is_available() -> None:
             events=(_event(1),),
             language="en",
             display_name="Ana Example",
-            plan=None,
             summary=_ZERO_SUMMARY,
         )
     )
@@ -532,7 +519,6 @@ def test_reports_never_greet_even_when_a_display_name_is_available() -> None:
             status_names=(),
             language="en",
             display_name="Ana Example",
-            plan=PresentationPlan("Current status", None),
         )
     )
 
@@ -546,7 +532,6 @@ def test_history_header_and_footer_use_forced_teams_line_breaks() -> None:
             events=(_event(1),),
             language="en",
             display_name=None,
-            plan=None,
             summary=_ZERO_SUMMARY,
             start_date=date(2026, 1, 1),
             end_date=date(2026, 10, 10),
@@ -582,7 +567,6 @@ def test_safe_history_batches_only_at_complete_chronological_date_groups(monkeyp
             ),
             language="en",
             display_name=None,
-            plan=PresentationPlan("Attendance", "Returned records"),
             summary=_ZERO_SUMMARY,
         )
     )
@@ -604,7 +588,6 @@ def test_current_attendance_exposes_only_status_grouped_names() -> None:
             status_names=(("office", ("Ada Example",)), ("remote", ("Blaž Example",))),
             language="sl",
             display_name=None,
-            plan=PresentationPlan("Trenutna prisotnost", None),
         )
     )
 
@@ -622,7 +605,6 @@ def test_current_status_splits_long_name_groups_without_dropping_records(monkeyp
             status_names=(("office", names),),
             language="en",
             display_name=None,
-            plan=PresentationPlan("Current status", None),
         )
     )
 

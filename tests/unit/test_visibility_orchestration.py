@@ -11,7 +11,6 @@ from attendance_teams_bot.agent.language_model import (
     FinalResponse,
     ModelMode,
     ModelRequest,
-    PresentationPlan,
     ToolCall,
 )
 from attendance_teams_bot.agent.mcp_catalog import DiscoveredMcpTool
@@ -163,8 +162,7 @@ async def test_exact_selector_is_resolved_then_internal_id_only_drives_history()
                     "end_date": "2026-08-02",
                     "reply_language": "en",
                 },
-            ),
-            FinalResponse("ignored", "en", presentation=PresentationPlan("Attendance", None)),
+            )
         ]
     )
     response = await agent.handle(message="alice@example.test", mcp_access_token=SecretStr("token"))
@@ -183,24 +181,18 @@ async def test_exact_selector_is_resolved_then_internal_id_only_drives_history()
             },
         ),
     ]
-    assert "note" not in repr(model.requests[2].tool_results[0].result)
-    assert "employee_id" not in repr(model.requests[2].tool_results[0].result)
+    assert len(model.requests) == 2
 
 
 @pytest.mark.anyio
-async def test_result_memory_omits_model_presentation_body_and_display_name() -> None:
+async def test_result_memory_omits_display_name() -> None:
     agent, _, _ = subject(
         [
             ToolCall(
                 "x",
                 "get_current_work_status",
                 {"statuses": ["office"], "reply_language": "en"},
-            ),
-            FinalResponse(
-                "ignored",
-                "en",
-                presentation=PresentationPlan("Ada is in Office", "Sensitive factual detail"),
-            ),
+            )
         ]
     )
 
@@ -225,8 +217,7 @@ async def test_authenticated_model_calls_share_one_history_snapshot_and_current_
                     "end_date": "2026-08-02",
                     "reply_language": "en",
                 },
-            ),
-            FinalResponse("ignored", "en", presentation=PresentationPlan("Attendance", None)),
+            )
         ]
     )
     history = (
@@ -240,14 +231,13 @@ async def test_authenticated_model_calls_share_one_history_snapshot_and_current_
         history=history,
     )
 
-    assert len(model.requests) == 3
+    assert len(model.requests) == 2
     assert all(
         [(message.role, message.content) for message in request.messages[1:3]]
         == [(message.role, message.content) for message in history]
         for request in model.requests
     )
     assert [request.messages[-1].content for request in model.requests] == [
-        "show my attendance",
         "show my attendance",
         "show my attendance",
     ]
@@ -309,14 +299,7 @@ async def test_public_authenticated_selected_path_rechecks_current_exact_selecto
 @pytest.mark.anyio
 async def test_current_status_fetches_all_pages_and_hides_unknown_before_model() -> None:
     agent, model, session = subject(
-        [
-            ToolCall(
-                "x", "get_current_work_status", {"statuses": ["office"], "reply_language": "en"}
-            ),
-            FinalResponse(
-                "ignored", "en", presentation=PresentationPlan("Current attendance", None)
-            ),
-        ]
+        [ToolCall("x", "get_current_work_status", {"statuses": ["office"], "reply_language": "en"})]
     )
     assert (
         await agent.handle(message="Office", mcp_access_token=SecretStr("token"))
@@ -325,23 +308,14 @@ async def test_current_status_fetches_all_pages_and_hides_unknown_before_model()
         {"statuses": ["office"], "limit": 50, "offset": 0},
         {"statuses": ["office"], "limit": 50, "offset": 50},
     ]
-    assert model.requests[2].tool_results[0].result["statuses"] == [
-        {"status": "office", "count": 1}
-    ]
+    assert len(model.requests) == 2
     assert "as_of" not in repr(session.calls)
 
 
 @pytest.mark.anyio
 async def test_current_status_uses_the_rest_contract_first_and_last_name_fields() -> None:
     agent, _, session = subject(
-        [
-            ToolCall(
-                "x", "get_current_work_status", {"statuses": ["office"], "reply_language": "en"}
-            ),
-            FinalResponse(
-                "ignored", "en", presentation=PresentationPlan("Current attendance", None)
-            ),
-        ]
+        [ToolCall("x", "get_current_work_status", {"statuses": ["office"], "reply_language": "en"})]
     )
     session.current_items = ({"first_name": "Ada", "last_name": "Lovelace", "status": "office"},)
 
@@ -355,12 +329,7 @@ async def test_current_status_uses_the_rest_contract_first_and_last_name_fields(
 @pytest.mark.anyio
 async def test_current_status_without_a_filter_omits_status_and_fetches_every_page() -> None:
     agent, model, session = subject(
-        [
-            ToolCall("x", "get_current_work_status", {"reply_language": "en"}),
-            FinalResponse(
-                "ignored", "en", presentation=PresentationPlan("Current attendance", None)
-            ),
-        ]
+        [ToolCall("x", "get_current_work_status", {"reply_language": "en"})]
     )
 
     assert (
@@ -370,7 +339,7 @@ async def test_current_status_without_a_filter_omits_status_and_fetches_every_pa
         {"limit": 50, "offset": 0},
         {"limit": 50, "offset": 50},
     ]
-    assert "status" not in model.requests[2].tool_results[0].result
+    assert len(model.requests) == 2
 
 
 def test_current_status_groups_follow_the_business_status_order() -> None:
@@ -426,10 +395,7 @@ async def test_current_status_accepts_and_combines_multiple_requested_statuses()
                 "selection",
                 "get_current_work_status",
                 {"statuses": ["office", "remote"], "reply_language": "en"},
-            ),
-            FinalResponse(
-                "ignored", "en", presentation=PresentationPlan("Current attendance", None)
-            ),
+            )
         ]
     )
     session = MultiStatusSession()
@@ -495,14 +461,11 @@ async def test_rejects_multiple_selectors_unknown_status_and_internal_ids_in_rep
                     "end_date": "2026-08-02",
                     "reply_language": "en",
                 },
-            ),
-            FinalResponse("Employee 99 is present", "en"),
+            )
         ]
     )
-    assert (
-        "temporarily unavailable"
-        in (await agent.handle(message="x", mcp_access_token=SecretStr("token"))).text
-    )
+    response = await agent.handle(message="x", mcp_access_token=SecretStr("token"))
+    assert "99" not in response.text
 
 
 @pytest.mark.anyio

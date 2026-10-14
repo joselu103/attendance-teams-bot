@@ -7,7 +7,6 @@ from typing import Literal
 from zoneinfo import ZoneInfo
 
 from attendance_teams_bot.agent.contracts import BotResponse, ReplyLanguage
-from attendance_teams_bot.agent.language_model import PresentationPlan
 from attendance_teams_bot.mcp.contracts import (
     AttendanceEvent,
     AttendanceEventSummary,
@@ -17,20 +16,6 @@ from attendance_teams_bot.mcp.contracts import (
 
 MAX_REPLY_CHARACTERS = 12_000
 _REPLY_TIMEZONE = ZoneInfo("Europe/Ljubljana")
-
-
-def is_safe_model_markdown(markdown: object) -> bool:
-    """Accept a small Teams Markdown subset and reject links, HTML, and control data."""
-    if (
-        not isinstance(markdown, str)
-        or not markdown.strip()
-        or len(markdown) > MAX_REPLY_CHARACTERS
-    ):
-        return False
-    if any(ord(character) < 32 and character not in "\n\r\t" for character in markdown):
-        return False
-    forbidden = ("<", ">", "`", "![", "](", "http://", "https://")
-    return not any(value in markdown.casefold() for value in forbidden)
 
 
 UNAVAILABLE_REPLY = "Attendance data is temporarily unavailable. Please try again later."
@@ -60,7 +45,6 @@ class CurrentAttendancePresentation:
     status_names: tuple[tuple[str, tuple[str, ...]], ...]
     language: ReplyLanguage
     display_name: str | None
-    plan: PresentationPlan | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,7 +52,6 @@ class SafeHistoryPresentation:
     events: tuple[AttendanceEvent, ...]
     language: ReplyLanguage
     display_name: str | None
-    plan: PresentationPlan | None
     summary: AttendanceEventSummary
     start_date: date | None = None
     end_date: date | None = None
@@ -339,21 +322,6 @@ def _render_attendance_event(entry: _HistoryDisplayEntry, language: ReplyLanguag
     return result
 
 
-def valid_presentation_plan(plan: PresentationPlan) -> bool:
-    return _safe_plan_text(plan.title, 120) and (
-        plan.context is None or _safe_plan_text(plan.context, 240)
-    )
-
-
-def _safe_plan_text(value: str, limit: int) -> bool:
-    return (
-        isinstance(value, str)
-        and bool(value.strip())
-        and len(value) <= limit
-        and is_safe_model_markdown(value)
-    )
-
-
 def _history_batch(presentation: SafeHistoryPresentation) -> BotResponse:
     prefix = _history_header(presentation)
     entries = _history_display_entries(presentation)
@@ -395,8 +363,6 @@ def _history_batch(presentation: SafeHistoryPresentation) -> BotResponse:
 
 
 def _current_batch(presentation: CurrentAttendancePresentation) -> BotResponse:
-    if presentation.plan is None or not valid_presentation_plan(presentation.plan):
-        return BotResponse(_localized_safe_reply(UNAVAILABLE_REPLY, presentation.language))
     if not presentation.status_names:
         return BotResponse(
             _copy(
@@ -405,9 +371,11 @@ def _current_batch(presentation: CurrentAttendancePresentation) -> BotResponse:
                 "Trenutnih evidenc prisotnosti ni.",
             )
         )
-    prefix = f"**{_safe_text(presentation.plan.title)}**"
-    if presentation.plan.context:
-        prefix += "\n\n" + _safe_text(presentation.plan.context)
+    prefix = _copy(
+        presentation.language,
+        "**Current attendance**",
+        "**Trenutna prisotnost**",
+    )
     blocks: list[str] = []
     for status, names in presentation.status_names:
         heading = f"**{_current_status(status, presentation.language)}**"

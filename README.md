@@ -178,8 +178,8 @@ through every available page in one MCP request.
 Tool-selection calls receive only bot-owned schemas, including
 `reply_language` restricted to `en` or `sl`; remote discovery metadata,
 administrator-only detailed current attendance, and disabled tools are never
-offered. After one successful execution, the model receives no tools and only a
-reply-safe result view. The model receives the Ljubljana reference date and resolves
+offered. After one successful execution, code renders the reply-safe result view
+without another model request. The model receives the Ljubljana reference date and resolves
 English ordinal and Slovenian day-month forms. Ambiguous numeric dates are
 rejected locally. Each requested range may span up to twelve calendar months;
 the bot partitions it into inclusive 31-day MCP windows and reads every page
@@ -192,11 +192,10 @@ channel, missing, and unknown conversation scope stop before SSO, OBO, OpenAI,
 or MCP. The bot calls the public attendance-mcp MCP contract
 `1.3.0`
 through one validated model selection and one code-controlled execution. The
-post-result model receives only a reply-safe view: history dates and record
-presence, or current status categories and counts; names, timestamps, event
-types, identifiers, notes, locations, tokens, and raw records stay in code.
-The model may provide only a validated nonfactual title and context; code owns
-attendance facts, translation, chronology, and final message chunks. History uses
+post-execution reply is rendered in code from a reply-safe view; names,
+timestamps, event types, identifiers, notes, locations, tokens, and raw records
+stay outside model context. Code owns attendance facts, translation, chronology,
+and final message chunks. History uses
 a fixed localized calendar-record header, period and Ljubljana timezone, type
 icons, chronological day groups, and localized per-row totals. Unchanged whole
 events use the REST supplied duration; clipped daily segments use independently

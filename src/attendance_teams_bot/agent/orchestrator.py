@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable, Mapping
 from contextlib import AbstractAsyncContextManager
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Protocol
 from uuid import UUID
@@ -20,14 +20,12 @@ from attendance_teams_bot.agent.language_model import (
     LanguageModelUnavailable,
     ReplyLanguage,
     ToolCall,
-    ToolResultView,
 )
 from attendance_teams_bot.agent.mcp_catalog import DiscoveredMcpTool, ToolPolicy, admit_mcp_catalog
 from attendance_teams_bot.agent.model_contract import (
     delivery_memory,
     guidance_memory,
     pre_auth_request,
-    presentation_request,
     selection_request,
 )
 from attendance_teams_bot.agent.rendering import (
@@ -40,8 +38,6 @@ from attendance_teams_bot.agent.rendering import (
     SafeHistoryPresentation,
     ToolFailurePresentation,
     UnavailablePresentation,
-    is_safe_model_markdown,
-    valid_presentation_plan,
 )
 from attendance_teams_bot.mcp.client import (
     AttendanceMcpUnavailable,
@@ -281,13 +277,11 @@ class AttendanceAgent:
                     if not isinstance(raw_items, list):
                         raise McpContractIncompatible
                     events = tuple(AttendanceEvent.model_validate(item) for item in raw_items)
-                    projection = _history_projection(events, language)
                     rendering: SafeHistoryPresentation | CurrentAttendancePresentation = (
                         SafeHistoryPresentation(
                             events,
                             language,
                             display_name,
-                            None,
                             AttendanceEventSummary.model_validate(result["summary"]),
                             date.fromisoformat(str(result["start_date"])),
                             date.fromisoformat(str(result["end_date"])),
@@ -297,32 +291,7 @@ class AttendanceAgent:
                     )
                 else:
                     status_names = _current_status_names(result)
-                    projection = _current_projection(status_names, language)
-                    rendering = CurrentAttendancePresentation(
-                        status_names, language, display_name, None
-                    )
-                final = await self.language_model.complete(
-                    presentation_request(
-                        message=message,
-                        reference_date=reference_date,
-                        history=history,
-                        tool_results=(
-                            ToolResultView("execution", policy.definition.name, projection),
-                        ),
-                    )
-                )
-                if (
-                    not isinstance(final, FinalResponse)
-                    or final.guidance_kind is not None
-                    or final.language != language
-                    or not is_safe_model_markdown(final.markdown)
-                    or final.presentation is None
-                    or not valid_presentation_plan(final.presentation)
-                ):
-                    return self._unavailable_with_outcome(
-                        language, display_name, correlation_id, "malformed_final"
-                    )
-                rendering = replace(rendering, plan=final.presentation)
+                    rendering = CurrentAttendancePresentation(status_names, language, display_name)
                 response = self.presenter.present(rendering)
                 continuation = self._continuation(result, language, policy.kind, 1)
                 return BotResponse(
@@ -397,7 +366,6 @@ class AttendanceAgent:
                         events,
                         language,
                         display_name,
-                        None,
                         AttendanceEventSummary.model_validate(result["summary"]),
                         query.start_date,
                         query.end_date,
@@ -564,23 +532,6 @@ async def _all_current_pages(
     raise McpContractIncompatible
 
 
-def _history_projection(
-    events: tuple[AttendanceEvent, ...], language: ReplyLanguage
-) -> dict[str, object]:
-    """Send the model only non-sensitive shape metadata, never source records."""
-    dates: set[str] = set()
-    for event in events:
-        timestamp = event.checked_in_at or event.checked_out_at
-        if timestamp is not None:
-            dates.add(timestamp.date().isoformat())
-    return {
-        "kind": "attendance_history",
-        "language": language,
-        "date_groups": sorted(dates),
-        "has_records": bool(events),
-    }
-
-
 def _current_status_names(result: Mapping[str, object]) -> tuple[tuple[str, tuple[str, ...]], ...]:
     groups: dict[str, list[str]] = {}
     items = result.get("items")
@@ -605,30 +556,3 @@ def _current_status_names(result: Mapping[str, object]) -> tuple[tuple[str, tupl
         for status in _CURRENT_STATUS_ORDER
         if groups.get(status)
     )
-
-
-def _current_projection(
-    status_names: tuple[tuple[str, tuple[str, ...]], ...], language: ReplyLanguage
-) -> dict[str, object]:
-    return {
-        "kind": "current_attendance",
-        "language": language,
-        "statuses": [{"status": status, "count": len(names)} for status, names in status_names],
-    }
-
-
-def _internal_values(value: object, key: str = "") -> set[str]:
-    values: set[str] = set()
-    if isinstance(value, Mapping):
-        for name, child in value.items():
-            values.update(_internal_values(child, str(name)))
-    elif isinstance(value, list | tuple):
-        for child in value:
-            values.update(_internal_values(child, key))
-    elif key.endswith("_id") or key in {"employee_id", "attendance_event_id"}:
-        values.add(str(value))
-    return values
-
-
-def _mentions_sensitive(markdown: str, values: set[str]) -> bool:
-    return any(value and value in markdown for value in values)

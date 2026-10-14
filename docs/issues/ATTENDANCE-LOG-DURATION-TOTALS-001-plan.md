@@ -87,8 +87,8 @@ settings, model-contract, or catalog changes are expected.
 4. Preserve dates, offsets, page numbers, opaque cards, query-only cursor,
    binding, expiry, leases, delivery ordering and failed-send behavior. Never
    store durations/summaries or accumulate totals in cursor or dialogue memory.
-5. `_history_projection` remains shape-only. New duration/summary facts never
-   enter model-visible results, model-generated framing, or assistant memory.
+5. History results remain code-rendered. New duration/summary facts never enter
+   model context or assistant memory.
    Malformed pages follow existing safe unavailable handling; do not render
    partial rows, fabricated totals, or legacy fallback results.
 

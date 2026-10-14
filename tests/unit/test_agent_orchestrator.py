@@ -12,7 +12,6 @@ from attendance_teams_bot.agent.language_model import (
     LanguageModelUnavailable,
     ModelMode,
     ModelRequest,
-    PresentationPlan,
     ToolCall,
 )
 from attendance_teams_bot.agent.mcp_catalog import DiscoveredMcpTool
@@ -174,29 +173,22 @@ def call(identifier: str = "one") -> ToolCall:
 
 
 @pytest.mark.anyio
-async def test_one_validated_tool_call_sends_minimal_projection_and_immutable_rendering() -> None:
-    subject, model, session = agent(
-        [
-            call("one"),
-            FinalResponse("ignored", "sl", presentation=PresentationPlan("Prisotnost", None)),
-        ]
-    )
+async def test_validated_tool_call_renders_without_a_post_tool_model_turn() -> None:
+    subject, model, session = agent([call("one")])
     response = await subject.handle(message="Pokaži", mcp_access_token=SecretStr("token"))
     assert "**Evidenca prisotnosti**" in response.text and "secret note" not in response.text
     assert "Seštevek obdobja: 8h 00m" in response.text
     assert len(session.calls) == 1
-    assert len(model.requests) == 3
+    assert len(model.requests) == 2
     assert model.requests[0].tools == ()
-    projection = model.requests[2].tool_results[0].result
-    assert "note" not in repr(projection) and "employee_id" not in repr(projection)
     assert model.requests[1].tools
 
 
 @pytest.mark.anyio
-async def test_model_cannot_select_another_tool_after_the_validated_execution() -> None:
+async def test_validated_execution_completes_without_another_model_turn() -> None:
     subject, _, session = agent([call(), call()])
     response = await subject.handle(message="show", mcp_access_token=SecretStr("token"))
-    assert response.text == "Podatki o prisotnosti trenutno niso na voljo. Poskusite znova pozneje."
+    assert "Evidenca prisotnosti" in response.text
     assert len(session.calls) == 1
     bad, _, _ = agent([FinalResponse("[unsafe](https://example.test)", "en")])
     assert (
@@ -237,8 +229,7 @@ async def test_numeric_day_month_period_executes_model_resolved_dates(separator:
                 "numeric-period",
                 SELF_ATTENDANCE_TOOL,
                 {"start_date": "2026-01-10", "end_date": "2026-01-15"},
-            ),
-            FinalResponse("ignored", "en", presentation=PresentationPlan("Attendance", None)),
+            )
         ]
     )
     response = await subject.handle(
@@ -326,12 +317,7 @@ async def test_pre_auth_tool_call_is_rejected_without_authentication() -> None:
 @pytest.mark.anyio
 async def test_handle_uses_one_reference_date_for_every_model_turn() -> None:
     dates = iter((date(2026, 8, 15), date(2026, 8, 16)))
-    subject, model, _ = agent(
-        [
-            call(),
-            FinalResponse("ignored", "sl", presentation=PresentationPlan("Prisotnost", None)),
-        ]
-    )
+    subject, model, _ = agent([call()])
     subject = AttendanceAgent(
         model,
         subject.mcp_session_factory,
@@ -341,7 +327,7 @@ async def test_handle_uses_one_reference_date_for_every_model_turn() -> None:
 
     await subject.handle(message="Pokaži", mcp_access_token=SecretStr("token"))
 
-    assert [request.reference_date for request in model.requests] == [date(2026, 8, 15)] * 3
+    assert [request.reference_date for request in model.requests] == [date(2026, 8, 15)] * 2
 
 
 @pytest.mark.anyio
@@ -440,13 +426,7 @@ async def test_history_requests_one_complete_multiyear_page_only() -> None:
         {"start_date": "2020-01-01", "end_date": "2030-12-31", "reply_language": "en"},
     )
     first = page().model_copy(update={"next_offset": 50})
-    subject, _, session = agent(
-        [
-            selection,
-            FinalResponse("ignored", "en", presentation=PresentationPlan("Attendance", None)),
-        ],
-        FakeSession(pages=[first]),
-    )
+    subject, _, session = agent([selection], FakeSession(pages=[first]))
     decision = await subject.pre_auth_decision(message="2020 through 2030")
     response = await subject.handle_selected(
         message="2020 through 2030",
@@ -587,8 +567,7 @@ async def test_clear_relative_period_resolves_from_ljubljana_reference_and_displ
                 "selection",
                 SELF_ATTENDANCE_TOOL,
                 {"start_date": "2026-07-01", "end_date": "2026-07-31", "reply_language": "en"},
-            ),
-            FinalResponse("ignored", "en", presentation=PresentationPlan("Attendance", None)),
+            )
         ]
     )
     response = await subject.handle(message="last month", mcp_access_token=SecretStr("token"))

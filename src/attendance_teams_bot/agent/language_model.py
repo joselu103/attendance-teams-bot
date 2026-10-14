@@ -20,7 +20,6 @@ class ModelMode(StrEnum):
 
     PRE_AUTH = "pre_auth"
     SELECTION = "selection"
-    PRESENTATION = "presentation"
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,30 +49,12 @@ class ToolCall:
 
 
 @dataclass(frozen=True, slots=True)
-class PresentationPlan:
-    """Model-authored non-factual framing for an immutable safe projection."""
-
-    title: str
-    context: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
 class FinalResponse:
-    """The constrained final Teams Markdown supplied by the model."""
+    """A constrained structured reply for a tool-free routing turn."""
 
     markdown: str
     language: ReplyLanguage
     guidance_kind: GuidanceKind | None = None
-    presentation: PresentationPlan | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class ToolResultView:
-    """Approved, data-only result projection made available in a later model turn."""
-
-    call_id: str
-    tool_name: str
-    result: Mapping[str, object]
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,19 +66,16 @@ class ModelRequest:
     response_schema: Mapping[str, object]
     reference_date: date
     tools: tuple[ToolDefinition, ...] = ()
-    tool_results: tuple[ToolResultView, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.mode, ModelMode):
             raise ValueError("a model request requires a valid mode")
         if not self.messages or self.messages[0].role != "system":
             raise ValueError("a model request requires a leading system message")
-        if self.mode is ModelMode.PRE_AUTH and (self.tools or self.tool_results):
-            raise ValueError("pre-auth mode cannot receive tools or tool results")
-        if self.mode is ModelMode.SELECTION and (not self.tools or self.tool_results):
-            raise ValueError("selection mode requires tools and forbids tool results")
-        if self.mode is ModelMode.PRESENTATION and (self.tools or not self.tool_results):
-            raise ValueError("presentation mode requires results and forbids tools")
+        if self.mode is ModelMode.PRE_AUTH and self.tools:
+            raise ValueError("pre-auth mode cannot receive tools")
+        if self.mode is ModelMode.SELECTION and not self.tools:
+            raise ValueError("selection mode requires tools")
 
 
 ModelTurn = ToolCall | FinalResponse
